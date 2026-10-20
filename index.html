@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="da">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HOME FRONT — Command Center</title>
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+    <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+    <!-- Login / Titelskærm Overlay -->
+    <div id="auth-overlay" class="auth-overlay">
+        <div class="auth-card">
+            <div class="auth-hero">
+                <img src="assets/titelskaerm.png" alt="Home Front" class="auth-bg-img" />
+                <div class="auth-hero-gradient"></div>
+                <div class="auth-title-box">
+                    <img src="assets/titel_emblem.png" alt="Emblem" class="pixel-img emblem-img" />
+                    <h1>HOME FRONT</h1>
+                    <p class="subtitle">DEFEND YOUR NEIGHBORHOOD · COMMAND CENTER</p>
+                </div>
+            </div>
+            <div class="auth-body">
+                <p class="auth-intro">Log ind med samme e-mail og kodeord som på din telefon for at se dine skridt, bygninger og soldater på stor skærm.</p>
+                <div class="form-group">
+                    <label for="auth-email">E-mail</label>
+                    <input type="email" id="auth-email" placeholder="din@email.dk" autocomplete="email" />
+                </div>
+                <div class="form-group">
+                    <label for="auth-password">Kodeord</label>
+                    <input type="password" id="auth-password" placeholder="Mindst 6 tegn" autocomplete="current-password" />
+                </div>
+                <div id="auth-error" class="auth-error hidden"></div>
+                <div class="auth-buttons">
+                    <button id="btn-login" class="btn btn-primary">Log ind i Kommandocentralen</button>
+                    <button id="btn-signup" class="btn btn-secondary">Opret ny konto</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hovedlayout: Kort + Fast Kommandopanel -->
+    <div class="app-layout">
+        <!-- Venstre / Top: Stort Kort -->
+        <div class="map-container">
+            <div id="map"></div>
+
+            <!-- Top-bjælke over kortet med ressourcer -->
+            <div class="top-hud">
+                <div class="hud-brand">
+                    <img src="assets/titel_emblem.png" alt="" class="pixel-img hud-emblem" />
+                    <span>HOME FRONT</span>
+                </div>
+                <div class="hud-stats">
+                    <div class="stat-pill" title="Dine optjente skridt (valuta)">
+                        <img src="assets/ikon_skridt.png" alt="" class="pixel-img stat-icon" />
+                        <span id="hud-steps" class="stat-val steps-color">0</span>
+                        <span class="stat-label">SKRIDT</span>
+                    </div>
+                    <div class="stat-pill" title="Stål på lager">
+                        <img src="assets/ikon_staal.png" alt="" class="pixel-img stat-icon" />
+                        <span id="hud-steel" class="stat-val steel-color">0</span>
+                        <span class="stat-label">STÅL</span>
+                    </div>
+                    <div class="stat-pill" title="Ledige soldater / Samlet hær og barrak-kapacitet">
+                        <img src="assets/ikon_soldat.png" alt="" class="pixel-img stat-icon" />
+                        <span id="hud-soldiers" class="stat-val soldiers-color">0 / 0</span>
+                        <span class="stat-label">SOLDATER</span>
+                    </div>
+                </div>
+                <div class="hud-actions">
+                    <button id="btn-jump-home" class="btn btn-small" title="Hop til din første barrak/base">🏠 Hop til Base</button>
+                    <button id="btn-sync" class="btn btn-small" title="Opdatér data fra Supabase">🔄 Synkronisér</button>
+                    <button id="btn-logout" class="btn btn-small btn-muted" title="Log ud">Log ud</button>
+                </div>
+            </div>
+
+            <!-- Banner når man er ved at vælge målfelt på kortet -->
+            <div id="march-target-banner" class="march-banner hidden">
+                <div class="march-banner-text">
+                    🎯 <strong>VÆLG MÅL PÅ KORTET:</strong> Klik på det felt på kortet, som dine <span id="banner-soldier-count">1</span> soldater skal marchere til.
+                </div>
+                <button id="btn-cancel-march-mode" class="btn btn-small btn-danger">Annullér</button>
+            </div>
+
+            <!-- Toast besked nederst på kortet -->
+            <div id="toast" class="toast hidden"></div>
+        </div>
+
+        <!-- Højre: Fast Kommandopanel med fuldt overblik -->
+        <aside class="command-sidebar">
+            <!-- 1. Valgt felt på kortet -->
+            <section class="panel-section">
+                <div class="section-header">
+                    <h2>📍 VALGT FELT PÅ KORTET</h2>
+                    <span id="selected-tile-coords" class="badge">Klik på kortet</span>
+                </div>
+                <div id="selected-tile-box" class="card-box">
+                    <p class="muted-hint">Klik på et hvilket som helst felt på kortet for at se terræn, bygge, opgradere eller sende soldater dertil.</p>
+                </div>
+            </section>
+
+            <!-- 2. Soldater ude på kortet (March & Vagt) -->
+            <section class="panel-section">
+                <div class="section-header">
+                    <h2>🪖 SOLDATER UDE PÅ KORTET</h2>
+                    <span id="deployed-summary-badge" class="badge badge-green">0 ude</span>
+                </div>
+                <div id="troops-list" class="card-box list-stack">
+                    <p class="muted-hint">Ingen soldater er sendt ud på kortet lige nu.</p>
+                </div>
+            </section>
+
+            <!-- 3. Dine Barrakker & Militærbygninger -->
+            <section class="panel-section">
+                <div class="section-header">
+                    <h2>🏰 DINE MILITÆRBYGNINGER</h2>
+                    <span id="buildings-summary-badge" class="badge">0 bygninger</span>
+                </div>
+                <div id="buildings-list" class="card-box list-stack">
+                    <p class="muted-hint">Ingen bygninger fundet endnu.</p>
+                </div>
+            </section>
+        </aside>
+    </div>
+
+    <!-- Modal: Send soldater af sted / Bekræft march -->
+    <div id="modal-overlay" class="modal-overlay hidden">
+        <div class="modal-box">
+            <h3 id="modal-title">Titel</h3>
+            <div id="modal-body" class="modal-body"></div>
+            <div id="modal-actions" class="modal-actions"></div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="game.js"></script>
+</body>
+</html>
