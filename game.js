@@ -10,7 +10,7 @@ const GAME_CONFIG = {
     TILE_SIZE_M: 30.0,
     REF_LAT_DEG: 56.0,
     SOLDIER_SECONDS_PER_TILE: 18,
-    INSTANT_SOLDIER_STEPS: 50,
+    INSTANT_SOLDIER_STEPS: 100,
     BUILDING_DEFENSE_PER_LEVEL: 2,
     BUILDINGS: {
         barracks: {
@@ -21,6 +21,7 @@ const GAME_CONFIG = {
             stages: ["Bivuak", "Teltlejr", "Barrak", "Kaserne", "Hovedkaserne"],
             sprites: ["barrak_1", "barrak_2", "barrak_3", "barrak_4", "barrak_5"],
             prices: [500, 600, 700, 800, 900],
+            materials: [{}, {}, {}, {}, {}],
             housing: [100, 250, 450, 700, 1000]
         },
         academy: {
@@ -30,31 +31,36 @@ const GAME_CONFIG = {
             desc: "Uddanner nye soldater over tid — og lader dig straks-uddanne soldater for skridt.",
             stages: ["Skydebane", "Træningslejr", "Rekrutskole", "Militærakademi", "Krigsskole"],
             sprites: ["skole_1", "skole_2", "skole_3", "skole_4", "skole_5"],
-            prices: [600, 1200, 2500, 5000, 10000],
+            prices: [300, 600, 1200, 2200, 4000],
+            materials: [{}, {}, {}, { steel: 15 }, { steel: 40 }],
             production: {
                 material: "soldiers",
-                per_hour: [1, 2, 4, 7, 12],
-                capacity: [5, 10, 20, 35, 60]
+                per_hour: [2, 5, 10, 18, 30],
+                capacity: [10, 25, 50, 90, 150]
             }
         }
     }
 };
 
 // ============================================================================
-// Grid-matematik (100% identisk med Grid.kt i Android-appen)
+// Grid-matematik (100% identisk med Grid.kt i Android-appen og tile_centre i SQL)
 // ============================================================================
-const METRES_PER_LAT_DEG = 111320.0;
+const EARTH_RADIUS_M = 6371008.8;
+const DEG_PER_RAD = 180.0 / Math.PI;
+const RAD_PER_DEG = Math.PI / 180.0;
+const MIN_COS = 1e-6;
+
 const Grid = {
     tileSizeM: GAME_CONFIG.TILE_SIZE_M,
     referenceLatDeg: GAME_CONFIG.REF_LAT_DEG,
-    metresPerLonDeg() {
-        return METRES_PER_LAT_DEG * Math.cos((this.referenceLatDeg * Math.PI) / 180.0);
+    referenceCos() {
+        return Math.max(Math.cos(this.referenceLatDeg * RAD_PER_DEG), MIN_COS);
     },
     tileLatDeg() {
-        return this.tileSizeM / METRES_PER_LAT_DEG;
+        return (this.tileSizeM / EARTH_RADIUS_M) * DEG_PER_RAD;
     },
     tileLonDeg() {
-        return this.tileSizeM / this.metresPerLonDeg();
+        return (this.tileSizeM / (EARTH_RADIUS_M * this.referenceCos())) * DEG_PER_RAD;
     },
     tileAt(latDeg, lonDeg) {
         return {
@@ -83,13 +89,10 @@ const Grid = {
         ];
     },
     distanceM(lat1, lon1, lat2, lon2) {
-        const R = 6371000.0;
-        const p1 = (lat1 * Math.PI) / 180.0;
-        const p2 = (lat2 * Math.PI) / 180.0;
-        const dp = ((lat2 - lat1) * Math.PI) / 180.0;
-        const dl = ((lon2 - lon1) * Math.PI) / 180.0;
-        const a = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
-        return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        const meanLat = ((lat1 + lat2) / 2.0) * RAD_PER_DEG;
+        const dx = (lon2 - lon1) * RAD_PER_DEG * EARTH_RADIUS_M * Math.cos(meanLat);
+        const dy = (lat2 - lat1) * RAD_PER_DEG * EARTH_RADIUS_M;
+        return Math.hypot(dx, dy);
     },
     key(tile) {
         return `${tile.x},${tile.y}`;
@@ -275,6 +278,29 @@ async function installPixelLandscape() {
     }
 }
 
+function buildingIconSizeExpression() {
+    // Bygnings-sprites er 56x56 px og indlæses med scale=4 -> 224x224 px.
+    // Ved breddegrad ~55.65° er 1 felt (30m) på MapLibre-kortet (512 px ved zoom 0):
+    // pxAtZoom0 = (tileLatDeg / cos(lat) / 360) * 512
+    const texPx = 56 * 4;
+    const latCos = Math.cos(55.65 * RAD_PER_DEG);
+    const tileDegInMercator = Grid.tileLatDeg() / latCos;
+    const pxAtZoom0 = (tileDegInMercator / 360.0) * 512.0;
+    const sizeAt = (z) => (pxAtZoom0 * Math.pow(2, z)) / texPx;
+
+    return [
+        "interpolate", ["exponential", 2], ["zoom"],
+        5, sizeAt(5),
+        10, sizeAt(10),
+        12, sizeAt(12),
+        14, sizeAt(14),
+        16, sizeAt(16),
+        18, sizeAt(18),
+        20, sizeAt(20),
+        22, sizeAt(22)
+    ];
+}
+
 function installGameLayers() {
     const empty = { type: "FeatureCollection", features: [] };
 
@@ -328,13 +354,10 @@ function installGameLayers() {
         source: "src-buildings",
         layout: {
             "icon-image": ["concat", "img-b-", ["get", "sprite"]],
-            "icon-size": [
-                "interpolate", ["exponential", 2], ["zoom"],
-                14, 0.22,
-                16, 0.45,
-                18, 1.15,
-                20, 2.4
-            ],
+            "icon-size": buildingIconSizeExpression(),
+            "icon-anchor": "center",
+            "icon-rotation-alignment": "map",
+            "icon-pitch-alignment": "map",
             "icon-allow-overlap": true,
             "icon-ignore-placement": true
         }
@@ -520,10 +543,25 @@ async function ensureTroopBadge(count) {
     }
 }
 
-function isWaterAt(lat, lon) {
-    if (!mapReady || !map.getLayer("land-water")) return false;
+function isPointOnScreen(lat, lon) {
+    if (!mapReady || !map) return false;
+    const canvas = map.getCanvas();
+    const w = canvas.clientWidth || canvas.width;
+    const h = canvas.clientHeight || canvas.height;
     const pt = map.project([lon, lat]);
-    const feats = map.queryRenderedFeatures(pt, { layers: ["land-water"] });
+    return pt.x >= 2 && pt.x <= w - 2 && pt.y >= 2 && pt.y <= h - 2;
+}
+
+function isWaterAt(lat, lon) {
+    if (!mapReady || !map) return false;
+    const pt = map.project([lon, lat]);
+    const layers = ["land-water", "water"].filter(l => map.getLayer(l));
+    if (layers.length === 0) return false;
+    const box = [
+        [pt.x - 1.5, pt.y - 1.5],
+        [pt.x + 1.5, pt.y + 1.5]
+    ];
+    const feats = map.queryRenderedFeatures(box, { layers });
     return feats && feats.length > 0;
 }
 
@@ -533,6 +571,7 @@ function terrainAtTile(tile) {
     const pt = map.project([lon, lat]);
     const order = [
         ["land-water", "water", "Vand (kræver båd/bro)"],
+        ["water", "water", "Vand (kræver båd/bro)"],
         ["land-sand", "sand", "Strand"],
         ["land-wood", "wood", "Skov"],
         ["land-grass", "grass", "Græs"],
@@ -549,18 +588,167 @@ function terrainAtTile(tile) {
     return { id: "ground", name: "Åbent land" };
 }
 
-function segmentCrossesWater(lat1, lon1, lat2, lon2, samples = 24) {
+function segmentCrossesWater(lat1, lon1, lat2, lon2, customSamples = null) {
+    if (!mapReady || !map) return false;
+    if (!isPointOnScreen(lat1, lon1) || !isPointOnScreen(lat2, lon2)) return true;
+    const pt1 = map.project([lon1, lat1]);
+    const pt2 = map.project([lon2, lat2]);
+    const pxDist = Math.hypot(pt2.x - pt1.x, pt2.y - pt1.y);
+    const samples = customSamples || Math.max(20, Math.min(360, Math.ceil(pxDist / 3)));
+
     for (let s = 1; s < samples; s++) {
         const t = s / samples;
-        if (isWaterAt(lat1 + (lat2 - lat1) * t, lon1 + (lon2 - lon1) * t)) return true;
+        const lat = lat1 + (lat2 - lat1) * t;
+        const lon = lon1 + (lon2 - lon1) * t;
+        if (isWaterAt(lat, lon)) return true;
     }
     return false;
 }
 
-function findLandPath(startLat, startLon, targetTile) {
+/**
+ * Strammer en rute op (String-Pulling + Kyst-stramning), så soldaterne går i
+ * snorlige linjer hen over græs, marker, skov og bygninger — og kun drejer
+ * ved vand (langs kysten/stranden) eller for at gå over en bro.
+ */
+function tightenPathAcrossLand(rawPts) {
+    if (!rawPts || rawPts.length <= 2) return rawPts;
+
+    function stringPull(pts) {
+        const out = [pts[0]];
+        let i = 0;
+        while (i < pts.length - 1) {
+            let next = i + 1;
+            for (let j = pts.length - 1; j >= i + 2; j--) {
+                if (!segmentCrossesWater(pts[i][0], pts[i][1], pts[j][0], pts[j][1])) {
+                    next = j;
+                    break;
+                }
+            }
+            out.push(pts[next]);
+            i = next;
+        }
+        return out;
+    }
+
+    // 1. Første grov-stramning hen over alt tørt land
+    let path = stringPull(rawPts);
+
+    // 2. Indsæt ekstra mellempunkter langs kyst-strækninger og træk hjørnerne helt ind til strandkanten
+    const refined = [path[0]];
+    for (let i = 0; i < path.length - 1; i++) {
+        const a = path[i], b = path[i + 1];
+        const d = Grid.distanceM(a[0], a[1], b[0], b[1]);
+        if (d > 1200 && i > 0 && i < path.length - 2) {
+            const steps = Math.min(6, Math.ceil(d / 1000));
+            for (let s = 1; s < steps; s++) {
+                const t = s / steps;
+                const mLat = a[0] + (b[0] - a[0]) * t;
+                const mLon = a[1] + (b[1] - a[1]) * t;
+                if (!isWaterAt(mLat, mLon)) refined.push([mLat, mLon]);
+            }
+        }
+        refined.push(b);
+    }
+    path = refined;
+
+    for (let iter = 0; iter < 5; iter++) {
+        for (let k = 1; k < path.length - 1; k++) {
+            const prev = path[k - 1];
+            const cur = path[k];
+            const next = path[k + 1];
+            const midLat = (prev[0] + next[0]) * 0.5;
+            const midLon = (prev[1] + next[1]) * 0.5;
+            const candLat = cur[0] * 0.6 + midLat * 0.4;
+            const candLon = cur[1] * 0.6 + midLon * 0.4;
+            if (
+                isPointOnScreen(candLat, candLon) &&
+                !isWaterAt(candLat, candLon) &&
+                !segmentCrossesWater(prev[0], prev[1], candLat, candLon) &&
+                !segmentCrossesWater(candLat, candLon, next[0], next[1])
+            ) {
+                path[k] = [candLat, candLon];
+            }
+        }
+        path = stringPull(path);
+    }
+
+    return path;
+}
+
+function waitForMapRender(timeoutMs = 450) {
+    return new Promise((resolve) => {
+        if (!map) return resolve();
+        let done = false;
+        const finish = () => {
+            if (done) return;
+            done = true;
+            setTimeout(resolve, 60);
+        };
+        map.once("idle", finish);
+        setTimeout(finish, timeoutMs);
+    });
+}
+
+async function ensureRouteInView(lat1, lon1, lat2, lon2) {
+    if (!mapReady || !map) return;
+    if (isPointOnScreen(lat1, lon1) && isPointOnScreen(lat2, lon2)) return;
+    const minLon = Math.min(lon1, lon2) - 0.02;
+    const maxLon = Math.max(lon1, lon2) + 0.02;
+    const minLat = Math.min(lat1, lat2) - 0.015;
+    const maxLat = Math.max(lat1, lat2) + 0.015;
+    map.fitBounds([[minLon, minLat], [maxLon, maxLat]], { padding: 80, duration: 0 });
+    await waitForMapRender(500);
+}
+
+function simplifyPolyline(pts, tolDeg = 0.00035) {
+    if (pts.length <= 2) return pts;
+    const sqTol = tolDeg * tolDeg;
+
+    function sqSegDist(p, a, b) {
+        let x = a[0], y = a[1];
+        let dx = b[0] - x, dy = b[1] - y;
+        if (dx !== 0 || dy !== 0) {
+            const t = ((p[0] - x) * dx + (p[1] - y) * dy) / (dx * dx + dy * dy);
+            if (t > 1) { x = b[0]; y = b[1]; }
+            else if (t > 0) { x += dx * t; y += dy * t; }
+        }
+        dx = p[0] - x;
+        dy = p[1] - y;
+        return dx * dx + dy * dy;
+    }
+
+    const keep = new Uint8Array(pts.length);
+    keep[0] = 1;
+    keep[pts.length - 1] = 1;
+    const stack = [[0, pts.length - 1]];
+
+    while (stack.length > 0) {
+        const [first, last] = stack.pop();
+        let maxSq = 0;
+        let idx = -1;
+        for (let i = first + 1; i < last; i++) {
+            const d = sqSegDist(pts[i], pts[first], pts[last]);
+            if (d > maxSq) {
+                maxSq = d;
+                idx = i;
+            }
+        }
+        if (maxSq > sqTol && idx !== -1) {
+            keep[idx] = 1;
+            stack.push([first, idx], [idx, last]);
+        }
+    }
+
+    return pts.filter((_, i) => keep[i] === 1);
+}
+
+// Lokal A*-fallback hvis man er offline
+function findLandPathLocal(startLat, startLon, targetTile) {
     const [endLat, endLon] = Grid.centreOf(targetTile);
     const direct = [[startLat, startLon], [endLat, endLon]];
-    if (!mapReady || !segmentCrossesWater(startLat, startLon, endLat, endLon, 26)) {
+    const distM = Grid.distanceM(startLat, startLon, endLat, endLon);
+    const samples = Math.max(30, Math.min(200, Math.ceil(distM / 20)));
+    if (!mapReady || !segmentCrossesWater(startLat, startLon, endLat, endLon, samples)) {
         return direct;
     }
 
@@ -571,7 +759,7 @@ function findLandPath(startLat, startLon, targetTile) {
     const minLon = Math.min(startLon, endLon) - spanLon * 0.45;
     const maxLon = Math.max(startLon, endLon) + spanLon * 0.45;
 
-    const rows = 40, cols = 40;
+    const rows = 56, cols = 56;
     const stepLat = (maxLat - minLat) / (rows - 1);
     const stepLon = (maxLon - minLon) / (cols - 1);
 
@@ -651,13 +839,15 @@ function findLandPath(startLat, startLon, targetTile) {
     const full = [[startLat, startLon], ...raw];
     if (endNode === goalIdx) full.push([endLat, endLon]);
 
-    // Glat ruten langs stranden
+    // Glat ruten langs stranden med tæt vand-tjek
     const smoothed = [full[0]];
     let i = 0;
     while (i < full.length - 1) {
         let next = i + 1;
         for (let j = full.length - 1; j >= i + 2; j--) {
-            if (!segmentCrossesWater(full[i][0], full[i][1], full[j][0], full[j][1], 14)) {
+            const segDist = Grid.distanceM(full[i][0], full[i][1], full[j][0], full[j][1]);
+            const segSamples = Math.max(20, Math.min(180, Math.ceil(segDist / 25)));
+            if (!segmentCrossesWater(full[i][0], full[i][1], full[j][0], full[j][1], segSamples)) {
                 next = j;
                 break;
             }
@@ -666,6 +856,76 @@ function findLandPath(startLat, startLon, targetTile) {
         i = next;
     }
     return smoothed;
+}
+
+/**
+ * Finder korteste rute på land fra [startLat, startLon] til [targetTile].
+ * - Soldaten går i snorlige linjer hen over græs, marker, skov og bygninger!
+ * - Ruten bøjer KUN af ved vand (langs kysten/stranden eller over en bro).
+ */
+async function findLandPathAsync(startLat, startLon, targetTile) {
+    const [endLat, endLon] = Grid.centreOf(targetTile);
+
+    // Sørg for at hele ruten er i kortets synsfelt, så vand-lagene er tegnet og kan aflæses
+    await ensureRouteInView(startLat, startLon, endLat, endLon);
+
+    // Hvis fugleflugtslinjen slet ikke krydser vand, går soldaten 100% lige over land/bygninger/græs!
+    if (!segmentCrossesWater(startLat, startLon, endLat, endLon)) {
+        return [[startLat, startLon], [endLat, endLon]];
+    }
+
+    try {
+        const url = `https://router.project-osrm.org/route/v1/foot/${startLon.toFixed(6)},${startLat.toFixed(6)};${endLon.toFixed(6)},${endLat.toFixed(6)}?overview=full&geometries=geojson`;
+        const resp = await fetch(url);
+        if (resp.ok) {
+            const json = await resp.json();
+            const coords = json?.routes?.[0]?.geometry?.coordinates;
+            if (Array.isArray(coords) && coords.length >= 2) {
+                const rawLatLon = coords.map(c => [c[1], c[0]]);
+                const base = [
+                    [startLat, startLon],
+                    ...simplifyPolyline(rawLatLon, 0.00018).slice(1, -1),
+                    [endLat, endLon]
+                ];
+                return tightenPathAcrossLand(base);
+            }
+        }
+    } catch (_) {}
+
+    return tightenPathAcrossLand(findLandPathLocal(startLat, startLon, targetTile));
+}
+
+let upgradingCoastalRoutes = false;
+async function ensureCoastalRoutes() {
+    if (!mapReady || upgradingCoastalRoutes || state.marches.length === 0) return;
+    const needsUpgrade = state.marches.filter(m => m.coastalVersion !== 2);
+    if (needsUpgrade.length === 0) return;
+
+    upgradingCoastalRoutes = true;
+    try {
+        let changed = false;
+        for (const m of needsUpgrade) {
+            m.coastalVersion = 2;
+            const [homeLat, homeLon] = Grid.centreOf({ x: m.homeX, y: m.homeY });
+            const newPath = await findLandPathAsync(homeLat, homeLon, { x: m.toX, y: m.toY });
+            if (newPath && newPath.length >= 2) {
+                const distM = pathDistanceM(newPath);
+                const durMs = Math.max(2000, Math.round((distM / Grid.tileSizeM) * GAME_CONFIG.SOLDIER_SECONDS_PER_TILE * 1000));
+                m.startLat = homeLat;
+                m.startLon = homeLon;
+                m.path = newPath;
+                m.arrivesAtMillis = m.startedAtMillis + durMs;
+                changed = true;
+            }
+        }
+        if (changed) {
+            saveLocalTroops();
+            renderTroopsSidebar();
+            renderTroopsOnMap();
+        }
+    } finally {
+        upgradingCoastalRoutes = false;
+    }
 }
 
 function pathDistanceM(path) {
@@ -777,14 +1037,37 @@ async function syncAllFromSupabase() {
     if (!state.user) return;
     const uid = state.user.id;
 
-    const [playerRes, matRes, myBldRes] = await Promise.all([
-        sb.from("players").select("balance").eq("id", uid).maybeSingle(),
+    const [cfgRes, balRes, matRes, myBldRes] = await Promise.all([
+        sb.from("config").select("key,value"),
+        sb.from("player_balance").select("balance").eq("player_id", uid).maybeSingle(),
         sb.from("player_materials").select("material,amount").eq("player_id", uid),
         sb.from("buildings").select("x,y,owner_id,kind,level,emptied_at").eq("owner_id", uid)
     ]);
 
-    if (playerRes.data) {
-        state.balance = playerRes.data.balance || 0;
+    if (cfgRes.data) {
+        for (const row of cfgRes.data) {
+            if (row.key === "grid" && row.value) {
+                if (row.value.tile_size_m) Grid.tileSizeM = Number(row.value.tile_size_m);
+                if (row.value.reference_lat) Grid.referenceLatDeg = Number(row.value.reference_lat);
+                if (mapReady && map.getLayer("lyr-buildings")) {
+                    map.setLayoutProperty("lyr-buildings", "icon-size", buildingIconSizeExpression());
+                }
+            }
+            if (row.key === "rules" && row.value) {
+                const r = row.value;
+                if (r.instant_soldier_steps) GAME_CONFIG.INSTANT_SOLDIER_STEPS = Number(r.instant_soldier_steps);
+                for (const [k, bcfg] of Object.entries(GAME_CONFIG.BUILDINGS)) {
+                    if (r.building_prices?.[k]) bcfg.prices = r.building_prices[k];
+                    if (r.building_housing?.[k]) bcfg.housing = r.building_housing[k];
+                    if (r.building_materials?.[k]) bcfg.materials = r.building_materials[k];
+                    if (r.building_production?.[k]) bcfg.production = r.building_production[k];
+                }
+            }
+        }
+    }
+
+    if (balRes.data && typeof balRes.data.balance === "number") {
+        state.balance = balRes.data.balance;
     }
     if (matRes.data) {
         const mapMat = {};
@@ -950,23 +1233,24 @@ function renderSelectedTileBox() {
 }
 
 // ============================================================================
-// Byg, Opgradér, Indkald & Straks-uddan via Supabase RPC
+// Byg, Opgradér, Indkald, Straks-uddan & Riv ned via Supabase RPC
 // ============================================================================
 async function buildOrUpgrade(kindId, x, y, terrainId) {
     const [lat, lon] = Grid.centreOf({ x, y });
-    const { data, error } = await sb.rpc("build_building", {
+    const serverTerrain = terrainId === "water" ? "water" : "ground";
+    const { data, error } = await sb.rpc("build", {
+        p_kind: kindId,
         p_x: x,
         p_y: y,
-        p_kind: kindId,
-        p_terrain: terrainId,
         p_lat: lat,
-        p_lon: lon
+        p_lon: lon,
+        p_terrain: serverTerrain
     });
     if (error) {
         showToast("Kunne ikke bygge: " + error.message);
         return;
     }
-    showToast(`Bygning opført/opgraderet til trin ${data.level}!`);
+    showToast(`Bygning opført/opgraderet til trin ${data?.level ?? ""}!`);
     await syncAllFromSupabase();
 }
 
@@ -976,18 +1260,18 @@ async function collectFromBuilding(x, y) {
         return;
     }
     const [lat, lon] = Grid.centreOf({ x, y });
-    const { data, error } = await sb.rpc("empty_building", {
+    const { data, error } = await sb.rpc("collect", {
         p_x: x,
         p_y: y,
         p_lat: lat,
         p_lon: lon,
-        p_remote: false
+        p_remote: true
     });
     if (error) {
         showToast("Kunne ikke indkalde: " + error.message);
         return;
     }
-    showToast(`+${data.amount} soldater føjet til din barrak!`);
+    showToast(`+${data?.amount ?? 0} soldater føjet til din barrak!`);
     await syncAllFromSupabase();
 }
 
@@ -1000,14 +1284,12 @@ async function recruitSoldierInstant() {
         showToast(`Du mangler skridt (${GAME_CONFIG.INSTANT_SOLDIER_STEPS} skridt kræves).`);
         return;
     }
-    const { data, error } = await sb.rpc("recruit_soldier_now", {
-        p_cost: GAME_CONFIG.INSTANT_SOLDIER_STEPS
-    });
-    if (!error && typeof data === "number") {
+    const { data, error } = await sb.rpc("recruit_soldier");
+    if (!error && data) {
         showToast(`+1 Soldat uddannet straks! (${GAME_CONFIG.INSTANT_SOLDIER_STEPS} skridt)`);
         await syncAllFromSupabase();
     } else {
-        showToast("Kunne ikke straks-uddanne: " + (error?.message || "Tjek om databasen har recruit_soldier_now"));
+        showToast("Kunne ikke straks-uddanne: " + (error?.message || "Ukendt fejl"));
     }
 }
 
@@ -1176,7 +1458,7 @@ function exitMarchTargetMode() {
     document.getElementById("march-target-banner").classList.add("hidden");
 }
 
-function openConfirmMarchModal(order, targetTile) {
+async function openConfirmMarchModal(order, targetTile) {
     const now = Date.now();
     let startPos;
     if (order.redirectMarchId) {
@@ -1186,7 +1468,7 @@ function openConfirmMarchModal(order, targetTile) {
         startPos = Grid.centreOf(order.fromTile);
     }
 
-    const landPath = findLandPath(startPos[0], startPos[1], targetTile);
+    const landPath = await findLandPathAsync(startPos[0], startPos[1], targetTile);
     const distM = Math.round(pathDistanceM(landPath));
     const tilesCount = Math.max(1, Math.round(distM / Grid.tileSizeM));
     const durationSec = Math.max(2, Math.round(tilesCount * GAME_CONFIG.SOLDIER_SECONDS_PER_TILE));
@@ -1227,6 +1509,7 @@ function executeMarchOrder(order, targetTile, landPath, durationMs) {
             m.startedAtMillis = now;
             m.arrivesAtMillis = now + durationMs;
             m.path = landPath;
+            m.coastalVersion = 2;
             saveLocalTroops();
             renderTroopsSidebar();
             renderTroopsOnMap();
@@ -1255,7 +1538,8 @@ function executeMarchOrder(order, targetTile, landPath, durationMs) {
         toY: targetTile.y,
         startedAtMillis: now,
         arrivesAtMillis: now + durationMs,
-        path: landPath
+        path: landPath,
+        coastalVersion: 2
     };
 
     state.marches.push(march);
@@ -1278,13 +1562,13 @@ window.startRedirectMarch = function(marchId) {
     showToast("Klik på det nye målfelt på kortet!");
 };
 
-window.recallMarch = function(marchId) {
+window.recallMarch = async function(marchId) {
     const m = state.marches.find(x => x.id === marchId);
     if (!m) return;
     const now = Date.now();
     const cur = marchCurrentPos(m, now);
     const homeTile = { x: m.homeX, y: m.homeY };
-    const homePath = findLandPath(cur[0], cur[1], homeTile);
+    const homePath = await findLandPathAsync(cur[0], cur[1], homeTile);
     const distM = pathDistanceM(homePath);
     const durMs = Math.max(2000, Math.round((distM / Grid.tileSizeM) * GAME_CONFIG.SOLDIER_SECONDS_PER_TILE * 1000));
 
@@ -1295,6 +1579,7 @@ window.recallMarch = function(marchId) {
     m.startedAtMillis = now;
     m.arrivesAtMillis = now + durMs;
     m.path = homePath;
+    m.coastalVersion = 2;
     saveLocalTroops();
     renderTroopsSidebar();
     renderTroopsOnMap();
@@ -1316,6 +1601,7 @@ window.jumpToMarch = function(marchId) {
 };
 
 async function tickMarches() {
+    await ensureCoastalRoutes();
     const now = Date.now();
     const arrived = state.marches.filter(m => now >= m.arrivesAtMillis);
     if (arrived.length > 0) {
@@ -1349,11 +1635,15 @@ async function resolveArrival(m) {
     }
 
     try {
-        await sb.rpc("capture_tile_by_soldiers", { p_x: m.toX, p_y: m.toY, p_casualties: 0 });
+        const { error } = await sb.rpc("capture_tile_by_soldiers", { p_x: m.toX, p_y: m.toY, p_casualties: 0 });
+        if (error) {
+            const [lat, lon] = Grid.centreOf({ x: m.toX, y: m.toY });
+            await sb.rpc("claim_tile", { p_x: m.toX, p_y: m.toY, p_lat: lat, p_lon: lon });
+        }
     } catch (_) {}
 
     showToast(`Dine ${m.count} soldater har indtaget felt ${m.toX},${m.toY} og står nu vagt!`);
-    await refreshViewportData();
+    await syncAllFromSupabase();
 }
 
 // ============================================================================
