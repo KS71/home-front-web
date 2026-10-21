@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 18;
+const APP_VERSION = 19;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -1322,12 +1322,23 @@ function renderPointBox(lat, lon, box, badge) {
         `;
     }
 
-    html += garrisonRowsHtml(garrisonsNear(state.garrisons, lat, lon));
-
+    // Har man klikket på soldater, handler panelet om dem — ikke om at bygge.
+    const ownGuards = garrisonsNear(state.garrisons, lat, lon);
     const enemyGuards = garrisonsNear(state.enemies.garrisons, lat, lon);
-    if (enemyGuards.length > 0) {
-        const n = enemyGuards.reduce((sum, g) => sum + g.count, 0);
-        html += `<p class="muted-hint"><strong>Fjender her:</strong> ${n} vagter. Send mindst <strong>${n + 1}</strong> soldater for at slå dem.</p>`;
+    if (ownGuards.length > 0 || enemyGuards.length > 0) {
+        setSelectedShape(null);
+        badge.textContent = ownGuards.length > 0 ? "Dine soldater" : "Fjendtlige soldater";
+        html = garrisonRowsHtml(ownGuards);
+        if (enemyGuards.length > 0) {
+            const n = enemyGuards.reduce((sum, g) => sum + g.count, 0);
+            const g = enemyGuards[0];
+            html += `
+                <p class="muted-hint"><strong>Fjender her:</strong> ${n} vagter. Send mindst <strong>${n + 1}</strong> soldater for at slå dem.</p>
+                <div class="item-actions"><button class="btn btn-small btn-danger" onclick="sendSoldiersTo(${g.lat}, ${g.lon})">⚔️ Angrib</button></div>
+            `;
+        }
+        box.innerHTML = html;
+        return;
     }
 
     // Byggeskitse: en firkant på stedet, grøn hvis du må bygge her, rød hvis ikke.
