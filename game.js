@@ -1702,14 +1702,13 @@ async function openConfirmMarchModal(order, targetTile) {
 
     const landPath = await findLandPathAsync(startPos[0], startPos[1], targetTile);
     const distM = Math.round(pathDistanceM(landPath));
-    const tilesCount = Math.max(1, Math.round(distM / Grid.tileSizeM));
     const durationSec = Math.max(2, Math.round(distM / GAME_CONFIG.SOLDIER_SPEED_MPS));
 
     const overlay = document.getElementById("modal-overlay");
     document.getElementById("modal-title").textContent = `Send ${order.count} soldater af sted?`;
     document.getElementById("modal-body").innerHTML = `
         <p><strong>Mål:</strong> Felt ${targetTile.x},${targetTile.y}</p>
-        <p><strong>Afstand langs land/kyst:</strong> ca. ${distM.toLocaleString("da-DK")} m (${tilesCount} felter)</p>
+        <p><strong>Afstand langs land/kyst:</strong> ca. ${formatDistance(distM)}</p>
         <p><strong>Rejsetid:</strong> ${formatSeconds(durationSec)}</p>
         <p style="color:#90A4AE;font-size:13px;">Er du sikker på, at du vil sende soldaterne hertil?</p>
     `;
