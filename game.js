@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 19;
+const APP_VERSION = 20;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -133,6 +133,7 @@ const state = {
     myBuildings: [],       // Alle spillerens egne bygninger { id, owner_id, kind, level, lat, lon, emptied_at }
     visibleBuildings: [],  // Egne + fjendtlige bygninger, du kan se
     selected: null,        // Det valgte sted på kortet { lat, lon, buildingId }
+    highlight: { garrisons: new Set(), marches: new Set() }, // valgte soldater, lyser op i listen
     pendingMarchOrder: null, // { from: { type, id, lat, lon }, count, redirectMarchId }
     marches: [],           // Egne marcher fra serveren (se marchFromRow)
     garrisons: [],         // Egne vagtstyrker fra serveren { id, owner_id, lat, lon, count }
@@ -1182,7 +1183,32 @@ function onMapClicked(lat, lon) {
 function selectPoint(lat, lon) {
     const bld = buildingAt(lat, lon);
     state.selected = { lat, lon, buildingId: bld ? bld.id : null };
+    highlightTroopsAt(lat, lon);
     renderSelectedBox();
+}
+
+// Egne delinger på march, man har klikket på (deres ikon står oven over positionen).
+function marchesNear(lat, lon) {
+    if (!mapReady) return [];
+    const pt = map.project([lon, lat]);
+    const now = Date.now();
+    return state.marches.filter(m => {
+        if (m.count <= 0) return false;
+        const [mLat, mLon] = marchCurrentPos(m, now);
+        const mp = map.project([mLon, mLat]);
+        return Math.hypot(mp.x - pt.x, mp.y - (pt.y + 20)) <= 28;
+    });
+}
+
+// Får de soldater, man har klikket på, til at lyse op i listen "Soldater ude på kortet".
+function highlightTroopsAt(lat, lon) {
+    const garrisons = garrisonsNear(state.garrisons, lat, lon).map(g => String(g.id));
+    const marches = marchesNear(lat, lon).map(m => String(m.id));
+    state.highlight = { garrisons: new Set(garrisons), marches: new Set(marches) };
+    renderTroopsSidebar();
+    if (garrisons.length + marches.length === 0) return;
+    openSidebarSection("troops");
+    document.querySelector("#troops-list .item-row-selected")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 
 function buildingLabel(b) {
@@ -1324,11 +1350,26 @@ function renderPointBox(lat, lon, box, badge) {
 
     // Har man klikket på soldater, handler panelet om dem — ikke om at bygge.
     const ownGuards = garrisonsNear(state.garrisons, lat, lon);
+    const ownMarches = marchesNear(lat, lon);
     const enemyGuards = garrisonsNear(state.enemies.garrisons, lat, lon);
-    if (ownGuards.length > 0 || enemyGuards.length > 0) {
+    if (ownGuards.length > 0 || ownMarches.length > 0 || enemyGuards.length > 0) {
         setSelectedShape(null);
-        badge.textContent = ownGuards.length > 0 ? "Dine soldater" : "Fjendtlige soldater";
-        html = garrisonRowsHtml(ownGuards);
+        badge.textContent = ownGuards.length + ownMarches.length > 0 ? "Dine soldater" : "Fjendtlige soldater";
+        html = garrisonRowsHtml(ownGuards) + ownMarches.map(m => `
+            <div class="item-row" style="margin-top:8px;">
+                <div class="item-row-top">
+                    <img src="assets/tropper.png" class="pixel-img item-sprite" />
+                    <div class="item-info">
+                        <div class="item-title item-title-green">${m.count} soldater på march</div>
+                        <div class="item-sub">${marchEtaText(m)}</div>
+                    </div>
+                </div>
+                <div class="item-actions">
+                    <button class="btn btn-small btn-primary" onclick="startRedirectMarch('${m.id}')">🧭 Nyt mål</button>
+                    <button class="btn btn-small btn-danger" onclick="recallMarch('${m.id}')">🏠 Kald hjem</button>
+                </div>
+            </div>
+        `).join("");
         if (enemyGuards.length > 0) {
             const n = enemyGuards.reduce((sum, g) => sum + g.count, 0);
             const g = enemyGuards[0];
@@ -1653,7 +1694,7 @@ function renderTroopsSidebar() {
         const prog = Math.max(2, Math.min(100, ((now - m.startedAtMillis) / totalMs) * 100));
 
         html += `
-            <div class="item-row" data-march-id="${m.id}">
+            <div class="item-row${state.highlight.marches.has(String(m.id)) ? " item-row-selected" : ""}" data-march-id="${m.id}">
                 <div class="item-row-top">
                     <img src="assets/tropper.png" class="pixel-img item-sprite" />
                     <div class="item-info">
@@ -1678,7 +1719,7 @@ function renderTroopsSidebar() {
         const where = home && home.d < 60 ? `Står vagt ved din ${buildingLabel(home.b).toLowerCase()}`
             : home ? `Står vagt ${formatDistance(home.d)} fra din nærmeste bygning` : "Står vagt";
         html += `
-            <div class="item-row">
+            <div class="item-row${state.highlight.garrisons.has(String(g.id)) ? " item-row-selected" : ""}" data-garrison-id="${g.id}">
                 <div class="item-row-top">
                     <img src="assets/tropper.png" class="pixel-img item-sprite" />
                     <div class="item-info">

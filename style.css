@@ -276,6 +276,12 @@ body, html {
     gap: 8px;
 }
 
+/* Soldater, man har klikket på ude på kortet */
+.item-row.item-row-selected {
+    border-color: #39FF14;
+    box-shadow: 0 0 0 1px #39FF14, 0 0 14px rgba(57, 255, 20, 0.35);
+}
+
 .item-row-top {
     display: flex;
     align-items: center;
