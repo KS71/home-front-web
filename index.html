@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>HOME FRONT — Command Center</title>
     <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
-    <link rel="stylesheet" href="style.css?v=15" />
+    <link rel="stylesheet" href="style.css?v=17" />
 </head>
 <body>
     <!-- Login / Titelskærm Overlay -->
@@ -18,6 +18,7 @@
                     <img src="assets/titel_emblem.png" alt="Emblem" class="pixel-img emblem-img" />
                     <h1>HOME FRONT</h1>
                     <p class="subtitle">DEFEND YOUR NEIGHBORHOOD · COMMAND CENTER</p>
+                    <p class="app-version" data-app-version>version …</p>
                 </div>
             </div>
             <div class="auth-body">
@@ -54,6 +55,7 @@
                 <div class="hud-brand">
                     <img src="assets/titel_emblem.png" alt="" class="pixel-img hud-emblem" />
                     <span>HOME FRONT</span>
+                    <span class="app-version-badge" data-app-version title="Hjemmesidens versionsnummer">v…</span>
                 </div>
                 <div class="hud-stats">
                     <div class="stat-pill" title="Dine optjente skridt (valuta)">
@@ -109,8 +111,8 @@
             </section>
 
             <!-- 2. Bogmærker fra telefonen -->
-            <section class="panel-section">
-                <div class="section-header">
+            <section class="panel-section collapsible" data-section="bookmarks">
+                <div class="section-header" role="button" tabindex="0" aria-expanded="false">
                     <h2>📌 BOGMÆRKER FRA TELEFONEN</h2>
                     <span id="bookmarks-summary-badge" class="badge">0 gemt</span>
                 </div>
@@ -120,8 +122,8 @@
             </section>
 
             <!-- 3. Fjender i sigte lige nu (telefonen + egne soldater) -->
-            <section class="panel-section">
-                <div class="section-header">
+            <section class="panel-section collapsible" data-section="contacts">
+                <div class="section-header" role="button" tabindex="0" aria-expanded="false">
                     <h2>👁️ FJENDER I SIGTE</h2>
                     <span id="contacts-summary-badge" class="badge">0 set</span>
                 </div>
@@ -131,8 +133,8 @@
             </section>
 
             <!-- 4. Soldater ude på kortet (March & Vagt) -->
-            <section class="panel-section">
-                <div class="section-header">
+            <section class="panel-section collapsible" data-section="troops">
+                <div class="section-header" role="button" tabindex="0" aria-expanded="false">
                     <h2>🪖 SOLDATER UDE PÅ KORTET</h2>
                     <span id="deployed-summary-badge" class="badge badge-green">0 ude</span>
                 </div>
@@ -142,8 +144,8 @@
             </section>
 
             <!-- 5. Dine Barrakker & Militærbygninger -->
-            <section class="panel-section">
-                <div class="section-header">
+            <section class="panel-section collapsible" data-section="buildings">
+                <div class="section-header" role="button" tabindex="0" aria-expanded="false">
                     <h2>🏰 DINE MILITÆRBYGNINGER</h2>
                     <span id="buildings-summary-badge" class="badge">0 bygninger</span>
                 </div>
@@ -165,6 +167,6 @@
 
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="game.js?v=15"></script>
+    <script src="game.js?v=17"></script>
 </body>
 </html>

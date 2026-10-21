@@ -2,6 +2,9 @@
 // HOME FRONT — Command Center (PC Browser-udgave koblet på Supabase)
 // ============================================================================
 
+// Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
+const APP_VERSION = 17;
+
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
 const STYLE_URL = "https://tiles.openfreemap.org/styles/positron";
@@ -2224,6 +2227,57 @@ document.getElementById("btn-jump-home").onclick = () => {
 };
 
 // Start kortet og 1-sekunds march-løkke
+// ============================================================================
+// Sammenfoldelige sektioner i sidepanelet (én åben ad gangen, huskes i browseren)
+// ============================================================================
+const OPEN_SECTION_KEY = "hf_open_section";
+
+function openSidebarSection(key) {
+    document.querySelectorAll(".panel-section.collapsible").forEach(sec => {
+        const open = sec.dataset.section === key;
+        sec.classList.toggle("collapsed", !open);
+        sec.querySelector(".section-header")?.setAttribute("aria-expanded", String(open));
+    });
+    try { localStorage.setItem(OPEN_SECTION_KEY, key || ""); } catch (_) {}
+}
+
+function initCollapsibleSections() {
+    document.querySelectorAll(".panel-section.collapsible").forEach(sec => {
+        const header = sec.querySelector(".section-header");
+        const toggle = () => openSidebarSection(sec.classList.contains("collapsed") ? sec.dataset.section : null);
+        header.addEventListener("click", toggle);
+        header.addEventListener("keydown", e => {
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+        });
+    });
+    let saved = "troops";
+    try { saved = localStorage.getItem(OPEN_SECTION_KEY) ?? "troops"; } catch (_) {}
+    openSidebarSection(saved);
+}
+
+// ============================================================================
+// Synligt versionsnummer
+// ============================================================================
+// Viser APP_VERSION fra den game.js, browseren faktisk kører. Peger index.html på et andet
+// nummer, er en af filerne en gammel udgave fra browserens lager — så bliver mærket orange.
+function showAppVersion() {
+    const src = document.querySelector('script[src*="game.js"]')?.getAttribute("src") || "";
+    const pageVersion = Number(new URL(src, location.href).searchParams.get("v"));
+    const stale = pageVersion && pageVersion !== APP_VERSION;
+    document.querySelectorAll("[data-app-version]").forEach(el => {
+        const short = el.classList.contains("app-version-badge");
+        el.textContent = short ? `v${APP_VERSION}` : `version ${APP_VERSION}`;
+        if (stale && short) {
+            el.classList.add("stale");
+            el.textContent = `v${APP_VERSION} · genindlæs`;
+            el.title = `Siden er version ${pageVersion}, men spillet kører version ${APP_VERSION}. Klik for at genindlæse.`;
+            el.onclick = () => location.reload();
+        }
+    });
+}
+
+showAppVersion();
+initCollapsibleSections();
 initMap();
 checkAuthSession();
 setInterval(() => {

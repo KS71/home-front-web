@@ -173,6 +173,64 @@ body, html {
     font-weight: 700;
 }
 
+/* Sammenfoldelige sektioner i sidepanelet: kun én er foldet ud ad gangen. */
+.panel-section.collapsible .section-header {
+    cursor: pointer;
+    user-select: none;
+    padding: 6px 8px;
+    margin: 0 -8px;
+    border-radius: 6px;
+}
+
+.panel-section.collapsible .section-header:hover,
+.panel-section.collapsible .section-header:focus-visible {
+    background: #1C252E;
+    outline: none;
+}
+
+.panel-section.collapsible .section-header h2::before {
+    content: "▸";
+    display: inline-block;
+    width: 1em;
+    transition: transform 0.15s ease;
+}
+
+.panel-section.collapsible:not(.collapsed) .section-header h2::before {
+    transform: rotate(90deg);
+}
+
+.panel-section.collapsible.collapsed > .card-box {
+    display: none;
+}
+
+/* Synligt versionsnummer, så man kan se om den nyeste udgave er hentet. */
+.app-version {
+    margin-top: 6px;
+    font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    color: #90A4AE;
+    letter-spacing: 0.05em;
+}
+
+.app-version-badge {
+    font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: #90A4AE;
+    background: #1C252E;
+    border: 1px solid #2C3A47;
+    border-radius: 99px;
+    padding: 2px 7px;
+}
+
+.app-version-badge.stale {
+    color: #11161C;
+    background: #FFA000;
+    border-color: #FFA000;
+    cursor: pointer;
+}
+
 .badge {
     font-size: 11px;
     font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
