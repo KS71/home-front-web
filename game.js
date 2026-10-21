@@ -12,6 +12,9 @@ const GAME_CONFIG = {
     SOLDIER_SECONDS_PER_TILE: 18,
     INSTANT_SOLDIER_STEPS: 100,
     BUILDING_DEFENSE_PER_LEVEL: 2,
+    BUILD_RADIUS_M: 100,
+    VISION_RADIUS_M: 500,
+    SCOUT_POLL_MS: 30000,
     BUILDINGS: {
         barracks: {
             id: "barracks",
@@ -116,6 +119,8 @@ const state = {
     pendingMarchOrder: null, // { fromTile, count, fromGarrison, redirectMarchId }
     marches: [],           // Gemmes i localStorage + synkroniseres
     garrisons: [],
+    bookmarks: [],         // { x, y, purpose: "build" | "target", note } — sat med telefonen på stedet
+    scoutAlerts: [],       // { x, y, kind, scouts } — grove advarsler om fjendtlige spejdere
     hasCenteredOnce: false
 };
 
@@ -179,6 +184,7 @@ function initMap() {
         await installPixelLandscape();
         installGameLayers();
         mapReady = true;
+        renderBookmarksOnMap();
         refreshViewportData();
         renderTroopsOnMap();
     });
@@ -311,6 +317,7 @@ function installGameLayers() {
     map.addSource("src-buildings", { type: "geojson", data: empty });
     map.addSource("src-march-lines", { type: "geojson", data: empty });
     map.addSource("src-troops", { type: "geojson", data: empty });
+    map.addSource("src-bookmarks", { type: "geojson", data: empty });
 
     map.addLayer({
         id: "lyr-mine-fill",
@@ -341,6 +348,16 @@ function installGameLayers() {
         type: "line",
         source: "src-others",
         paint: { "line-color": "#FF2E88", "line-width": 2.5 }
+    });
+    map.addLayer({
+        id: "lyr-bookmarks",
+        type: "line",
+        source: "src-bookmarks",
+        paint: {
+            "line-color": ["match", ["get", "purpose"], "build", "#FFD54F", "#FF5252"],
+            "line-width": 2.5,
+            "line-dasharray": [1.5, 1]
+        }
     });
     map.addLayer({
         id: "lyr-selected",
@@ -1037,11 +1054,12 @@ async function syncAllFromSupabase() {
     if (!state.user) return;
     const uid = state.user.id;
 
-    const [cfgRes, balRes, matRes, myBldRes] = await Promise.all([
+    const [cfgRes, balRes, matRes, myBldRes, bmRes] = await Promise.all([
         sb.from("config").select("key,value"),
         sb.from("player_balance").select("balance").eq("player_id", uid).maybeSingle(),
         sb.from("player_materials").select("material,amount").eq("player_id", uid),
-        sb.from("buildings").select("x,y,owner_id,kind,level,emptied_at").eq("owner_id", uid)
+        sb.from("buildings").select("x,y,owner_id,kind,level,emptied_at").eq("owner_id", uid),
+        sb.from("bookmarks").select("x,y,purpose,note,created_at").order("created_at", { ascending: false })
     ]);
 
     if (cfgRes.data) {
@@ -1056,6 +1074,8 @@ async function syncAllFromSupabase() {
             if (row.key === "rules" && row.value) {
                 const r = row.value;
                 if (r.instant_soldier_steps) GAME_CONFIG.INSTANT_SOLDIER_STEPS = Number(r.instant_soldier_steps);
+                if (r.reach_m) GAME_CONFIG.BUILD_RADIUS_M = Number(r.reach_m);
+                if (r.vision_m) GAME_CONFIG.VISION_RADIUS_M = Number(r.vision_m);
                 for (const [k, bcfg] of Object.entries(GAME_CONFIG.BUILDINGS)) {
                     if (r.building_prices?.[k]) bcfg.prices = r.building_prices[k];
                     if (r.building_housing?.[k]) bcfg.housing = r.building_housing[k];
@@ -1085,10 +1105,32 @@ async function syncAllFromSupabase() {
         }
     }
 
+    if (bmRes.data) {
+        state.bookmarks = bmRes.data;
+        renderBookmarksOnMap();
+    }
+
     updateHud();
     renderBuildingsSidebar();
     renderTroopsSidebar();
+    renderBookmarksSidebar();
     await refreshViewportData();
+}
+
+function bookmarkAt(x, y) {
+    return state.bookmarks.find(b => b.x === x && b.y === y) || null;
+}
+
+function renderBookmarksOnMap() {
+    if (!mapReady) return;
+    map.getSource("src-bookmarks")?.setData({
+        type: "FeatureCollection",
+        features: state.bookmarks.map(b => ({
+            type: "Feature",
+            properties: { purpose: b.purpose },
+            geometry: { type: "Polygon", coordinates: [Grid.cornersOf(b)] }
+        }))
+    });
 }
 
 function updateHud() {
@@ -1150,6 +1192,7 @@ function renderSelectedTileBox() {
         || state.visibleBuildings.find(b => b.x === tile.x && b.y === tile.y);
     const gar = state.garrisons.find(g => g.x === tile.x && g.y === tile.y && g.count > 0);
     const isMine = tileOwner === uid || (bld && bld.owner_id === uid);
+    const bm = bookmarkAt(tile.x, tile.y);
 
     let ownerBadge = `<span class="badge">Neutralt felt</span>`;
     if (isMine) ownerBadge = `<span class="badge badge-green">Dit territorium</span>`;
@@ -1161,6 +1204,15 @@ function renderSelectedTileBox() {
             ${ownerBadge}
         </div>
     `;
+
+    if (bm) {
+        html += `
+            <div class="bookmark-chip bookmark-${bm.purpose}">
+                <span>📌 Bogmærket som <strong>${bm.purpose === "build" ? "byggeplads" : "mål"}</strong>${bm.note ? ` · ${escapeHtml(bm.note)}` : ""}</span>
+                <button class="btn btn-small btn-muted" onclick="deleteBookmark(${tile.x}, ${tile.y})">Fjern</button>
+            </div>
+        `;
+    }
 
     if (gar) {
         html += `
@@ -1206,30 +1258,146 @@ function renderSelectedTileBox() {
                 </div>
             </div>
         `;
-    } else if (!bld && isMine && terr.id !== "water") {
-        html += `<div class="muted-hint" style="margin-bottom:8px;">Dette felt er dit! Du kan opføre en ny bygning her fra Kommandocentralen:</div>`;
-        for (const cfg of Object.values(GAME_CONFIG.BUILDINGS)) {
-            const p = cfg.prices[0];
-            html += `
-                <div class="item-row" style="margin-bottom:6px;">
-                    <div class="item-row-top">
-                        <img src="assets/${cfg.sprites[0]}.png" class="pixel-img item-sprite" />
-                        <div class="item-info">
-                            <div class="item-title">${cfg.name} (${cfg.stages[0]})</div>
-                            <div class="item-sub">${cfg.desc}</div>
-                        </div>
-                    </div>
-                    <div class="item-actions">
-                        <button class="btn btn-small btn-primary" onclick="buildOrUpgrade('${cfg.id}', ${tile.x}, ${tile.y}, '${terr.id}')">🔨 Byg Trin 1 (${p} skridt)</button>
-                    </div>
-                </div>
-            `;
+    } else if (!bld && !tileOwner || (!bld && isMine)) {
+        if (bm?.purpose === "build") {
+            html += `<div class="muted-hint" style="margin-bottom:8px;">Du har stået her med telefonen, så du kan bygge her hjemmefra:</div>`;
+            html += buildChoicesHtml(tile, terr);
+        } else {
+            html += `<p class="muted-hint">${isMine ? "Dette felt er dit, men" : "Tomt felt —"} nye bygninger kræver et <strong>byggepladsbogmærke</strong>: gå hen til feltet med telefonen (inden for ${GAME_CONFIG.BUILD_RADIUS_M} m) og bogmærk det. Soldater kan du sende hertil når som helst.</p>`;
+        }
+        if (!isMine) {
+            html += `<p class="muted-hint fog-hint">Fjender er skjulte. Feltet kan godt tilhøre en fjende, medmindre din telefon er inden for ${GAME_CONFIG.VISION_RADIUS_M} m.</p>`;
         }
     } else if (!isMine) {
-        html += `<p class="muted-hint">For at bygge her skal du enten gå hen til feltet med din telefon og sætte et flag, eller sende dine soldater på march hertil for at indtage feltet!</p>`;
+        html += `<p class="muted-hint">Fjendtligt felt — du kan se det, fordi din telefon er inden for ${GAME_CONFIG.VISION_RADIUS_M} m. Det forsvinder igen, når du går, så bogmærk det med telefonen, hvis du vil huske det.</p>`;
+    }
+
+    if (!(bld && isMine) && terr.id !== "water") {
+        html += `<div class="item-actions" style="margin-top:8px;"><button class="btn btn-small btn-primary" onclick="sendSoldiersTo(${tile.x}, ${tile.y})">🪖 Send soldater hertil</button></div>`;
     }
 
     box.innerHTML = html;
+}
+
+function buildChoicesHtml(tile, terr) {
+    let html = "";
+    for (const cfg of Object.values(GAME_CONFIG.BUILDINGS)) {
+        const p = cfg.prices[0];
+        html += `
+            <div class="item-row" style="margin-bottom:6px;">
+                <div class="item-row-top">
+                    <img src="assets/${cfg.sprites[0]}.png" class="pixel-img item-sprite" />
+                    <div class="item-info">
+                        <div class="item-title">${cfg.name} (${cfg.stages[0]})</div>
+                        <div class="item-sub">${cfg.desc}</div>
+                    </div>
+                </div>
+                <div class="item-actions">
+                    <button class="btn btn-small btn-primary" onclick="buildOrUpgrade('${cfg.id}', ${tile.x}, ${tile.y}, '${terr.id}')">🔨 Byg Trin 1 (${p} skridt)</button>
+                </div>
+            </div>
+        `;
+    }
+    return html;
+}
+
+function escapeHtml(text) {
+    return String(text).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// ============================================================================
+// Bogmærker (sat med telefonen) & Spejder-advarsler
+// ============================================================================
+function renderBookmarksSidebar() {
+    const list = document.getElementById("bookmarks-list");
+    const badge = document.getElementById("bookmarks-summary-badge");
+    if (!list) return;
+    badge.textContent = `${state.bookmarks.length} gemt`;
+
+    if (state.bookmarks.length === 0) {
+        list.innerHTML = `<p class="muted-hint">Ingen bogmærker endnu. Tag telefonen med ud, tryk på et felt og gem det som <strong>byggeplads</strong> (så kan du bygge der herfra) eller som <strong>mål</strong> for dine soldater.</p>`;
+        return;
+    }
+
+    list.innerHTML = state.bookmarks.map(b => {
+        const isBuild = b.purpose === "build";
+        const built = state.myBuildings.some(mb => mb.x === b.x && mb.y === b.y);
+        return `
+            <div class="item-row">
+                <div class="item-row-top">
+                    <div class="bookmark-icon bookmark-${b.purpose}">${isBuild ? "🔨" : "🎯"}</div>
+                    <div class="item-info">
+                        <div class="item-title">${isBuild ? "Byggeplads" : "Mål"} · felt ${b.x},${b.y}</div>
+                        <div class="item-sub">${b.note ? escapeHtml(b.note) + " · " : ""}Gemt ${new Date(b.created_at).toLocaleDateString("da-DK")}${built ? " · bebygget" : ""}</div>
+                    </div>
+                </div>
+                <div class="item-actions">
+                    <button class="btn btn-small" onclick="jumpToTile(${b.x}, ${b.y})">🎯 Hop til</button>
+                    <button class="btn btn-small btn-primary" onclick="sendSoldiersTo(${b.x}, ${b.y})">🪖 Send soldater</button>
+                    <button class="btn btn-small btn-muted" onclick="deleteBookmark(${b.x}, ${b.y})">Fjern</button>
+                </div>
+            </div>
+        `;
+    }).join("");
+}
+
+window.deleteBookmark = async function(x, y) {
+    const { error } = await sb.from("bookmarks").delete()
+        .eq("player_id", state.user.id).eq("x", x).eq("y", y);
+    if (error) {
+        showToast("Kunne ikke fjerne bogmærket: " + error.message);
+        return;
+    }
+    state.bookmarks = state.bookmarks.filter(b => !(b.x === x && b.y === y));
+    renderBookmarksOnMap();
+    renderBookmarksSidebar();
+    if (state.selectedTile) renderSelectedTileBox();
+};
+
+// Send soldater fra den nærmeste egne barrak til et felt — et bogmærke eller hvor som helst i verden.
+window.sendSoldiersTo = function(x, y) {
+    const barracks = state.myBuildings.filter(b => b.kind === "barracks");
+    if (barracks.length === 0) {
+        showToast("Du har ingen barrak at sende soldater fra.");
+        return;
+    }
+    const avail = availableInBarracks();
+    if (avail <= 0) {
+        showToast("Du har ingen ledige soldater i dine barrakker.");
+        return;
+    }
+    const [tLat, tLon] = Grid.centreOf({ x, y });
+    const from = barracks.reduce((best, b) => {
+        const [lat, lon] = Grid.centreOf(b);
+        const d = Grid.distanceM(lat, lon, tLat, tLon);
+        return !best || d < best.d ? { b, d } : best;
+    }, null).b;
+    window.openSendSoldiersModal(from.x, from.y, avail, false, { x, y });
+};
+
+async function pollScoutAlerts() {
+    if (!state.user) return;
+    const { data, error } = await sb.rpc("scout_alerts");
+    if (error) return;
+    state.scoutAlerts = data || [];
+    renderScoutBanner();
+}
+
+function renderScoutBanner() {
+    const el = document.getElementById("scout-banner");
+    if (!el) return;
+    if (state.scoutAlerts.length === 0) {
+        el.classList.add("hidden");
+        return;
+    }
+    const lines = state.scoutAlerts.map(a => {
+        const cfg = GAME_CONFIG.BUILDINGS[a.kind];
+        const name = cfg ? cfg.name : a.kind;
+        const who = a.scouts === 1 ? "En fjendtlig spejder" : `${a.scouts} fjendtlige spejdere`;
+        return `<div>⚠️ ${who} er inden for ca. ${GAME_CONFIG.VISION_RADIUS_M} m af din <a href="#" onclick="jumpToTile(${a.x}, ${a.y}); return false;">${name} (felt ${a.x},${a.y})</a>.</div>`;
+    });
+    el.innerHTML = lines.join("");
+    el.classList.remove("hidden");
 }
 
 // ============================================================================
@@ -1354,7 +1522,6 @@ function renderTroopsSidebar() {
     let html = "";
 
     for (const m of myMarches) {
-        const remSec = Math.max(0, Math.ceil((m.arrivesAtMillis - now) / 1000));
         const totalMs = Math.max(1, m.arrivesAtMillis - m.startedAtMillis);
         const prog = Math.max(2, Math.min(100, ((now - m.startedAtMillis) / totalMs) * 100));
 
@@ -1364,7 +1531,7 @@ function renderTroopsSidebar() {
                     <img src="assets/tropper.png" class="pixel-img item-sprite" />
                     <div class="item-info">
                         <div class="item-title item-title-green">${m.count} soldater på march</div>
-                        <div class="item-sub march-eta-text">Mod felt ${m.toX},${m.toY} · Ankomst om ${formatSeconds(remSec)}</div>
+                        <div class="item-sub march-eta-text">${marchEtaText(m, now)}</div>
                     </div>
                 </div>
                 <div class="progress-track">
@@ -1400,18 +1567,28 @@ function renderTroopsSidebar() {
     list.innerHTML = html;
 }
 
+// "3,2 km tilbage · Ankomst om 1t 4m" — resterende distance langs delingens rute.
+function marchEtaText(m, now = Date.now()) {
+    const remSec = Math.max(0, Math.ceil((m.arrivesAtMillis - now) / 1000));
+    return `${formatDistance(pathDistanceM(marchRemainingPath(m, now)))} tilbage · Ankomst om ${formatSeconds(remSec)}`;
+}
+
+function formatDistance(meters) {
+    if (meters < 1000) return `${Math.round(meters)} m`;
+    return `${(meters / 1000).toLocaleString("da-DK", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km`;
+}
+
 // Opdaterer KUN nedtællingsteksten og bjælken hvert sekund uden at blinke!
 function updateLiveTroopCountdowns() {
     const now = Date.now();
     for (const m of state.marches) {
         const row = document.querySelector(`.item-row[data-march-id="${m.id}"]`);
         if (!row) continue;
-        const remSec = Math.max(0, Math.ceil((m.arrivesAtMillis - now) / 1000));
         const totalMs = Math.max(1, m.arrivesAtMillis - m.startedAtMillis);
         const prog = Math.max(2, Math.min(100, ((now - m.startedAtMillis) / totalMs) * 100));
 
         const etaEl = row.querySelector(".march-eta-text");
-        if (etaEl) etaEl.textContent = `Mod felt ${m.toX},${m.toY} · Ankomst om ${formatSeconds(remSec)}`;
+        if (etaEl) etaEl.textContent = marchEtaText(m, now);
         const barEl = row.querySelector(".march-prog-bar");
         if (barEl) barEl.style.width = `${prog.toFixed(1)}%`;
     }
@@ -1420,12 +1597,12 @@ function updateLiveTroopCountdowns() {
 // ============================================================================
 // Udsendelse af soldater, Omdirigering, Hjemkaldelse & Ankomst
 // ============================================================================
-window.openSendSoldiersModal = function(fromX, fromY, maxAvail, fromGarrison) {
+window.openSendSoldiersModal = function(fromX, fromY, maxAvail, fromGarrison, target = null) {
     if (maxAvail <= 0) return;
     const overlay = document.getElementById("modal-overlay");
     document.getElementById("modal-title").textContent = "Send soldater på march";
     document.getElementById("modal-body").innerHTML = `
-        <p>Vælg hvor mange soldater du vil sende af sted fra felt ${fromX},${fromY}:</p>
+        <p>Vælg hvor mange soldater du vil sende af sted fra felt ${fromX},${fromY}${target ? ` mod felt ${target.x},${target.y}` : ""}:</p>
         <div style="text-align:center;font-size:20px;font-weight:800;color:#39FF14;" id="slider-val-label">${maxAvail} / ${maxAvail} soldater</div>
         <input type="range" min="1" max="${maxAvail}" value="${maxAvail}" class="range-slider" id="soldier-range-input" />
     `;
@@ -1437,12 +1614,14 @@ window.openSendSoldiersModal = function(fromX, fromY, maxAvail, fromGarrison) {
 
     document.getElementById("modal-actions").innerHTML = `
         <button class="btn" onclick="closeModal()">Luk</button>
-        <button class="btn btn-primary" id="btn-pick-target-confirm">🎯 Vælg mål på kortet</button>
+        <button class="btn btn-primary" id="btn-pick-target-confirm">${target ? "➡️ Videre" : "🎯 Vælg mål på kortet"}</button>
     `;
     document.getElementById("btn-pick-target-confirm").onclick = () => {
         const chosen = parseInt(slider.value, 10) || 1;
         closeModal();
-        enterMarchTargetMode({ fromTile: { x: fromX, y: fromY }, count: chosen, fromGarrison });
+        const order = { fromTile: { x: fromX, y: fromY }, count: chosen, fromGarrison };
+        if (target) openConfirmMarchModal(order, target);
+        else enterMarchTargetMode(order);
     };
     overlay.classList.remove("hidden");
 };
@@ -1634,13 +1813,12 @@ async function resolveArrival(m) {
         state.garrisons.push({ x: m.toX, y: m.toY, owner_id: uid, count: m.count });
     }
 
-    try {
-        const { error } = await sb.rpc("capture_tile_by_soldiers", { p_x: m.toX, p_y: m.toY, p_casualties: 0 });
-        if (error) {
-            const [lat, lon] = Grid.centreOf({ x: m.toX, y: m.toY });
-            await sb.rpc("claim_tile", { p_x: m.toX, p_y: m.toY, p_lat: lat, p_lon: lon });
-        }
-    } catch (_) {}
+    const { error: capErr } = await sb.rpc("capture_tile_by_soldiers", { p_x: m.toX, p_y: m.toY });
+    if (capErr) {
+        showToast(`Dine ${m.count} soldater står vagt på felt ${m.toX},${m.toY}, men feltet kunne ikke indtages: ${capErr.message}`);
+        await syncAllFromSupabase();
+        return;
+    }
 
     showToast(`Dine ${m.count} soldater har indtaget felt ${m.toX},${m.toY} og står nu vagt!`);
     await syncAllFromSupabase();
@@ -1683,6 +1861,7 @@ async function onSignedIn(user) {
     document.getElementById("auth-overlay").classList.add("hidden");
     loadLocalTroops();
     await syncAllFromSupabase();
+    pollScoutAlerts();
 }
 
 document.getElementById("btn-login").onclick = async () => {
@@ -1713,7 +1892,6 @@ document.getElementById("btn-signup").onclick = async () => {
         return;
     }
     if (data?.user) {
-        await sb.rpc("ensure_player");
         onSignedIn(data.user);
     }
 };
@@ -1721,6 +1899,8 @@ document.getElementById("btn-signup").onclick = async () => {
 document.getElementById("btn-logout").onclick = async () => {
     await sb.auth.signOut();
     state.user = null;
+    state.scoutAlerts = [];
+    renderScoutBanner();
     document.getElementById("auth-overlay").classList.remove("hidden");
 };
 
@@ -1741,3 +1921,4 @@ checkAuthSession();
 setInterval(() => {
     if (state.user) tickMarches();
 }, 1000);
+setInterval(pollScoutAlerts, GAME_CONFIG.SCOUT_POLL_MS);

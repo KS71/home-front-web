@@ -520,3 +520,73 @@ body, html {
     z-index: 30;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
 }
+
+/* Bogmærker fra telefonen */
+.bookmark-chip {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    padding: 6px 10px;
+    margin-bottom: 8px;
+    border-radius: 6px;
+    border: 1px dashed;
+}
+
+.bookmark-chip.bookmark-build,
+.bookmark-icon.bookmark-build {
+    border-color: #FFD54F;
+    color: #FFE082;
+    background: rgba(255, 213, 79, 0.08);
+}
+
+.bookmark-chip.bookmark-target,
+.bookmark-icon.bookmark-target {
+    border-color: #FF5252;
+    color: #FF8A80;
+    background: rgba(255, 82, 82, 0.08);
+}
+
+.bookmark-icon {
+    width: 40px;
+    height: 40px;
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    border: 1px dashed;
+    border-radius: 6px;
+}
+
+.fog-hint {
+    color: #78909C;
+    font-size: 12px;
+}
+
+/* Grove spejder-advarsler */
+.scout-banner {
+    position: absolute;
+    bottom: 72px;
+    left: 16px;
+    max-width: 380px;
+    background: rgba(62, 20, 20, 0.96);
+    border: 2px solid #FF5252;
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 13px;
+    color: #FFEBEE;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.scout-banner a {
+    color: #FFD54F;
+}
+
+.scout-banner.hidden {
+    display: none;
+}

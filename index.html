@@ -83,6 +83,9 @@
                 <button id="btn-cancel-march-mode" class="btn btn-small btn-danger">Annullér</button>
             </div>
 
+            <!-- Grove advarsler om fjendtlige spejdere nær dine bygninger -->
+            <div id="scout-banner" class="scout-banner hidden"></div>
+
             <!-- Toast besked nederst på kortet -->
             <div id="toast" class="toast hidden"></div>
         </div>
@@ -96,11 +99,22 @@
                     <span id="selected-tile-coords" class="badge">Klik på kortet</span>
                 </div>
                 <div id="selected-tile-box" class="card-box">
-                    <p class="muted-hint">Klik på et hvilket som helst felt på kortet for at se terræn, bygge, opgradere eller sende soldater dertil.</p>
+                    <p class="muted-hint">Klik på et hvilket som helst felt på kortet for at se terræn, opgradere dine bygninger eller sende soldater dertil. Nye bygninger kræver et byggepladsbogmærke fra telefonen. Fjender er skjulte, medmindre din telefon er tæt på.</p>
                 </div>
             </section>
 
-            <!-- 2. Soldater ude på kortet (March & Vagt) -->
+            <!-- 2. Bogmærker fra telefonen -->
+            <section class="panel-section">
+                <div class="section-header">
+                    <h2>📌 BOGMÆRKER FRA TELEFONEN</h2>
+                    <span id="bookmarks-summary-badge" class="badge">0 gemt</span>
+                </div>
+                <div id="bookmarks-list" class="card-box list-stack">
+                    <p class="muted-hint">Ingen bogmærker endnu.</p>
+                </div>
+            </section>
+
+            <!-- 3. Soldater ude på kortet (March & Vagt) -->
             <section class="panel-section">
                 <div class="section-header">
                     <h2>🪖 SOLDATER UDE PÅ KORTET</h2>
@@ -111,7 +125,7 @@
                 </div>
             </section>
 
-            <!-- 3. Dine Barrakker & Militærbygninger -->
+            <!-- 4. Dine Barrakker & Militærbygninger -->
             <section class="panel-section">
                 <div class="section-header">
                     <h2>🏰 DINE MILITÆRBYGNINGER</h2>
@@ -135,6 +149,6 @@
 
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="game.js?v=5"></script>
+    <script src="game.js?v=6"></script>
 </body>
 </html>
