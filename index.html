@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>HOME FRONT — Command Center</title>
     <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
-    <link rel="stylesheet" href="style.css?v=17" />
+    <link rel="stylesheet" href="style.css?v=18" />
 </head>
 <body>
     <!-- Login / Titelskærm Overlay -->
@@ -82,10 +82,10 @@
                 </div>
             </div>
 
-            <!-- Banner når man er ved at vælge målfelt på kortet -->
+            <!-- Banner når man er ved at vælge mål på kortet -->
             <div id="march-target-banner" class="march-banner hidden">
                 <div class="march-banner-text">
-                    🎯 <strong>VÆLG MÅL PÅ KORTET:</strong> Klik på det felt på kortet, som dine <span id="banner-soldier-count">1</span> soldater skal marchere til.
+                    🎯 <strong>VÆLG MÅL PÅ KORTET:</strong> Klik på det sted på kortet, som dine <span id="banner-soldier-count">1</span> soldater skal marchere til.
                 </div>
                 <button id="btn-cancel-march-mode" class="btn btn-small btn-danger">Annullér</button>
             </div>
@@ -99,14 +99,14 @@
 
         <!-- Højre: Fast Kommandopanel med fuldt overblik -->
         <aside class="command-sidebar">
-            <!-- 1. Valgt felt på kortet -->
+            <!-- 1. Valgt sted på kortet -->
             <section class="panel-section">
                 <div class="section-header">
-                    <h2>📍 VALGT FELT PÅ KORTET</h2>
+                    <h2>📍 VALGT STED PÅ KORTET</h2>
                     <span id="selected-tile-coords" class="badge">Klik på kortet</span>
                 </div>
                 <div id="selected-tile-box" class="card-box">
-                    <p class="muted-hint">Klik på et hvilket som helst felt på kortet for at se terræn, opgradere dine bygninger eller sende soldater dertil. Nye bygninger kræver et byggepladsbogmærke fra telefonen. Fjender er skjulte, medmindre din telefon er tæt på.</p>
+                    <p class="muted-hint">Klik et vilkårligt sted på kortet for at bygge, opgradere dine bygninger eller sende soldater dertil. Nye bygninger skal stå i et byggepladsbogmærke fra telefonen eller højst 100 m fra en af dine bygninger. Fjender er skjulte, medmindre din telefon er tæt på.</p>
                 </div>
             </section>
 
@@ -167,6 +167,6 @@
 
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="game.js?v=17"></script>
+    <script src="game.js?v=18"></script>
 </body>
 </html>
