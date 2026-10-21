@@ -615,3 +615,45 @@ body, html {
 @keyframes spin {
     to { transform: rotate(360deg); }
 }
+
+.badge-gold {
+    color: #FFD54F;
+    border-color: rgba(255, 213, 79, 0.4);
+}
+
+/* Admin: spillerliste */
+.admin-list {
+    max-height: 55vh;
+    overflow-y: auto;
+    margin-top: 8px;
+}
+
+.admin-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.admin-table td {
+    padding: 8px 6px;
+    border-bottom: 1px solid #263238;
+    vertical-align: middle;
+}
+
+.admin-sub {
+    color: #78909C;
+    font-size: 11px;
+    margin-top: 2px;
+}
+
+.admin-check {
+    white-space: nowrap;
+    text-align: right;
+}
+
+.admin-check label {
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}

@@ -128,6 +128,8 @@ const state = {
     seenBySoldiers: new Set(), // nøgler på fjender, dine soldater allerede har meldt om
     bookmarks: [],         // { x, y, purpose: "build" | "target", note } — sat med telefonen på stedet
     scoutAlerts: [],       // { x, y, kind, scouts } — grove advarsler om fjendtlige spejdere
+    isTester: false,       // Testkonto: må bygge uden byggepladsbogmærke (sættes af admin)
+    isAdmin: false,        // Admin: ser Admin-knappen med spillerlisten
     hasCenteredOnce: false
 };
 
@@ -1087,13 +1089,18 @@ async function syncAllFromSupabase() {
     if (!state.user) return;
     const uid = state.user.id;
 
-    const [cfgRes, balRes, matRes, myBldRes, bmRes] = await Promise.all([
+    const [cfgRes, balRes, matRes, myBldRes, bmRes, meRes] = await Promise.all([
         sb.from("config").select("key,value"),
         sb.from("player_balance").select("balance").eq("player_id", uid).maybeSingle(),
         sb.from("player_materials").select("material,amount").eq("player_id", uid),
         sb.from("buildings").select("x,y,owner_id,kind,level,emptied_at").eq("owner_id", uid),
-        sb.from("bookmarks").select("x,y,purpose,note,created_at").order("created_at", { ascending: false })
+        sb.from("bookmarks").select("x,y,purpose,note,created_at").order("created_at", { ascending: false }),
+        sb.from("players").select("is_tester,is_admin").eq("id", uid).maybeSingle()
     ]);
+
+    state.isTester = !!meRes.data?.is_tester;
+    state.isAdmin = !!meRes.data?.is_admin;
+    document.getElementById("btn-admin")?.classList.toggle("hidden", !state.isAdmin);
 
     if (cfgRes.data) {
         for (const row of cfgRes.data) {
@@ -1297,6 +1304,9 @@ function renderSelectedTileBox() {
     } else if (!bld && !tileOwner || (!bld && isMine)) {
         if (bm?.purpose === "build") {
             html += `<div class="muted-hint" style="margin-bottom:8px;">Du har stået her med telefonen, så du kan bygge her hjemmefra:</div>`;
+            html += buildChoicesHtml(tile, terr);
+        } else if (state.isTester) {
+            html += `<div class="muted-hint" style="margin-bottom:8px;"><span class="badge badge-gold">Testkonto</span> Du må bygge her uden bogmærke fra telefonen:</div>`;
             html += buildChoicesHtml(tile, terr);
         } else {
             html += `<p class="muted-hint">${isMine ? "Dette felt er dit, men" : "Tomt felt —"} nye bygninger kræver et <strong>byggepladsbogmærke</strong>: gå hen til feltet med telefonen (inden for ${GAME_CONFIG.BUILD_RADIUS_M} m) og bogmærk det. Soldater kan du sende hertil når som helst.</p>`;
@@ -1966,6 +1976,58 @@ function renderContactsSidebar() {
 }
 
 // ============================================================================
+// Admin: spillerliste med flueben for testkonto
+// ============================================================================
+async function openAdminModal() {
+    document.getElementById("modal-title").textContent = "Admin: spillere";
+    document.getElementById("modal-body").innerHTML = `<p class="muted-hint">Henter spillere…</p>`;
+    document.getElementById("modal-actions").innerHTML = `<button class="btn" onclick="closeModal()">Luk</button>`;
+    document.getElementById("modal-overlay").classList.remove("hidden");
+
+    const { data, error } = await sb.rpc("admin_list_players");
+    if (error) {
+        document.getElementById("modal-body").innerHTML = `<p class="muted-hint">Kunne ikke hente spillerne: ${escapeHtml(error.message)}</p>`;
+        return;
+    }
+
+    const rows = (data || []).map(p => `
+        <tr>
+            <td>
+                <div>${p.email ? escapeHtml(p.email) : `<span class="muted-hint">anonym telefon-konto</span>`}</div>
+                <div class="admin-sub">${escapeHtml(p.display_name)}${p.is_admin ? " · admin" : ""} · oprettet ${new Date(p.created_at).toLocaleDateString("da-DK")}</div>
+            </td>
+            <td class="admin-check">
+                <label>
+                    <input type="checkbox" ${p.is_tester ? "checked" : ""} onchange="setTester('${p.id}', this)" />
+                    Testkonto
+                </label>
+            </td>
+        </tr>
+    `).join("");
+
+    document.getElementById("modal-body").innerHTML = `
+        <p class="muted-hint">En testkonto må bygge på ethvert ledigt felt uden bogmærke fra telefonen. Spilleren skal genindlæse siden, før det slår igennem.</p>
+        <div class="admin-list"><table class="admin-table">${rows}</table></div>
+    `;
+}
+
+window.setTester = async function(playerId, checkbox) {
+    checkbox.disabled = true;
+    const { error } = await sb.rpc("admin_set_tester", { p_player: playerId, p_on: checkbox.checked });
+    checkbox.disabled = false;
+    if (error) {
+        checkbox.checked = !checkbox.checked;
+        showToast("Kunne ikke gemme: " + error.message);
+        return;
+    }
+    showToast(checkbox.checked ? "Testkonto slået til." : "Testkonto slået fra.");
+    if (playerId === state.user?.id) {
+        state.isTester = checkbox.checked;
+        if (state.selectedTile) renderSelectedTileBox();
+    }
+};
+
+// ============================================================================
 // Hjælpefunktioner & Login-håndtering
 // ============================================================================
 window.closeModal = function() {
@@ -2066,6 +2128,9 @@ document.getElementById("btn-logout").onclick = async () => {
     await sb.auth.signOut();
     state.user = null;
     state.scoutAlerts = [];
+    state.isAdmin = false;
+    state.isTester = false;
+    document.getElementById("btn-admin").classList.add("hidden");
     state.marches = [];
     state.garrisons = [];
     state.enemies = { tiles: [], buildings: [], garrisons: [], marches: [] };
@@ -2075,6 +2140,7 @@ document.getElementById("btn-logout").onclick = async () => {
 };
 
 document.getElementById("btn-sync").onclick = () => syncAllFromSupabase();
+document.getElementById("btn-admin").onclick = () => openAdminModal();
 document.getElementById("btn-cancel-march-mode").onclick = () => exitMarchTargetMode();
 document.getElementById("btn-jump-home").onclick = () => {
     if (state.myBuildings.length > 0) {
