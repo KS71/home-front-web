@@ -1531,6 +1531,9 @@ function renderBuildingsSidebar() {
         const housing = cfg?.housing ? cfg.housing[b.level - 1] : null;
         const prod = computeProductionContents(b);
         const avail = availableInBarracks();
+        const nextPrice = cfg && b.level < cfg.prices.length ? cfg.prices[b.level] : null;
+        const nextSteel = cfg?.materials?.[b.level]?.steel || 0;
+        const canAfford = nextPrice !== null && state.balance >= nextPrice && state.steel >= nextSteel;
 
         return `
             <div class="item-row">
@@ -1547,6 +1550,9 @@ function renderBuildingsSidebar() {
                     ${b.kind === "barracks" ? `<button class="btn btn-small btn-primary" ${avail <= 0 ? "disabled" : ""} onclick="openSendSoldiersModal(${b.x}, ${b.y}, ${avail}, false)">🪖 Send soldater (${avail})</button>` : ""}
                     ${prod && prod.amount > 0 ? `<button class="btn btn-small btn-primary" onclick="collectFromBuilding(${b.x}, ${b.y})">📥 Indkald (${prod.amount})</button>` : ""}
                     ${b.kind === "academy" ? `<button class="btn btn-small btn-gold" onclick="recruitSoldierInstant()">⚡ +1 Soldat (${GAME_CONFIG.INSTANT_SOLDIER_STEPS})</button>` : ""}
+                    ${nextPrice !== null
+                        ? `<button class="btn btn-small" ${canAfford ? "" : `title="Du har ${state.balance} skridt${nextSteel ? ` og ${state.steel} stål` : ""}"`} onclick="buildOrUpgrade('${b.kind}', ${b.x}, ${b.y}, 'ground')">⬆️ Trin ${b.level + 1} (${nextPrice} skridt${nextSteel ? ` + ${nextSteel} stål` : ""})</button>`
+                        : `<span class="badge">Fuldt udbygget</span>`}
                 </div>
             </div>
         `;
