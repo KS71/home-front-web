@@ -1752,8 +1752,13 @@ async function executeMarchOrder(order, targetTile, landPath) {
         : `${order.count} soldater er på vej mod felt ${targetTile.x},${targetTile.y}!`);
 }
 
+// Knapperne sender id'et som tekst, serveren giver det som tal.
+function findMarch(marchId) {
+    return state.marches.find(x => String(x.id) === String(marchId));
+}
+
 window.startRedirectMarch = function(marchId) {
-    const m = state.marches.find(x => x.id === marchId);
+    const m = findMarch(marchId);
     if (!m) return;
     enterMarchTargetMode({
         fromTile: { x: m.homeX, y: m.homeY },
@@ -1764,7 +1769,7 @@ window.startRedirectMarch = function(marchId) {
 };
 
 window.recallMarch = async function(marchId) {
-    const m = state.marches.find(x => x.id === marchId);
+    const m = findMarch(marchId);
     if (!m) return;
     const cur = marchCurrentPos(m, Date.now());
     const homeTile = { x: m.homeX, y: m.homeY };
@@ -1790,7 +1795,7 @@ window.jumpToTile = function(x, y) {
 };
 
 window.jumpToMarch = function(marchId) {
-    const m = state.marches.find(x => x.id === marchId);
+    const m = findMarch(marchId);
     if (!m || !map) return;
     const [lat, lon] = marchCurrentPos(m, Date.now());
     map.flyTo({ center: [lon, lat], zoom: 17.0, duration: 700 });
