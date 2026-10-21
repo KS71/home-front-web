@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>HOME FRONT — Command Center</title>
     <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
-    <link rel="stylesheet" href="style.css?v=13" />
+    <link rel="stylesheet" href="style.css?v=14" />
 </head>
 <body>
     <!-- Login / Titelskærm Overlay -->
@@ -21,7 +21,11 @@
                 </div>
             </div>
             <div class="auth-body">
-                <p class="auth-intro">Log ind med samme e-mail og kodeord som på din telefon for at se dine skridt, bygninger og soldater på stor skærm.</p>
+                <p id="auth-intro" class="auth-intro">Log ind med samme e-mail og kodeord som på din telefon for at se dine skridt, bygninger og soldater på stor skærm.</p>
+                <div id="auth-username-group" class="form-group hidden">
+                    <label for="auth-username">Brugernavn</label>
+                    <input type="text" id="auth-username" placeholder="Det navn andre spillere ser" maxlength="40" autocomplete="nickname" />
+                </div>
                 <div class="form-group">
                     <label for="auth-email">E-mail</label>
                     <input type="email" id="auth-email" placeholder="din@email.dk" autocomplete="email" />
@@ -161,6 +165,6 @@
 
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="game.js?v=13"></script>
+    <script src="game.js?v=14"></script>
 </body>
 </html>

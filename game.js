@@ -2092,35 +2092,101 @@ async function onSignedIn(user) {
     pollScoutAlerts();
 }
 
-document.getElementById("btn-login").onclick = async () => {
+// ---------------------------------------------------------------- log ind / opret konto
+// "Opret ny konto" skifter først formularen til oprettelse (med brugernavn); næste tryk opretter.
+let authMode = "login";
+
+const AUTH_ERRORS = [
+    ["Invalid login credentials", "Forkert e-mail eller kodeord."],
+    ["User already registered", "Der findes allerede en konto med den e-mail. Log ind i stedet."],
+    ["Password should be at least", "Kodeordet skal være mindst 6 tegn."],
+    ["Unable to validate email address", "E-mailadressen ser forkert ud."],
+    ["Email not confirmed", "E-mailen er ikke bekræftet endnu. Tjek din indbakke."],
+    ["Anonymous sign-ins are disabled", "Udfyld e-mail og kodeord."],
+    ["rate limit", "For mange forsøg. Vent et øjeblik og prøv igen."]
+];
+
+function showAuthError(message) {
+    const errEl = document.getElementById("auth-error");
+    const known = AUTH_ERRORS.find(([en]) => message.toLowerCase().includes(en.toLowerCase()));
+    errEl.textContent = known ? known[1] : message;
+    errEl.classList.remove("hidden");
+}
+
+function setAuthMode(mode) {
+    authMode = mode;
+    const signup = mode === "signup";
+    document.getElementById("auth-username-group").classList.toggle("hidden", !signup);
+    document.getElementById("auth-error").classList.add("hidden");
+    document.getElementById("auth-intro").textContent = signup
+        ? "Opret en konto med et brugernavn, din e-mail og et kodeord. Samme konto bruges på telefonen."
+        : "Log ind med samme e-mail og kodeord som på din telefon for at se dine skridt, bygninger og soldater på stor skærm.";
+    document.getElementById("btn-login").textContent = signup ? "Jeg har allerede en konto" : "Log ind i Kommandocentralen";
+    document.getElementById("btn-signup").textContent = signup ? "Opret konto" : "Opret ny konto";
+    // Den grønne knap er altid det, man er i gang med.
+    document.getElementById("btn-login").classList.toggle("btn-primary", !signup);
+    document.getElementById("btn-login").classList.toggle("btn-secondary", signup);
+    document.getElementById("btn-signup").classList.toggle("btn-primary", signup);
+    document.getElementById("btn-signup").classList.toggle("btn-secondary", !signup);
+    document.getElementById("auth-password").autocomplete = signup ? "new-password" : "current-password";
+    if (signup) document.getElementById("auth-username").focus();
+}
+
+function readAuthFields() {
     const email = document.getElementById("auth-email").value.trim();
     const password = document.getElementById("auth-password").value;
-    const errEl = document.getElementById("auth-error");
-    errEl.classList.add("hidden");
+    if (!email || !password) {
+        showAuthError("Udfyld både e-mail og kodeord.");
+        return null;
+    }
+    return { email, password };
+}
 
-    const { data, error } = await sb.auth.signInWithPassword({ email, password });
+document.getElementById("btn-login").onclick = async () => {
+    if (authMode === "signup") {
+        setAuthMode("login");
+        return;
+    }
+    document.getElementById("auth-error").classList.add("hidden");
+    const fields = readAuthFields();
+    if (!fields) return;
+
+    const { data, error } = await sb.auth.signInWithPassword(fields);
     if (error) {
-        errEl.textContent = error.message;
-        errEl.classList.remove("hidden");
+        showAuthError(error.message);
         return;
     }
     if (data?.user) onSignedIn(data.user);
 };
 
 document.getElementById("btn-signup").onclick = async () => {
-    const email = document.getElementById("auth-email").value.trim();
-    const password = document.getElementById("auth-password").value;
-    const errEl = document.getElementById("auth-error");
-    errEl.classList.add("hidden");
-
-    const { data, error } = await sb.auth.signUp({ email, password });
-    if (error) {
-        errEl.textContent = error.message;
-        errEl.classList.remove("hidden");
+    if (authMode === "login") {
+        setAuthMode("signup");
         return;
     }
-    if (data?.user) {
+    document.getElementById("auth-error").classList.add("hidden");
+    const username = document.getElementById("auth-username").value.trim();
+    if (!username) {
+        showAuthError("Vælg et brugernavn.");
+        return;
+    }
+    const fields = readAuthFields();
+    if (!fields) return;
+    if (fields.password.length < 6) {
+        showAuthError("Kodeordet skal være mindst 6 tegn.");
+        return;
+    }
+
+    // Brugernavnet følger med som metadata; serveren sætter det på spillerprofilen (0008).
+    const { data, error } = await sb.auth.signUp({ ...fields, options: { data: { display_name: username } } });
+    if (error) {
+        showAuthError(error.message);
+        return;
+    }
+    if (data?.session && data.user) {
         onSignedIn(data.user);
+    } else {
+        showAuthError("Kontoen er oprettet. Bekræft din e-mail, og log så ind.");
     }
 };
 
