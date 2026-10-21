@@ -9,7 +9,10 @@ const STYLE_URL = "https://tiles.openfreemap.org/styles/positron";
 const GAME_CONFIG = {
     TILE_SIZE_M: 30.0,
     REF_LAT_DEG: 56.0,
-    SOLDIER_SECONDS_PER_TILE: 18,
+    // Alle afstande i meter og farter i m/s. Overskrives af config.rules fra serveren.
+    SOLDIER_SPEED_MPS: 30 / 18,
+    SOLDIER_VISION_M: 250,
+    WORLD_POLL_MS: 15000,
     INSTANT_SOLDIER_STEPS: 100,
     BUILDING_DEFENSE_PER_LEVEL: 2,
     BUILD_RADIUS_M: 100,
@@ -117,8 +120,12 @@ const state = {
     visibleBuildings: [],  // { x, y, owner_id, kind, level, emptied_at }
     selectedTile: null,    // { x, y }
     pendingMarchOrder: null, // { fromTile, count, fromGarrison, redirectMarchId }
-    marches: [],           // Gemmes i localStorage + synkroniseres
-    garrisons: [],
+    marches: [],           // Egne marcher fra serveren (se marchFromRow)
+    garrisons: [],         // Egne vagtstyrker fra serveren { owner_id, x, y, count }
+    ownTiles: [],          // Egne felter i kortudsnittet
+    ownBuildingsInView: [],
+    enemies: { tiles: [], buildings: [], garrisons: [], marches: [] }, // fra visible_enemies()
+    seenBySoldiers: new Set(), // nøgler på fjender, dine soldater allerede har meldt om
     bookmarks: [],         // { x, y, purpose: "build" | "target", note } — sat med telefonen på stedet
     scoutAlerts: [],       // { x, y, kind, scouts } — grove advarsler om fjendtlige spejdere
     hasCenteredOnce: false
@@ -129,21 +136,38 @@ let mapReady = false;
 const registeredTroopBadges = new Set();
 
 // ============================================================================
-// LocalStorage til Tropper (March & Vagtstyrker)
+// Tropper fra serveren (Marcher & Vagtstyrker)
 // ============================================================================
-function loadLocalTroops() {
-    try {
-        state.marches = JSON.parse(localStorage.getItem("hf_marches") || "[]");
-        state.garrisons = JSON.parse(localStorage.getItem("hf_garrisons") || "[]");
-    } catch (_) {
-        state.marches = [];
-        state.garrisons = [];
-    }
+// Serveren gemmer en march som rute + starttid + ankomsttid; positionen regnes ud her og dér.
+function marchFromRow(row) {
+    return {
+        id: row.id,
+        owner_id: row.owner_id,
+        count: row.count,
+        homeX: row.home_x,
+        homeY: row.home_y,
+        toX: row.to_x,
+        toY: row.to_y,
+        path: row.path,
+        startLat: row.path[0][0],
+        startLon: row.path[0][1],
+        startedAtMillis: Date.parse(row.started_at),
+        arrivesAtMillis: Date.parse(row.arrives_at)
+    };
 }
 
-function saveLocalTroops() {
-    localStorage.setItem("hf_marches", JSON.stringify(state.marches.filter(m => m.count > 0)));
-    localStorage.setItem("hf_garrisons", JSON.stringify(state.garrisons.filter(g => g.count > 0)));
+async function loadArmy() {
+    if (!state.user) return;
+    const [mRes, gRes] = await Promise.all([
+        sb.from("marches").select("id,owner_id,count,home_x,home_y,to_x,to_y,path,started_at,arrives_at"),
+        sb.from("garrisons").select("owner_id,x,y,count")
+    ]);
+    if (mRes.data) state.marches = mRes.data.map(marchFromRow);
+    if (gRes.data) state.garrisons = gRes.data;
+    renderTroopsSidebar();
+    renderBuildingsSidebar();
+    renderTroopsOnMap();
+    if (state.selectedTile) renderSelectedTileBox();
 }
 
 function deployedSoldierCount() {
@@ -188,6 +212,8 @@ function initMap() {
         refreshViewportData();
         renderTroopsOnMap();
     });
+
+    map.on("move", () => waterCache.clear());
 
     map.on("moveend", () => {
         if (mapReady) refreshViewportData();
@@ -395,7 +421,7 @@ function installGameLayers() {
         type: "symbol",
         source: "src-troops",
         layout: {
-            "icon-image": ["concat", "img-troop-", ["get", "count"]],
+            "icon-image": ["get", "img"],
             "icon-anchor": "bottom",
             "icon-allow-overlap": true,
             "icon-ignore-placement": true
@@ -476,29 +502,35 @@ async function refreshViewportData() {
             .gte("y", queryBounds.y0).lte("y", queryBounds.y1)
     ]);
 
-    if (tilesRes.data) {
-        state.visibleTiles = tilesRes.data;
-        const uid = state.user.id;
-        const mine = tilesRes.data.filter(t => t.owner_id === uid);
-        const others = tilesRes.data.filter(t => t.owner_id !== uid);
-        map.getSource("src-mine")?.setData(tilesToGeoJson(mine));
-        map.getSource("src-others")?.setData(tilesToGeoJson(others));
-    }
+    if (tilesRes.data) state.ownTiles = tilesRes.data;
+    if (bldRes.data) state.ownBuildingsInView = bldRes.data;
+    renderWorld();
+}
 
-    if (bldRes.data) {
-        state.visibleBuildings = bldRes.data;
-        const features = bldRes.data.map(b => {
-            const cfg = GAME_CONFIG.BUILDINGS[b.kind];
-            const sprite = cfg ? cfg.sprites[Math.min(b.level - 1, cfg.sprites.length - 1)] : "barrak_1";
-            const [lat, lon] = Grid.centreOf(b);
-            return {
-                type: "Feature",
-                properties: { sprite },
-                geometry: { type: "Point", coordinates: [lon, lat] }
-            };
-        });
-        map.getSource("src-buildings")?.setData({ type: "FeatureCollection", features });
-    }
+// Tegner egne felter/bygninger (fra kortudsnittet) og de fjender, serveren siger du kan se.
+// Fjender uden for udsynet når aldrig hertil — de er skjult på serveren.
+function renderWorld() {
+    if (!mapReady || !state.user) return;
+    const uid = state.user.id;
+    const enemyTiles = state.enemies.tiles;
+    const enemyBuildings = state.enemies.buildings;
+
+    state.visibleTiles = [...state.ownTiles, ...enemyTiles];
+    state.visibleBuildings = [...state.ownBuildingsInView, ...enemyBuildings];
+    map.getSource("src-mine")?.setData(tilesToGeoJson(state.ownTiles.filter(t => t.owner_id === uid)));
+    map.getSource("src-others")?.setData(tilesToGeoJson(enemyTiles));
+
+    const features = state.visibleBuildings.map(b => {
+        const cfg = GAME_CONFIG.BUILDINGS[b.kind];
+        const sprite = cfg ? cfg.sprites[Math.min(b.level - 1, cfg.sprites.length - 1)] : "barrak_1";
+        const [lat, lon] = Grid.centreOf(b);
+        return {
+            type: "Feature",
+            properties: { sprite },
+            geometry: { type: "Point", coordinates: [lon, lat] }
+        };
+    });
+    map.getSource("src-buildings")?.setData({ type: "FeatureCollection", features });
 
     if (state.selectedTile) {
         renderSelectedTileBox();
@@ -515,9 +547,14 @@ const soldierImgPromise = new Promise((resolve) => {
     img.src = "assets/tropper.png";
 });
 
-async function ensureTroopBadge(count) {
-    if (!mapReady || registeredTroopBadges.has(count)) return;
-    registeredTroopBadges.add(count);
+function troopBadgeId(count, enemy = false) {
+    return `${enemy ? "img-enemy-" : "img-troop-"}${count}`;
+}
+
+async function ensureTroopBadge(count, enemy = false) {
+    const imgId = troopBadgeId(count, enemy);
+    if (!mapReady || registeredTroopBadges.has(imgId)) return;
+    registeredTroopBadges.add(imgId);
     await soldierImgPromise;
     if (!baseSoldierImg) return;
 
@@ -537,7 +574,7 @@ async function ensureTroopBadge(count) {
 
     const bx = (canvas.width - badgeW) / 2;
     ctx.fillStyle = "rgba(17, 22, 28, 0.92)";
-    ctx.strokeStyle = "#39FF14";
+    ctx.strokeStyle = enemy ? "#FF5252" : "#39FF14";
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.roundRect(bx, 2, badgeW, badgeH, 10);
@@ -554,7 +591,6 @@ async function ensureTroopBadge(count) {
     ctx.drawImage(baseSoldierImg, sx, badgeH + 4, sw, sh);
 
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const imgId = `img-troop-${count}`;
     if (!map.hasImage(imgId)) {
         map.addImage(imgId, { width: canvas.width, height: canvas.height, data: imageData.data });
     }
@@ -569,9 +605,21 @@ function isPointOnScreen(lat, lon) {
     return pt.x >= 2 && pt.x <= w - 2 && pt.y >= 2 && pt.y <= h - 2;
 }
 
+// Ruteberegningen spørger om de samme pixels igen og igen; svaret huskes, til kortet flytter sig.
+const waterCache = new Map();
+
 function isWaterAt(lat, lon) {
     if (!mapReady || !map) return false;
     const pt = map.project([lon, lat]);
+    const key = `${Math.round(pt.x / 2)},${Math.round(pt.y / 2)}`;
+    const known = waterCache.get(key);
+    if (known !== undefined) return known;
+    const water = isWaterAtPixel(pt);
+    waterCache.set(key, water);
+    return water;
+}
+
+function isWaterAtPixel(pt) {
     const layers = ["land-water", "water"].filter(l => map.getLayer(l));
     if (layers.length === 0) return false;
     const box = [
@@ -579,7 +627,7 @@ function isWaterAt(lat, lon) {
         [pt.x + 1.5, pt.y + 1.5]
     ];
     const feats = map.queryRenderedFeatures(box, { layers });
-    return feats && feats.length > 0;
+    return !!(feats && feats.length > 0);
 }
 
 function terrainAtTile(tile) {
@@ -627,7 +675,14 @@ function segmentCrossesWater(lat1, lon1, lat2, lon2, customSamples = null) {
  * snorlige linjer hen over græs, marker, skov og bygninger — og kun drejer
  * ved vand (langs kysten/stranden) eller for at gå over en bro.
  */
-function tightenPathAcrossLand(rawPts) {
+// Hvor mange punkter frem stramningen prøver at springe over ad gangen. Uden grænse prøver den
+// alle punkter til enden af ruten fra hvert punkt, og det tager et halvt minut på en rute på 190 km.
+const STRING_PULL_LOOKAHEAD = 30;
+
+// Giver browseren et øjeblik til at tegne (så "Beregner rute…" ikke fryser).
+const yieldToBrowser = () => new Promise(r => setTimeout(r, 0));
+
+async function tightenPathAcrossLand(rawPts) {
     if (!rawPts || rawPts.length <= 2) return rawPts;
 
     function stringPull(pts) {
@@ -635,7 +690,7 @@ function tightenPathAcrossLand(rawPts) {
         let i = 0;
         while (i < pts.length - 1) {
             let next = i + 1;
-            for (let j = pts.length - 1; j >= i + 2; j--) {
+            for (let j = Math.min(pts.length - 1, i + STRING_PULL_LOOKAHEAD); j >= i + 2; j--) {
                 if (!segmentCrossesWater(pts[i][0], pts[i][1], pts[j][0], pts[j][1])) {
                     next = j;
                     break;
@@ -649,6 +704,7 @@ function tightenPathAcrossLand(rawPts) {
 
     // 1. Første grov-stramning hen over alt tørt land
     let path = stringPull(rawPts);
+    await yieldToBrowser();
 
     // 2. Indsæt ekstra mellempunkter langs kyst-strækninger og træk hjørnerne helt ind til strandkanten
     const refined = [path[0]];
@@ -668,7 +724,9 @@ function tightenPathAcrossLand(rawPts) {
     }
     path = refined;
 
-    for (let iter = 0; iter < 5; iter++) {
+    const rounds = path.length > 40 ? 2 : 5;
+    for (let iter = 0; iter < rounds; iter++) {
+        await yieldToBrowser();
         for (let k = 1; k < path.length - 1; k++) {
             const prev = path[k - 1];
             const cur = path[k];
@@ -904,45 +962,12 @@ async function findLandPathAsync(startLat, startLon, targetTile) {
                     ...simplifyPolyline(rawLatLon, 0.00018).slice(1, -1),
                     [endLat, endLon]
                 ];
-                return tightenPathAcrossLand(base);
+                return await tightenPathAcrossLand(base);
             }
         }
     } catch (_) {}
 
-    return tightenPathAcrossLand(findLandPathLocal(startLat, startLon, targetTile));
-}
-
-let upgradingCoastalRoutes = false;
-async function ensureCoastalRoutes() {
-    if (!mapReady || upgradingCoastalRoutes || state.marches.length === 0) return;
-    const needsUpgrade = state.marches.filter(m => m.coastalVersion !== 2);
-    if (needsUpgrade.length === 0) return;
-
-    upgradingCoastalRoutes = true;
-    try {
-        let changed = false;
-        for (const m of needsUpgrade) {
-            m.coastalVersion = 2;
-            const [homeLat, homeLon] = Grid.centreOf({ x: m.homeX, y: m.homeY });
-            const newPath = await findLandPathAsync(homeLat, homeLon, { x: m.toX, y: m.toY });
-            if (newPath && newPath.length >= 2) {
-                const distM = pathDistanceM(newPath);
-                const durMs = Math.max(2000, Math.round((distM / Grid.tileSizeM) * GAME_CONFIG.SOLDIER_SECONDS_PER_TILE * 1000));
-                m.startLat = homeLat;
-                m.startLon = homeLon;
-                m.path = newPath;
-                m.arrivesAtMillis = m.startedAtMillis + durMs;
-                changed = true;
-            }
-        }
-        if (changed) {
-            saveLocalTroops();
-            renderTroopsSidebar();
-            renderTroopsOnMap();
-        }
-    } finally {
-        upgradingCoastalRoutes = false;
-    }
+    return await tightenPathAcrossLand(findLandPathLocal(startLat, startLon, targetTile));
 }
 
 function pathDistanceM(path) {
@@ -1012,26 +1037,34 @@ async function renderTroopsOnMap() {
     const troopFeatures = [];
     const lineFeatures = [];
 
-    for (const g of state.garrisons) {
-        if (g.count <= 0) continue;
-        await ensureTroopBadge(g.count);
-        const [lat, lon] = Grid.centreOf(g);
+    const addTroop = async (count, lat, lon, enemy) => {
+        await ensureTroopBadge(count, enemy);
         troopFeatures.push({
             type: "Feature",
-            properties: { count: String(g.count) },
+            properties: { img: troopBadgeId(count, enemy) },
             geometry: { type: "Point", coordinates: [lon, lat] }
         });
+    };
+
+    // Fjender, som du kan se lige nu (positionen er et øjebliksbillede fra serveren)
+    for (const g of state.enemies.garrisons) {
+        const [lat, lon] = Grid.centreOf(g);
+        await addTroop(g.count, lat, lon, true);
+    }
+    for (const m of state.enemies.marches) {
+        await addTroop(m.count, m.lat, m.lon, true);
+    }
+
+    for (const g of state.garrisons) {
+        if (g.count <= 0) continue;
+        const [lat, lon] = Grid.centreOf(g);
+        await addTroop(g.count, lat, lon, false);
     }
 
     for (const m of state.marches) {
         if (m.count <= 0) continue;
-        await ensureTroopBadge(m.count);
         const [lat, lon] = marchCurrentPos(m, now);
-        troopFeatures.push({
-            type: "Feature",
-            properties: { count: String(m.count) },
-            geometry: { type: "Point", coordinates: [lon, lat] }
-        });
+        await addTroop(m.count, lat, lon, false);
         const rem = marchRemainingPath(m, now);
         lineFeatures.push({
             type: "Feature",
@@ -1076,6 +1109,9 @@ async function syncAllFromSupabase() {
                 if (r.instant_soldier_steps) GAME_CONFIG.INSTANT_SOLDIER_STEPS = Number(r.instant_soldier_steps);
                 if (r.reach_m) GAME_CONFIG.BUILD_RADIUS_M = Number(r.reach_m);
                 if (r.vision_m) GAME_CONFIG.VISION_RADIUS_M = Number(r.vision_m);
+                if (r.soldier_vision_m) GAME_CONFIG.SOLDIER_VISION_M = Number(r.soldier_vision_m);
+                if (r.soldier_speed_mps) GAME_CONFIG.SOLDIER_SPEED_MPS = Number(r.soldier_speed_mps);
+                if (r.building_defense_per_level) GAME_CONFIG.BUILDING_DEFENSE_PER_LEVEL = Number(r.building_defense_per_level);
                 for (const [k, bcfg] of Object.entries(GAME_CONFIG.BUILDINGS)) {
                     if (r.building_prices?.[k]) bcfg.prices = r.building_prices[k];
                     if (r.building_housing?.[k]) bcfg.housing = r.building_housing[k];
@@ -1269,7 +1305,11 @@ function renderSelectedTileBox() {
             html += `<p class="muted-hint fog-hint">Fjender er skjulte. Feltet kan godt tilhøre en fjende, medmindre din telefon er inden for ${GAME_CONFIG.VISION_RADIUS_M} m.</p>`;
         }
     } else if (!isMine) {
-        html += `<p class="muted-hint">Fjendtligt felt — du kan se det, fordi din telefon er inden for ${GAME_CONFIG.VISION_RADIUS_M} m. Det forsvinder igen, når du går, så bogmærk det med telefonen, hvis du vil huske det.</p>`;
+        const enemyGar = state.enemies.garrisons.find(g => g.x === tile.x && g.y === tile.y)?.count || 0;
+        const bldDef = bld ? GAME_CONFIG.BUILDING_DEFENSE_PER_LEVEL * bld.level : 0;
+        const bldName = bld ? (GAME_CONFIG.BUILDINGS[bld.kind]?.name || bld.kind) + ` (trin ${bld.level})` : null;
+        html += `<p class="muted-hint">Fjendtligt felt — du kan se det lige nu, fordi din telefon (${GAME_CONFIG.VISION_RADIUS_M} m) eller dine soldater (${GAME_CONFIG.SOLDIER_VISION_M} m) er tæt på. Det forsvinder igen, når de går.</p>`;
+        html += `<p class="muted-hint"><strong>Forsvar:</strong> ${enemyGar} vagter${bldName ? ` + ${bldDef} fra ${bldName}` : ""}. Send mindst <strong>${enemyGar + bldDef + 1}</strong> soldater for at erobre feltet${bldName ? " (bygningen jævnes med jorden)" : ""}.</p>`;
     }
 
     if (!(bld && isMine) && terr.id !== "water") {
@@ -1637,7 +1677,20 @@ function exitMarchTargetMode() {
     document.getElementById("march-target-banner").classList.add("hidden");
 }
 
+function showRouteCalculating(targetTile) {
+    document.getElementById("modal-title").textContent = "Beregner rute…";
+    document.getElementById("modal-body").innerHTML = `
+        <div class="route-calculating">
+            <div class="spinner"></div>
+            <p>Finder vejen over land til felt ${targetTile.x},${targetTile.y}. Lange ruter langs kysten kan tage et par sekunder.</p>
+        </div>
+    `;
+    document.getElementById("modal-actions").innerHTML = "";
+    document.getElementById("modal-overlay").classList.remove("hidden");
+}
+
 async function openConfirmMarchModal(order, targetTile) {
+    showRouteCalculating(targetTile);
     const now = Date.now();
     let startPos;
     if (order.redirectMarchId) {
@@ -1650,7 +1703,7 @@ async function openConfirmMarchModal(order, targetTile) {
     const landPath = await findLandPathAsync(startPos[0], startPos[1], targetTile);
     const distM = Math.round(pathDistanceM(landPath));
     const tilesCount = Math.max(1, Math.round(distM / Grid.tileSizeM));
-    const durationSec = Math.max(2, Math.round(tilesCount * GAME_CONFIG.SOLDIER_SECONDS_PER_TILE));
+    const durationSec = Math.max(2, Math.round(distM / GAME_CONFIG.SOLDIER_SPEED_MPS));
 
     const overlay = document.getElementById("modal-overlay");
     document.getElementById("modal-title").textContent = `Send ${order.count} soldater af sted?`;
@@ -1668,66 +1721,35 @@ async function openConfirmMarchModal(order, targetTile) {
     document.getElementById("btn-confirm-march-go").onclick = () => {
         closeModal();
         exitMarchTargetMode();
-        executeMarchOrder(order, targetTile, landPath, durationSec * 1000);
+        executeMarchOrder(order, targetTile, landPath);
     };
     overlay.classList.remove("hidden");
 }
 
-function executeMarchOrder(order, targetTile, landPath, durationMs) {
-    const now = Date.now();
-    const uid = state.user.id;
-
+async function executeMarchOrder(order, targetTile, landPath) {
+    let error;
     if (order.redirectMarchId) {
+        // Delingen er gået videre, mens ruten blev beregnet og bekræftet: start fra hvor den er nu.
         const m = state.marches.find(x => x.id === order.redirectMarchId);
-        if (m) {
-            const cur = marchCurrentPos(m, now);
-            m.startLat = cur[0];
-            m.startLon = cur[1];
-            m.toX = targetTile.x;
-            m.toY = targetTile.y;
-            m.startedAtMillis = now;
-            m.arrivesAtMillis = now + durationMs;
-            m.path = landPath;
-            m.coastalVersion = 2;
-            saveLocalTroops();
-            renderTroopsSidebar();
-            renderTroopsOnMap();
-            showToast(`Ny ordre: ${m.count} soldater går nu mod felt ${targetTile.x},${targetTile.y}!`);
-        }
+        const path = m ? [marchCurrentPos(m, Date.now()), ...landPath.slice(1)] : landPath;
+        ({ error } = await sb.rpc("redirect_march", {
+            p_march: order.redirectMarchId, p_to_x: targetTile.x, p_to_y: targetTile.y, p_path: path
+        }));
+    } else {
+        ({ error } = await sb.rpc("start_march", {
+            p_from_x: order.fromTile.x, p_from_y: order.fromTile.y,
+            p_to_x: targetTile.x, p_to_y: targetTile.y,
+            p_count: order.count, p_path: landPath
+        }));
+    }
+    if (error) {
+        showToast("Kunne ikke sende soldaterne: " + error.message);
         return;
     }
-
-    if (order.fromGarrison) {
-        const g = state.garrisons.find(x => x.x === order.fromTile.x && x.y === order.fromTile.y && x.owner_id === uid);
-        if (g) {
-            g.count -= order.count;
-            state.garrisons = state.garrisons.filter(x => x.count > 0);
-        }
-    }
-
-    const march = {
-        id: "m_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
-        owner_id: uid,
-        count: order.count,
-        homeX: order.fromTile.x,
-        homeY: order.fromTile.y,
-        startLat: landPath[0][0],
-        startLon: landPath[0][1],
-        toX: targetTile.x,
-        toY: targetTile.y,
-        startedAtMillis: now,
-        arrivesAtMillis: now + durationMs,
-        path: landPath,
-        coastalVersion: 2
-    };
-
-    state.marches.push(march);
-    saveLocalTroops();
-    renderTroopsSidebar();
-    renderBuildingsSidebar();
-    if (state.selectedTile) renderSelectedTileBox();
-    renderTroopsOnMap();
-    showToast(`${march.count} soldater er på vej mod felt ${targetTile.x},${targetTile.y}!`);
+    await loadArmy();
+    showToast(order.redirectMarchId
+        ? `Ny ordre: ${order.count} soldater går nu mod felt ${targetTile.x},${targetTile.y}!`
+        : `${order.count} soldater er på vej mod felt ${targetTile.x},${targetTile.y}!`);
 }
 
 window.startRedirectMarch = function(marchId) {
@@ -1744,24 +1766,19 @@ window.startRedirectMarch = function(marchId) {
 window.recallMarch = async function(marchId) {
     const m = state.marches.find(x => x.id === marchId);
     if (!m) return;
-    const now = Date.now();
-    const cur = marchCurrentPos(m, now);
+    const cur = marchCurrentPos(m, Date.now());
     const homeTile = { x: m.homeX, y: m.homeY };
+    showToast("Beregner ruten hjem…");
     const homePath = await findLandPathAsync(cur[0], cur[1], homeTile);
-    const distM = pathDistanceM(homePath);
-    const durMs = Math.max(2000, Math.round((distM / Grid.tileSizeM) * GAME_CONFIG.SOLDIER_SECONDS_PER_TILE * 1000));
-
-    m.startLat = cur[0];
-    m.startLon = cur[1];
-    m.toX = homeTile.x;
-    m.toY = homeTile.y;
-    m.startedAtMillis = now;
-    m.arrivesAtMillis = now + durMs;
-    m.path = homePath;
-    m.coastalVersion = 2;
-    saveLocalTroops();
-    renderTroopsSidebar();
-    renderTroopsOnMap();
+    const path = [marchCurrentPos(m, Date.now()), ...homePath.slice(1)];
+    const { error } = await sb.rpc("redirect_march", {
+        p_march: m.id, p_to_x: homeTile.x, p_to_y: homeTile.y, p_path: path
+    });
+    if (error) {
+        showToast("Kunne ikke kalde delingen hjem: " + error.message);
+        return;
+    }
+    await loadArmy();
     showToast(`${m.count} soldater vender om og går hjem til barrakken!`);
 };
 
@@ -1779,49 +1796,169 @@ window.jumpToMarch = function(marchId) {
     map.flyTo({ center: [lon, lat], zoom: 17.0, duration: 700 });
 };
 
+let resolvingArrivals = false;
 async function tickMarches() {
-    await ensureCoastalRoutes();
     const now = Date.now();
-    const arrived = state.marches.filter(m => now >= m.arrivesAtMillis);
-    if (arrived.length > 0) {
-        state.marches = state.marches.filter(m => now < m.arrivesAtMillis);
-        for (const m of arrived) {
-            await resolveArrival(m);
+    if (!resolvingArrivals && state.marches.some(m => now >= m.arrivesAtMillis)) {
+        // Serveren afgør ankomsten (indtagelse/kamp), når nogen spørger efter verden.
+        resolvingArrivals = true;
+        try {
+            await pollWorld();
+            await loadArmy();
+            await syncAllFromSupabase();
+        } finally {
+            resolvingArrivals = false;
         }
-        saveLocalTroops();
-        renderTroopsSidebar();
-        renderBuildingsSidebar();
-    } else {
-        updateLiveTroopCountdowns();
+        return;
     }
+    updateLiveTroopCountdowns();
     renderTroopsOnMap();
 }
 
-async function resolveArrival(m) {
-    const uid = state.user?.id;
-    const isOwnBarracks = state.myBuildings.some(b => b.x === m.toX && b.y === m.toY && b.kind === "barracks");
-    if (isOwnBarracks) {
-        showToast(`${m.count} soldater er vendt hjem til barrakken!`);
+const REPORT_TEXT = {
+    returned:   r => `${r.count} soldater er vendt hjem til barrakken på felt ${r.x},${r.y}.`,
+    captured:   r => `Dine ${r.count} soldater har indtaget felt ${r.x},${r.y} og står nu vagt!`,
+    reinforced: r => `${r.count} soldater er nået frem til felt ${r.x},${r.y} og forstærker vagten.`,
+    victory:    r => `⚔️ Sejr på felt ${r.x},${r.y}! ${r.survivors} af dine ${r.count} soldater overlevede, og fjenden mistede ${r.enemy_losses}. Feltet er dit.`,
+    defeat:     r => `⚔️ Angrebet på felt ${r.x},${r.y} blev slået tilbage. Alle ${r.count} soldater faldt (fjenden mistede ${r.enemy_losses}).`,
+    defended:   r => `🛡️ Dit felt ${r.x},${r.y} blev angrebet af ${r.enemy_losses} soldater, men holdt! Du mistede ${r.losses}.`,
+    lost:       r => `🔥 Du har mistet felt ${r.x},${r.y} til et angreb. ${r.losses} vagter faldt.`
+};
+
+// Rapporter om ankomster og kampe — også dem, der skete mens du var væk.
+async function loadReports() {
+    if (!state.user) return;
+    const { data } = await sb.from("march_reports")
+        .select("id,kind,x,y,count,survivors,losses,enemy_losses")
+        .eq("seen", false)
+        .order("id", { ascending: true });
+    if (!data || data.length === 0) return;
+    for (const r of data) {
+        const text = REPORT_TEXT[r.kind];
+        if (text) queueToast(text(r));
+    }
+    await sb.from("march_reports").update({ seen: true }).in("id", data.map(r => r.id));
+}
+
+// Henter alt fjendtligt, du kan se lige nu (telefonen + egne soldater), og melder nye fund.
+let pollingWorld = false;
+async function pollWorld() {
+    if (!state.user || pollingWorld) return;
+    pollingWorld = true;
+    try {
+        const { data, error } = await sb.rpc("visible_enemies");
+        if (error || !data) return;
+        state.enemies = {
+            tiles: data.tiles || [],
+            buildings: data.buildings || [],
+            garrisons: data.garrisons || [],
+            marches: data.marches || []
+        };
+        announceSightings();
+        renderWorld();
+        renderTroopsOnMap();
+        renderContactsSidebar();
+        if (state.selectedTile) renderSelectedTileBox();
+    } finally {
+        pollingWorld = false;
+    }
+}
+
+function enemyKey(kind, o) {
+    return kind === "march" ? `m${o.id}` : `${kind}${o.x},${o.y}`;
+}
+
+// "Dine soldater har fået øje på ..." — kun første gang, de ser noget.
+function announceSightings() {
+    const now = new Set();
+    const fresh = [];
+    for (const b of state.enemies.buildings.filter(b => b.by_soldiers)) {
+        const k = enemyKey("b", b);
+        now.add(k);
+        if (!state.seenBySoldiers.has(k)) {
+            const name = GAME_CONFIG.BUILDINGS[b.kind]?.name || b.kind;
+            fresh.push(`👁️ Dine soldater har fået øje på en fjendtlig ${name.toLowerCase()} (trin ${b.level}) på felt ${b.x},${b.y}.`);
+        }
+    }
+    for (const g of state.enemies.garrisons.filter(g => g.by_soldiers)) {
+        const k = enemyKey("g", g);
+        now.add(k);
+        if (!state.seenBySoldiers.has(k)) fresh.push(`👁️ Dine soldater har fået øje på ${g.count} fjendtlige vagter på felt ${g.x},${g.y}.`);
+    }
+    for (const m of state.enemies.marches.filter(m => m.by_soldiers)) {
+        const k = enemyKey("march", m);
+        now.add(k);
+        if (!state.seenBySoldiers.has(k)) fresh.push(`👁️ Dine soldater har fået øje på ${m.count} fjendtlige soldater på march.`);
+    }
+    state.seenBySoldiers = now;
+    fresh.forEach(queueToast);
+}
+
+function renderContactsSidebar() {
+    const list = document.getElementById("contacts-list");
+    const badge = document.getElementById("contacts-summary-badge");
+    if (!list) return;
+    const e = state.enemies;
+    const total = e.buildings.length + e.garrisons.length + e.marches.length;
+    badge.textContent = `${total} set`;
+
+    if (total === 0) {
+        list.innerHTML = `<p class="muted-hint">Ingen fjender i sigte. Du ser fjender inden for ${GAME_CONFIG.VISION_RADIUS_M} m af din telefon og ${GAME_CONFIG.SOLDIER_VISION_M} m af dine soldater.</p>`;
         return;
     }
 
-    // Tilføj til vagtstyrke på målfeltet og indtag feltet
-    let existing = state.garrisons.find(g => g.x === m.toX && g.y === m.toY && g.owner_id === uid);
-    if (existing) {
-        existing.count += m.count;
-    } else {
-        state.garrisons.push({ x: m.toX, y: m.toY, owner_id: uid, count: m.count });
+    const who = o => o.by_soldiers ? "set af dine soldater" : "set med telefonen";
+    const rows = [];
+    for (const b of e.buildings) {
+        const cfg = GAME_CONFIG.BUILDINGS[b.kind];
+        const sprite = cfg ? cfg.sprites[Math.min(b.level, cfg.sprites.length) - 1] : "barrak_1";
+        rows.push(`
+            <div class="item-row">
+                <div class="item-row-top">
+                    <img src="assets/${sprite}.png" class="pixel-img item-sprite" />
+                    <div class="item-info">
+                        <div class="item-title enemy-title">${cfg ? cfg.name : b.kind} (trin ${b.level})</div>
+                        <div class="item-sub">Felt ${b.x},${b.y} · ${who(b)}</div>
+                    </div>
+                </div>
+                <div class="item-actions">
+                    <button class="btn btn-small" onclick="jumpToTile(${b.x}, ${b.y})">🎯 Hop til</button>
+                    <button class="btn btn-small btn-danger" onclick="sendSoldiersTo(${b.x}, ${b.y})">⚔️ Angrib</button>
+                </div>
+            </div>`);
     }
-
-    const { error: capErr } = await sb.rpc("capture_tile_by_soldiers", { p_x: m.toX, p_y: m.toY });
-    if (capErr) {
-        showToast(`Dine ${m.count} soldater står vagt på felt ${m.toX},${m.toY}, men feltet kunne ikke indtages: ${capErr.message}`);
-        await syncAllFromSupabase();
-        return;
+    for (const g of e.garrisons) {
+        rows.push(`
+            <div class="item-row">
+                <div class="item-row-top">
+                    <img src="assets/tropper.png" class="pixel-img item-sprite" />
+                    <div class="item-info">
+                        <div class="item-title enemy-title">${g.count} fjendtlige vagter</div>
+                        <div class="item-sub">Felt ${g.x},${g.y} · ${who(g)}</div>
+                    </div>
+                </div>
+                <div class="item-actions">
+                    <button class="btn btn-small" onclick="jumpToTile(${g.x}, ${g.y})">🎯 Hop til</button>
+                    <button class="btn btn-small btn-danger" onclick="sendSoldiersTo(${g.x}, ${g.y})">⚔️ Angrib</button>
+                </div>
+            </div>`);
     }
-
-    showToast(`Dine ${m.count} soldater har indtaget felt ${m.toX},${m.toY} og står nu vagt!`);
-    await syncAllFromSupabase();
+    for (const m of e.marches) {
+        rows.push(`
+            <div class="item-row">
+                <div class="item-row-top">
+                    <img src="assets/tropper.png" class="pixel-img item-sprite" />
+                    <div class="item-info">
+                        <div class="item-title enemy-title">${m.count} fjendtlige soldater på march</div>
+                        <div class="item-sub">${who(m)}</div>
+                    </div>
+                </div>
+                <div class="item-actions">
+                    <button class="btn btn-small" onclick="map.flyTo({ center: [${m.lon}, ${m.lat}], zoom: 17, duration: 700 })">🎯 Hop til</button>
+                </div>
+            </div>`);
+    }
+    list.innerHTML = rows.join("");
 }
 
 // ============================================================================
@@ -1830,6 +1967,24 @@ async function resolveArrival(m) {
 window.closeModal = function() {
     document.getElementById("modal-overlay").classList.add("hidden");
 };
+
+const toastQueue = [];
+let toastBusy = false;
+function queueToast(msg) {
+    toastQueue.push(msg);
+    if (!toastBusy) nextToast();
+}
+
+function nextToast() {
+    const msg = toastQueue.shift();
+    if (!msg) {
+        toastBusy = false;
+        return;
+    }
+    toastBusy = true;
+    showToast(msg);
+    setTimeout(nextToast, 4800);
+}
 
 let toastTimer = null;
 function showToast(msg) {
@@ -1859,8 +2014,15 @@ async function checkAuthSession() {
 async function onSignedIn(user) {
     state.user = user;
     document.getElementById("auth-overlay").classList.add("hidden");
-    loadLocalTroops();
+    // Tropper lå tidligere kun i browseren; nu er serveren den eneste sandhed.
+    try {
+        localStorage.removeItem("hf_marches");
+        localStorage.removeItem("hf_garrisons");
+    } catch (_) {}
     await syncAllFromSupabase();
+    await loadArmy();
+    await pollWorld();
+    await loadReports();
     pollScoutAlerts();
 }
 
@@ -1900,6 +2062,10 @@ document.getElementById("btn-logout").onclick = async () => {
     await sb.auth.signOut();
     state.user = null;
     state.scoutAlerts = [];
+    state.marches = [];
+    state.garrisons = [];
+    state.enemies = { tiles: [], buildings: [], garrisons: [], marches: [] };
+    state.seenBySoldiers = new Set();
     renderScoutBanner();
     document.getElementById("auth-overlay").classList.remove("hidden");
 };
@@ -1922,3 +2088,8 @@ setInterval(() => {
     if (state.user) tickMarches();
 }, 1000);
 setInterval(pollScoutAlerts, GAME_CONFIG.SCOUT_POLL_MS);
+setInterval(async () => {
+    if (!state.user) return;
+    await pollWorld();
+    await loadReports();
+}, GAME_CONFIG.WORLD_POLL_MS);

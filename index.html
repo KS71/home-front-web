@@ -114,7 +114,18 @@
                 </div>
             </section>
 
-            <!-- 3. Soldater ude på kortet (March & Vagt) -->
+            <!-- 3. Fjender i sigte lige nu (telefonen + egne soldater) -->
+            <section class="panel-section">
+                <div class="section-header">
+                    <h2>👁️ FJENDER I SIGTE</h2>
+                    <span id="contacts-summary-badge" class="badge">0 set</span>
+                </div>
+                <div id="contacts-list" class="card-box list-stack">
+                    <p class="muted-hint">Ingen fjender i sigte.</p>
+                </div>
+            </section>
+
+            <!-- 4. Soldater ude på kortet (March & Vagt) -->
             <section class="panel-section">
                 <div class="section-header">
                     <h2>🪖 SOLDATER UDE PÅ KORTET</h2>
@@ -125,7 +136,7 @@
                 </div>
             </section>
 
-            <!-- 4. Dine Barrakker & Militærbygninger -->
+            <!-- 5. Dine Barrakker & Militærbygninger -->
             <section class="panel-section">
                 <div class="section-header">
                     <h2>🏰 DINE MILITÆRBYGNINGER</h2>
@@ -149,6 +160,6 @@
 
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="game.js?v=6"></script>
+    <script src="game.js?v=8"></script>
 </body>
 </html>
