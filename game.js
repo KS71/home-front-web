@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 28;
+const APP_VERSION = 29;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -1747,7 +1747,8 @@ function renderPointBox(lat, lon, box, badge) {
     const tooClose = near && near.gap < GAME_CONFIG.BUILDING_GAP_M;
     const water = terr.id === "water";
     const canBuild = right && !tooClose && !water;
-    setSelectedShape(squareFeature(lat, lon, size, { state: canBuild ? "ok" : "no" }));
+    sketchShape = squareFeature(lat, lon, size, { state: canBuild ? "ok" : "no" });
+    setSelectedShape(sketchShape);
 
     if (canBuild) {
         const why = {
@@ -1772,6 +1773,18 @@ function renderPointBox(lat, lon, box, badge) {
     box.innerHTML = html;
 }
 
+// Byggeskitsen for det valgte sted (den mindste bygning). Når musen står over et byggevalg,
+// vises i stedet den bygnings egen størrelse, så fx stålværkets 100×100 m kan ses på kortet.
+let sketchShape = null;
+
+function previewFootprint(lat, lon, size, ok) {
+    setSelectedShape(squareFeature(lat, lon, size, { state: ok ? "ok" : "no" }));
+}
+
+function clearFootprintPreview() {
+    setSelectedShape(sketchShape);
+}
+
 function buildChoicesHtml(lat, lon, terr) {
     let html = "";
     for (const cfg of Object.values(GAME_CONFIG.BUILDINGS)) {
@@ -1780,13 +1793,13 @@ function buildChoicesHtml(lat, lon, terr) {
         const near = nearestBuildingGap(lat, lon, size);
         const blocked = (near && near.gap < GAME_CONFIG.BUILDING_GAP_M) || !buildRight(lat, lon, size);
         html += `
-            <div class="item-row" style="margin-bottom:6px;">
+            <div class="item-row" style="margin-bottom:6px;" onmouseenter="previewFootprint(${lat}, ${lon}, ${size}, ${!blocked})" onmouseleave="clearFootprintPreview()">
                 <div class="item-row-top">
                     <img src="assets/${cfg.sprites[0]}.png" class="pixel-img item-sprite" />
                     <div class="item-info">
                         <div class="item-title">${cfg.name} (${cfg.stages[0]})</div>
                         <div class="item-sub">${cfg.desc} ${size}×${size} m.</div>
-                        ${blocked ? `<div class="item-sub" style="color:#FF8A80">Ikke plads her: ${size}×${size} m skal holde ${GAME_CONFIG.BUILDING_GAP_M} m afstand til andre bygninger og ligge i dit byggeområde.</div>` : ""}
+                        ${blocked ? `<div class="item-sub" style="color:#FF8A80">Ikke plads her: ${size}×${size} m skal holde ${GAME_CONFIG.BUILDING_GAP_M} m afstand til andre bygninger og ligge i dit byggeområde. Hold musen over denne boks for at se, hvor meget den fylder.</div>` : ""}
                     </div>
                 </div>
                 <div class="item-actions">
