@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 21;
+const APP_VERSION = 22;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -18,6 +18,7 @@ const GAME_CONFIG = {
     SOLDIER_SPEED_MPS: 30 / 18,
     SOLDIER_VISION_M: 250,
     FIRE_RANGE_M: 75,        // skudafstand mellem soldater og fjendtlige patruljer
+    SOLDIER_HP: 100,         // energi pr. soldat
     NPC_SPAWN_CHECK_MS: 5 * 60 * 1000, // så tit browseren ser efter, om der mangler patruljer
     WORLD_POLL_MS: 15000,
     INSTANT_SOLDIER_STEPS: 100,
@@ -163,6 +164,7 @@ function marchFromRow(row) {
         id: row.id,
         owner_id: row.owner_id,
         count: row.count,
+        wounded: row.wounded || [],
         homeBuildingId: row.home_building_id,
         homeLat: row.home_lat,
         homeLon: row.home_lon,
@@ -179,8 +181,9 @@ function marchFromRow(row) {
 async function loadArmy() {
     if (!state.user) return;
     const [mRes, gRes] = await Promise.all([
-        sb.from("marches").select("id,owner_id,count,home_building_id,home_lat,home_lon,to_lat,to_lon,path,started_at,arrives_at"),
-        sb.from("garrisons").select("id,owner_id,lat,lon,count")
+        // "*", så siden også virker, før databasen har fået kolonnen wounded (0011).
+        sb.from("marches").select("*"),
+        sb.from("garrisons").select("*")
     ]);
     if (mRes.data) state.marches = mRes.data.map(marchFromRow);
     if (gRes.data) state.garrisons = gRes.data;
@@ -188,6 +191,26 @@ async function loadArmy() {
     renderBuildingsSidebar();
     renderTroopsOnMap();
     if (state.selected) renderSelectedBox();
+}
+
+// Energi: hver soldat har SOLDIER_HP. Egne grupper har listen over de såredes energi (wounded);
+// fjender og patruljer kommer med den samlede energi (hp) fra serveren.
+function groupHp(g) {
+    if (typeof g.hp === "number") return g.hp;
+    const w = g.wounded || [];
+    return g.count * GAME_CONFIG.SOLDIER_HP - w.reduce((sum, x) => sum + (GAME_CONFIG.SOLDIER_HP - x), 0);
+}
+
+function energyPct(g) {
+    if (!g.count) return 0;
+    return Math.max(0, Math.min(100, Math.round(groupHp(g) / (g.count * GAME_CONFIG.SOLDIER_HP) * 100)));
+}
+
+// "❤️ 72 % · 3 sårede" (egne grupper ved, hvor mange der er sårede).
+function energyText(g) {
+    const pct = energyPct(g);
+    const hurt = g.wounded ? g.wounded.length : null;
+    return `❤️ ${pct} %${hurt ? ` · ${hurt} ${hurt === 1 ? "såret" : "sårede"}` : ""}`;
 }
 
 function deployedSoldierCount() {
@@ -518,12 +541,12 @@ const npcImgPromise = new Promise((resolve) => {
 });
 
 // style: "own" (dine), "enemy" (andre spillere) eller "npc" (computerstyret patrulje).
-function troopBadgeId(count, style = "own") {
-    return `img-${style}-${count}`;
+function troopBadgeId(count, style = "own", pct = 100) {
+    return `img-${style}-${count}-${Math.ceil(pct / 10)}`;
 }
 
-async function ensureTroopBadge(count, style = "own") {
-    const imgId = troopBadgeId(count, style);
+async function ensureTroopBadge(count, style = "own", pct = 100) {
+    const imgId = troopBadgeId(count, style, pct);
     if (!mapReady || registeredTroopBadges.has(imgId)) return;
     registeredTroopBadges.add(imgId);
     await soldierImgPromise;
@@ -539,8 +562,9 @@ async function ensureTroopBadge(count, style = "own") {
     const canvas = document.createElement("canvas");
     const badgeW = Math.max(34, text.length * 10 + 16);
     const badgeH = 22;
+    const barH = 5;
     canvas.width = Math.max(sw, badgeW) + 8;
-    canvas.height = sh + badgeH + 6;
+    canvas.height = sh + badgeH + barH + 8;
 
     const ctx = canvas.getContext("2d");
     ctx.imageSmoothingEnabled = false;
@@ -560,8 +584,16 @@ async function ensureTroopBadge(count, style = "own") {
     ctx.textBaseline = "middle";
     ctx.fillText(text, canvas.width / 2, 2 + badgeH / 2);
 
+    // Energibjælke under tallet: grøn → gul → rød.
+    const step = Math.ceil(pct / 10) / 10;
+    const by = badgeH + 5;
+    ctx.fillStyle = "rgba(17, 22, 28, 0.92)";
+    ctx.fillRect(bx, by, badgeW, barH);
+    ctx.fillStyle = step > 0.6 ? "#39FF14" : step > 0.3 ? "#FFD54F" : "#FF5252";
+    ctx.fillRect(bx + 1, by + 1, Math.max(1, (badgeW - 2) * step), barH - 2);
+
     const sx = (canvas.width - sw) / 2;
-    ctx.drawImage(soldierImg, sx, badgeH + 4, sw, sh);
+    ctx.drawImage(soldierImg, sx, badgeH + barH + 6, sw, sh);
 
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     if (!map.hasImage(imgId)) {
@@ -1007,40 +1039,41 @@ async function renderTroopsOnMap() {
     const troopFeatures = [];
     const lineFeatures = [];
 
-    const addTroop = async (count, lat, lon, style) => {
-        await ensureTroopBadge(count, style);
+    const addTroop = async (group, lat, lon, style) => {
+        const pct = energyPct(group);
+        await ensureTroopBadge(group.count, style, pct);
         troopFeatures.push({
             type: "Feature",
-            properties: { img: troopBadgeId(count, style) },
+            properties: { img: troopBadgeId(group.count, style, pct) },
             geometry: { type: "Point", coordinates: [lon, lat] }
         });
     };
 
     // Fjender, som du kan se lige nu (positionen er et øjebliksbillede fra serveren)
     for (const g of state.enemies.garrisons) {
-        await addTroop(g.count, g.lat, g.lon, "enemy");
+        await addTroop(g, g.lat, g.lon, "enemy");
     }
     for (const m of state.enemies.marches) {
-        await addTroop(m.count, m.lat, m.lon, "enemy");
+        await addTroop(m, m.lat, m.lon, "enemy");
     }
     // Patruljerne går jævnt videre mellem opdateringerne (strækning + tider fra serveren).
     const npcs = state.enemies.npcs.map(n => ({ n, pos: npcCurrentPos(n, now) }));
     for (const { n, pos } of npcs) {
-        await addTroop(n.count, pos[0], pos[1], "npc");
+        await addTroop(n, pos[0], pos[1], "npc");
     }
 
     const own = [];
     for (const g of state.garrisons) {
         if (g.count <= 0) continue;
         own.push([g.lat, g.lon]);
-        await addTroop(g.count, g.lat, g.lon, "own");
+        await addTroop(g, g.lat, g.lon, "own");
     }
 
     for (const m of state.marches) {
         if (m.count <= 0) continue;
         const [lat, lon] = marchCurrentPos(m, now);
         own.push([lat, lon]);
-        await addTroop(m.count, lat, lon, "own");
+        await addTroop(m, lat, lon, "own");
         const rem = marchRemainingPath(m, now);
         lineFeatures.push({
             type: "Feature",
@@ -1113,6 +1146,7 @@ async function syncAllFromSupabase() {
                 if (r.vision_m) GAME_CONFIG.VISION_RADIUS_M = Number(r.vision_m);
                 if (r.soldier_vision_m) GAME_CONFIG.SOLDIER_VISION_M = Number(r.soldier_vision_m);
                 if (r.fire_range_m) GAME_CONFIG.FIRE_RANGE_M = Number(r.fire_range_m);
+                if (r.soldier_hp) GAME_CONFIG.SOLDIER_HP = Number(r.soldier_hp);
                 if (r.soldier_speed_mps) GAME_CONFIG.SOLDIER_SPEED_MPS = Number(r.soldier_speed_mps);
                 if (r.building_defense_per_level) GAME_CONFIG.BUILDING_DEFENSE_PER_LEVEL = Number(r.building_defense_per_level);
                 if (r.building_gap_m != null) GAME_CONFIG.BUILDING_GAP_M = Number(r.building_gap_m);
@@ -1393,7 +1427,7 @@ function garrisonRowsHtml(list) {
                 <img src="assets/tropper.png" class="pixel-img item-sprite" />
                 <div class="item-info">
                     <div class="item-title item-title-green">Vagtstyrke: ${g.count} soldater</div>
-                    <div class="item-sub">Står vagt her</div>
+                    <div class="item-sub">Står vagt her · ${energyText(g)}</div>
                 </div>
             </div>
             <div class="item-actions">
@@ -1436,6 +1470,7 @@ function renderPointBox(lat, lon, box, badge) {
                     <div class="item-info">
                         <div class="item-title item-title-green">${m.count} soldater på march</div>
                         <div class="item-sub">${marchEtaText(m)}</div>
+                        <div class="item-sub">${energyText(m)}</div>
                     </div>
                 </div>
                 <div class="item-actions">
@@ -1460,6 +1495,7 @@ function renderPointBox(lat, lon, box, badge) {
                         <div class="item-info">
                             <div class="item-title enemy-title">Fjendtlig patrulje: ${n.count} soldater</div>
                             <div class="item-sub">${n.fighting ? "💥 i kamp med dine soldater" : "Computerstyret. Går rundt i området og angriber soldater, den får øje på."}</div>
+                            <div class="item-sub">${energyText(n)}</div>
                         </div>
                     </div>
                     <div class="item-actions"><button class="btn btn-small btn-danger" onclick="sendSoldiersTo(${pos[0]}, ${pos[1]})">⚔️ Angrib</button></div>
@@ -1788,6 +1824,7 @@ function renderTroopsSidebar() {
                     <div class="item-info">
                         <div class="item-title item-title-green">${m.count} soldater på march</div>
                         <div class="item-sub march-eta-text">${marchEtaText(m, now)}</div>
+                        <div class="item-sub">${energyText(m)}</div>
                     </div>
                 </div>
                 <div class="progress-track">
@@ -1813,6 +1850,7 @@ function renderTroopsSidebar() {
                     <div class="item-info">
                         <div class="item-title">${g.count} soldater på vagt</div>
                         <div class="item-sub">${where}</div>
+                        <div class="item-sub">${energyText(g)}</div>
                     </div>
                 </div>
                 <div class="item-actions">
@@ -2206,7 +2244,7 @@ function renderContactsSidebar() {
                     <img src="assets/tropper.png" class="pixel-img item-sprite" />
                     <div class="item-info">
                         <div class="item-title enemy-title">${g.count} fjendtlige vagter</div>
-                        <div class="item-sub">${who(g)}</div>
+                        <div class="item-sub">${who(g)} · ${energyText(g)}</div>
                     </div>
                 </div>
                 <div class="item-actions">
@@ -2223,7 +2261,7 @@ function renderContactsSidebar() {
                     <img src="assets/fjende.png" class="pixel-img item-sprite" />
                     <div class="item-info">
                         <div class="item-title enemy-title">Fjendtlig patrulje: ${n.count} soldater</div>
-                        <div class="item-sub">${n.fighting ? "💥 i kamp med dine soldater" : who(n)}</div>
+                        <div class="item-sub">${n.fighting ? "💥 i kamp med dine soldater" : who(n)} · ${energyText(n)}</div>
                     </div>
                 </div>
                 <div class="item-actions">
@@ -2239,7 +2277,7 @@ function renderContactsSidebar() {
                     <img src="assets/tropper.png" class="pixel-img item-sprite" />
                     <div class="item-info">
                         <div class="item-title enemy-title">${m.count} fjendtlige soldater på march</div>
-                        <div class="item-sub">${who(m)}</div>
+                        <div class="item-sub">${who(m)} · ${energyText(m)}</div>
                     </div>
                 </div>
                 <div class="item-actions">
