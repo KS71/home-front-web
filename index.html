@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>HOME FRONT — Command Center</title>
     <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
-    <link rel="stylesheet" href="style.css?v=31" />
+    <link rel="stylesheet" href="style.css?v=32" />
 </head>
 <body>
     <!-- Login / Titelskærm Overlay -->
@@ -138,6 +138,17 @@
                 </div>
             </section>
 
+            <!-- Kamprapporter: træfninger den sidste tid -->
+            <section class="panel-section collapsible" data-section="battles">
+                <div class="section-header" role="button" tabindex="0" aria-expanded="false">
+                    <h2>💥 KAMPRAPPORTER</h2>
+                    <span id="battles-summary-badge" class="badge">0 kampe</span>
+                </div>
+                <div id="battles-list" class="card-box list-stack">
+                    <p class="muted-hint">Ingen kampe endnu.</p>
+                </div>
+            </section>
+
             <!-- 4. Soldater ude på kortet (March & Vagt) -->
             <section class="panel-section collapsible" data-section="troops">
                 <div class="section-header" role="button" tabindex="0" aria-expanded="false">
@@ -173,6 +184,6 @@
 
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="game.js?v=31"></script>
+    <script src="game.js?v=32"></script>
 </body>
 </html>

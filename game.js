@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 31;
+const APP_VERSION = 32;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -354,6 +354,7 @@ function initMap() {
         installGameLayers();
         mapReady = true;
         renderBookmarksOnMap();
+        renderBattlesOnMap();
         refreshViewportData();
         renderTroopsOnMap();
     });
@@ -497,6 +498,7 @@ function installGameLayers() {
     map.addSource("src-shots", { type: "geojson", data: empty });
     map.addSource("src-route-draft", { type: "geojson", data: empty });
     map.addSource("src-bookmarks", { type: "geojson", data: empty });
+    map.addSource("src-battles", { type: "geojson", data: empty });
 
     // Bogmærker: byggepladser er firkanter på 50×50 m, mål er små firkanter.
     map.addLayer({
@@ -619,6 +621,22 @@ function installGameLayers() {
             "text-ignore-placement": true
         },
         paint: { "text-color": "#FFD54F" }
+    });
+
+    // Træfninger fra kamprapporten: en lille pixel-eksplosion, hvor kampen var.
+    map.addImage("img-explosion", explosionImage(), { pixelRatio: 1 });
+    map.addImage("img-explosion-sel", explosionImage(true), { pixelRatio: 1 });
+    map.addLayer({
+        id: "lyr-battles",
+        type: "symbol",
+        source: "src-battles",
+        layout: {
+            "icon-image": ["case", ["boolean", ["get", "selected"], false], "img-explosion-sel", "img-explosion"],
+            "icon-size": ["interpolate", ["linear"], ["zoom"], 11, 0.6, 15, 1, 18, 1.4],
+            "icon-allow-overlap": true,
+            "icon-ignore-placement": true,
+            "symbol-sort-key": ["case", ["boolean", ["get", "selected"], false], 1, 0]
+        }
     });
 
     // Skud mellem dine soldater og fjendtlige patruljer i kamp.
@@ -2661,6 +2679,154 @@ const REPORT_TEXT = {
     patrol_won: r => `💀 En fjendtlig patrulje nedkæmpede ${r.count} af dine soldater.`
 };
 
+// ---------------------------------------------------------------- kamprapporter
+// Træfninger fra serveren (0018): hvor og hvornår dine soldater har været i kamp. Vises i menuen
+// "Kamprapporter" og som eksplosioner på kortet for det valgte tidsrum.
+const BATTLE_WINDOWS = [
+    { h: 1, label: "1 t" }, { h: 4, label: "4 t" }, { h: 12, label: "12 t" },
+    { h: 24, label: "24 t" }, { h: 168, label: "Uge" }
+];
+const BATTLE_WINDOW_KEY = "hf_battle_window_h";
+let battleWindowH = 24;
+try { battleWindowH = Number(localStorage.getItem(BATTLE_WINDOW_KEY)) || 24; } catch (_) {}
+let battles = [];
+let battlesMissing = false;  // databasen har ikke fået 0018 endnu
+let selectedBattleId = null;
+
+async function loadBattles() {
+    if (!state.user) return;
+    const since = new Date(serverNow() - battleWindowH * 3600000).toISOString();
+    const { data, error } = await sb.from("battles")
+        .select("id,lat,lon,enemy,started_at,last_at,own_killed,own_hits,enemy_killed,enemy_wiped,own_wiped")
+        .gte("last_at", since)
+        .order("last_at", { ascending: false })
+        .limit(300);
+    battlesMissing = !!error;
+    battles = data || [];
+    renderBattlesSidebar();
+    renderBattlesOnMap();
+}
+
+window.setBattleWindow = function(h) {
+    battleWindowH = h;
+    try { localStorage.setItem(BATTLE_WINDOW_KEY, String(h)); } catch (_) {}
+    loadBattles();
+};
+
+window.showBattle = function(id) {
+    const b = battles.find(x => String(x.id) === String(id));
+    if (!b) return;
+    selectedBattleId = b.id;
+    renderBattlesSidebar();
+    renderBattlesOnMap();
+    jumpToPoint(b.lat, b.lon);
+};
+
+function battleTimeText(iso) {
+    const d = new Date(Date.parse(iso) - state.serverOffsetMs);
+    const today = new Date();
+    const time = d.toLocaleTimeString("da-DK", { hour: "2-digit", minute: "2-digit" });
+    if (d.toDateString() === today.toDateString()) return `I dag kl. ${time}`;
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+    if (d.toDateString() === yesterday.toDateString()) return `I går kl. ${time}`;
+    return `${d.toLocaleDateString("da-DK", { weekday: "short", day: "numeric", month: "short" })} kl. ${time}`;
+}
+
+function battleOutcome(b) {
+    if (b.enemy_wiped && !b.own_wiped) return { text: "🏅 Sejr: fjenden blev nedkæmpet", color: "#39FF14" };
+    if (b.own_wiped && !b.enemy_wiped) return { text: "💀 Nederlag: en af dine grupper faldt", color: "#FF5252" };
+    if (b.own_wiped && b.enemy_wiped) return { text: "⚔️ Blodig kamp: begge sider mistede en gruppe", color: "#FF9800" };
+    return { text: "⚔️ Træfning", color: "#FFD54F" };
+}
+
+function renderBattlesSidebar() {
+    const list = document.getElementById("battles-list");
+    const badge = document.getElementById("battles-summary-badge");
+    if (!list) return;
+    if (badge) badge.textContent = `${battles.length} kampe`;
+
+    const buttons = BATTLE_WINDOWS.map(w =>
+        `<button class="btn btn-small ${w.h === battleWindowH ? "btn-primary" : ""}" onclick="setBattleWindow(${w.h})">${w.label}</button>`
+    ).join("");
+    let html = `<div class="item-actions" style="margin-bottom:8px;">${buttons}</div>`;
+
+    if (battlesMissing) {
+        html += `<p class="muted-hint">Kamprapporterne kræver, at <strong>0018_kamprapporter.sql</strong> er kørt i Supabase.</p>`;
+    } else if (battles.length === 0) {
+        html += `<p class="muted-hint">Ingen kampe ${battleWindowH === 168 ? "den sidste uge" : `de sidste ${battleWindowH === 1 ? "time" : `${battleWindowH} timer`}`}.</p>`;
+    } else {
+        for (const b of battles) {
+            const o = battleOutcome(b);
+            const enemy = b.enemy === "player" ? "en anden spiller" : "en fjendtlig patrulje";
+            const sel = String(b.id) === String(selectedBattleId);
+            html += `
+                <div class="item-row ${sel ? "item-row-selected" : ""}" style="cursor:pointer;" onclick="showBattle(${b.id})">
+                    <div class="item-row-top">
+                        <div class="item-info">
+                            <div class="item-title" style="color:${o.color}">${o.text}</div>
+                            <div class="item-sub">${battleTimeText(b.last_at)} · mod ${enemy}</div>
+                            <div class="item-sub">📍 ${formatPos(b.lat, b.lon)}</div>
+                            <div class="item-sub">Dine tab: ${b.own_killed} faldne${b.own_hits > b.own_killed ? ` (${b.own_hits} ramt)` : ""} · Fjendens tab: ${b.enemy_killed}</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+    }
+    list.innerHTML = html;
+}
+
+function renderBattlesOnMap() {
+    if (!mapReady) return;
+    map.getSource("src-battles")?.setData({
+        type: "FeatureCollection",
+        features: battles.map(b => ({
+            type: "Feature",
+            properties: { id: b.id, selected: String(b.id) === String(selectedBattleId) },
+            geometry: { type: "Point", coordinates: [b.lon, b.lat] }
+        }))
+    });
+}
+
+// En lille eksplosion i pixel-stil (16×16, tegnet 3× stor). Den valgte får en hvid ramme.
+function explosionImage(selected = false) {
+    const art = [
+        "......Y....Y....",
+        ".Y.....Y..Y...Y.",
+        "..Y..OOOYOO..Y..",
+        "....OOYYYYOO....",
+        "...OYYWWWYYOO...",
+        "..OOYWWWWWYYO...",
+        "YOOYYWWWWWWYOO.Y",
+        "..OYYWWWWWWYYO..",
+        "..ROYWWWWWYYOR..",
+        "...ROYYWWYYOR...",
+        "..Y.ROOYYOORR...",
+        ".....RROORRR..Y.",
+        "...Y..RRRR......",
+        ".......DD.......",
+        "......DDDD..Y...",
+        ".....DDDDDD....."
+    ];
+    const colors = { Y: "#FFEB3B", O: "#FF9800", R: "#E53935", W: "#FFFDE7", D: "#5D4037" };
+    const px = 3, pad = 2, size = 16 * px + pad * 2;
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext("2d");
+    if (selected) {
+        ctx.strokeStyle = "#FFFFFF";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(1, 1, size - 2, size - 2);
+    }
+    art.forEach((row, y) => [...row].forEach((c, x) => {
+        if (!colors[c]) return;
+        ctx.fillStyle = colors[c];
+        ctx.fillRect(pad + x * px, pad + y * px, px, px);
+    }));
+    return ctx.getImageData(0, 0, size, size);
+}
+
 // Rapporter om ankomster og kampe — også dem, der skete mens du var væk.
 async function loadReports() {
     if (!state.user) return;
@@ -2675,6 +2841,7 @@ async function loadReports() {
     }
     await sb.from("march_reports").update({ seen: true }).in("id", data.map(r => r.id));
     // Kamp mod patruljer ændrer antallet af soldater; hjemkomne sårede lægges på hospitalet.
+    if (data.some(r => r.kind !== "returned" && r.kind !== "arrived")) loadBattles();
     if (data.some(r => r.kind.startsWith("patrol_") || r.kind === "returned")) {
         await loadArmy();
         await syncAllFromSupabase();
@@ -3013,6 +3180,7 @@ async function onSignedIn(user) {
     await loadArmy();
     await pollWorld();
     await loadReports();
+    await loadBattles();
     pollScoutAlerts();
     maybeSpawnNpcs();
 }
@@ -3214,3 +3382,4 @@ setInterval(async () => {
     await pollWorld();
     await loadReports();
 }, GAME_CONFIG.WORLD_POLL_MS);
+setInterval(loadBattles, 60000);
