@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 32;
+const APP_VERSION = 33;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -2390,6 +2390,12 @@ async function executeMarchOrder(order, target, landPath, loopPath = null) {
         ({ error } = await sb.rpc("redirect_march", {
             p_march: order.redirectMarchId, p_to_lat: target.lat, p_to_lon: target.lon, p_path: path
         }));
+    } else if (order.woundedOnly && order.from.type === "march") {
+        const m = findMarch(order.from.id);
+        const path = m ? [marchCurrentPos(m, serverNow()), ...landPath.slice(1)] : landPath;
+        ({ error } = await sb.rpc("send_wounded_from_march", {
+            p_march: order.from.id, p_to_lat: target.lat, p_to_lon: target.lon, p_path: path
+        }));
     } else if (order.woundedOnly) {
         ({ error } = await sb.rpc("send_wounded", {
             p_from_garrison: order.from.id, p_to_lat: target.lat, p_to_lon: target.lon, p_path: landPath
@@ -2588,6 +2594,7 @@ function renderGroupModal() {
         actions.innerHTML = gm.kind === "march" ? `
             <button class="btn" onclick="closeModal(); jumpToMarch('${g.id}')">🎯 Hop til</button>
             <button class="btn btn-primary" onclick="closeModal(); startRedirectMarch('${g.id}')">🧭 Nyt mål</button>
+            ${hurt ? `<button class="btn btn-primary" onclick="closeModal(); sendWoundedFromMarch('${g.id}')">🏥 Send ${hurt} ${hurt === 1 ? "såret" : "sårede"} til hospitalet</button>` : ""}
             <button class="btn btn-danger" onclick="closeModal(); recallMarch('${g.id}')">🏠 Kald hjem</button>
             <button class="btn" onclick="closeModal()">Luk</button>` : `
             <button class="btn" onclick="closeModal(); jumpToPoint(${lat}, ${lon})">🎯 Hop til</button>
@@ -2643,6 +2650,22 @@ window.sendWoundedToHospital = function(id) {
     }
     openConfirmMarchModal(
         { from: { type: "garrison", id: g.id, lat: g.lat, lon: g.lon }, count: n, woundedOnly: true },
+        { lat: near.b.lat, lon: near.b.lon, label: buildingLabel(near.b) });
+};
+
+// Som ovenfor, men fra en deling på march eller patrulje: de raske fortsætter deres rute.
+window.sendWoundedFromMarch = function(marchId) {
+    const m = findMarch(marchId);
+    const n = (m?.wounded || []).length;
+    if (!m || n === 0) return;
+    const [lat, lon] = marchCurrentPos(m, serverNow());
+    const near = nearestOwn("hospital", lat, lon);
+    if (!near) {
+        showToast("Du har intet felthospital. Uden hospital kan sårede ikke heles — byg et først.");
+        return;
+    }
+    openConfirmMarchModal(
+        { from: { type: "march", id: m.id, lat, lon }, count: n, woundedOnly: true },
         { lat: near.b.lat, lon: near.b.lon, label: buildingLabel(near.b) });
 };
 
