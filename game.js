@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 24;
+const APP_VERSION = 25;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -180,6 +180,7 @@ function marchFromRow(row) {
         owner_id: row.owner_id,
         count: row.count,
         wounded: row.wounded || [],
+        patrolPath: row.patrol_path || null,
         homeBuildingId: row.home_building_id,
         homeLat: row.home_lat,
         homeLon: row.home_lon,
@@ -470,6 +471,7 @@ function installGameLayers() {
     map.addSource("src-march-lines", { type: "geojson", data: empty });
     map.addSource("src-troops", { type: "geojson", data: empty });
     map.addSource("src-shots", { type: "geojson", data: empty });
+    map.addSource("src-route-draft", { type: "geojson", data: empty });
     map.addSource("src-bookmarks", { type: "geojson", data: empty });
 
     // Bogmærker: byggepladser er firkanter på 50×50 m, mål er små firkanter.
@@ -550,12 +552,50 @@ function installGameLayers() {
         type: "line",
         source: "src-march-lines",
         paint: {
-            "line-color": "#39FF14",
+            "line-color": ["case", ["boolean", ["get", "patrol"], false], "#4FC3F7", "#39FF14"],
             "line-width": 3,
             "line-dasharray": [2, 2],
             "line-opacity": 0.9
         }
     });
+    // Ruten, man er ved at klikke sammen: streger og nummererede punkter.
+    map.addLayer({
+        id: "lyr-route-draft-line",
+        type: "line",
+        source: "src-route-draft",
+        filter: ["==", ["geometry-type"], "LineString"],
+        paint: {
+            "line-color": ["case", ["boolean", ["get", "loop"], false], "#4FC3F7", "#FFD54F"],
+            "line-width": 3,
+            "line-dasharray": [1.5, 1.5]
+        }
+    });
+    map.addLayer({
+        id: "lyr-route-draft-points",
+        type: "circle",
+        source: "src-route-draft",
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: {
+            "circle-radius": 11,
+            "circle-color": "#11161C",
+            "circle-stroke-color": "#FFD54F",
+            "circle-stroke-width": 2.5
+        }
+    });
+    map.addLayer({
+        id: "lyr-route-draft-labels",
+        type: "symbol",
+        source: "src-route-draft",
+        filter: ["==", ["geometry-type"], "Point"],
+        layout: {
+            "text-field": ["to-string", ["get", "nr"]],
+            "text-size": 12,
+            "text-allow-overlap": true,
+            "text-ignore-placement": true
+        },
+        paint: { "text-color": "#FFD54F" }
+    });
+
     // Skud mellem dine soldater og fjendtlige patruljer i kamp.
     map.addLayer({
         id: "lyr-shots",
@@ -1162,9 +1202,16 @@ async function renderTroopsOnMap() {
         own.push([lat, lon]);
         await addTroop(m, lat, lon, "own");
         const rem = marchRemainingPath(m, now);
+        if (m.patrolPath) {
+            lineFeatures.push({
+                type: "Feature",
+                properties: { patrol: true },
+                geometry: { type: "LineString", coordinates: m.patrolPath.map(pt => [pt[1], pt[0]]) }
+            });
+        }
         lineFeatures.push({
             type: "Feature",
-            properties: {},
+            properties: { patrol: !!m.patrolPath },
             geometry: {
                 type: "LineString",
                 coordinates: rem.map(pt => [pt[1], pt[0]])
@@ -1371,7 +1418,7 @@ function onMapClicked(lat, lon) {
             showToast("Stedet ligger ude i vandet! Vælg et sted på land.");
             return;
         }
-        openConfirmMarchModal(state.pendingMarchOrder, target);
+        addRoutePoint(target);
         return;
     }
     selectPoint(lat, lon);
@@ -1984,7 +2031,14 @@ function renderTroopsSidebar() {
 // "3,2 km tilbage · Ankomst om 1t 4m" — resterende distance langs delingens rute.
 function marchEtaText(m, now = Date.now()) {
     const remSec = Math.max(0, Math.ceil((m.arrivesAtMillis - now) / 1000));
-    return `${formatDistance(pathDistanceM(marchRemainingPath(m, now)))} tilbage · Ankomst om ${formatSeconds(remSec)}`;
+    const left = formatDistance(pathDistanceM(marchRemainingPath(m, now)));
+    if (m.patrolPath) {
+        const onLoop = JSON.stringify(m.path) === JSON.stringify(m.patrolPath);
+        return onLoop
+            ? `🔁 Patruljerer · ${left} tilbage af runden · ny runde om ${formatSeconds(remSec)}`
+            : `🔁 På vej til patruljeruten · ${left} · fremme om ${formatSeconds(remSec)}`;
+    }
+    return `${left} tilbage · Ankomst om ${formatSeconds(remSec)}`;
 }
 
 function formatDistance(meters) {
@@ -2044,14 +2098,76 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
 };
 
 function enterMarchTargetMode(order) {
-    state.pendingMarchOrder = order;
+    state.pendingMarchOrder = { ...order, waypoints: [] };
     document.getElementById("banner-soldier-count").textContent = order.count;
     document.getElementById("march-target-banner").classList.remove("hidden");
+    renderRouteDraft();
 }
 
 function exitMarchTargetMode() {
     state.pendingMarchOrder = null;
     document.getElementById("march-target-banner").classList.add("hidden");
+    renderRouteDraft();
+}
+
+// ---------------------------------------------------------------- rute med flere punkter
+function addRoutePoint(target) {
+    const order = state.pendingMarchOrder;
+    const prev = order.waypoints.at(-1) || routeStart(order);
+    if (Geo.distanceM(prev[0] ?? prev.lat, prev[1] ?? prev.lon, target.lat, target.lon) < 5) {
+        showToast("Vælg et punkt et stykke fra det forrige.");
+        return;
+    }
+    order.waypoints.push(target);
+    renderRouteDraft();
+}
+
+// Hvor soldaterne står nu (en deling på vej er gået videre siden ordren startede).
+function routeStart(order) {
+    if (order.redirectMarchId) {
+        const m = findMarch(order.redirectMarchId);
+        if (m) return marchCurrentPos(m, Date.now());
+    }
+    return [order.from.lat, order.from.lon];
+}
+
+function renderRouteDraft() {
+    const order = state.pendingMarchOrder;
+    const wps = order ? order.waypoints : [];
+    const features = [];
+    if (order && wps.length > 0) {
+        const start = routeStart(order);
+        const coords = [[start[1], start[0]], ...wps.map(w => [w.lon, w.lat])];
+        features.push({ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } });
+        if (wps.length >= 2) {
+            features.push({ type: "Feature", properties: { loop: true }, geometry: { type: "LineString",
+                coordinates: [[wps.at(-1).lon, wps.at(-1).lat], [wps[0].lon, wps[0].lat]] } });
+        }
+        wps.forEach((w, i) => features.push({ type: "Feature", properties: { nr: i + 1 },
+            geometry: { type: "Point", coordinates: [w.lon, w.lat] } }));
+    }
+    if (mapReady) map.getSource("src-route-draft")?.setData({ type: "FeatureCollection", features });
+
+    const info = document.getElementById("banner-route-info");
+    if (info) {
+        info.textContent = wps.length === 0 ? "Ingen punkter valgt endnu."
+            : wps.length === 1 ? "1 punkt valgt. Klik flere for en rute, eller send dem af sted."
+            : `${wps.length} punkter valgt. Den blå streg viser, hvordan en patrulje går tilbage til punkt 1.`;
+    }
+    const set = (id, on) => { const b = document.getElementById(id); if (b) b.disabled = !on; };
+    set("btn-route-undo", wps.length > 0);
+    set("btn-route-go", wps.length > 0);
+    set("btn-route-patrol", wps.length >= 2);
+}
+
+function finishRoute(patrol) {
+    const order = state.pendingMarchOrder;
+    if (!order || order.waypoints.length === 0) return;
+    if (patrol && order.waypoints.length < 2) {
+        showToast("En patrulje skal have mindst 2 punkter.");
+        return;
+    }
+    openConfirmMarchModal({ ...order, patrol }, order.waypoints.at(-1));
 }
 
 function showRouteCalculating(target) {
@@ -2067,47 +2183,81 @@ function showRouteCalculating(target) {
     document.getElementById("modal-overlay").classList.remove("hidden");
 }
 
-async function openConfirmMarchModal(order, target) {
-    const now = Date.now();
-    let startPos = [order.from.lat, order.from.lon];
-    if (order.redirectMarchId) {
-        const old = findMarch(order.redirectMarchId);
-        if (old) startPos = marchCurrentPos(old, now);
+// Ruten over land gennem flere punkter: ét ben ad gangen, lagt sammen.
+async function landPathThrough(points) {
+    let out = [points[0]];
+    for (let i = 1; i < points.length; i++) {
+        const leg = await findLandPathAsync(points[i - 1][0], points[i - 1][1], points[i][0], points[i][1]);
+        out = out.concat(leg.slice(1));
     }
-    if (Geo.distanceM(startPos[0], startPos[1], target.lat, target.lon) < 5) {
+    return out;
+}
+
+// order.waypoints (fra rute-tilstand) eller kun target. order.patrol = gå ringen igen og igen.
+async function openConfirmMarchModal(order, target) {
+    const startPos = routeStart(order);
+    const wps = (order.waypoints && order.waypoints.length > 0 ? order.waypoints : [target]).map(w => [w.lat, w.lon]);
+    if (Geo.distanceM(startPos[0], startPos[1], wps[0][0], wps[0][1]) < 5 && !order.patrol) {
         showToast("Vælg et mål et andet sted end der, hvor soldaterne står!");
         return;
     }
     showRouteCalculating(target);
 
-    const landPath = await findLandPathAsync(startPos[0], startPos[1], target.lat, target.lon);
+    let landPath, loopPath = null;
+    if (order.patrol) {
+        // Hen til punkt 1, derefter ringen 1 → 2 → … → sidste → 1.
+        landPath = await landPathThrough([startPos, wps[0]]);
+        loopPath = await landPathThrough([...wps, wps[0]]);
+    } else {
+        landPath = await landPathThrough([startPos, ...wps]);
+    }
     const distM = Math.round(pathDistanceM(landPath));
     const durationSec = Math.max(2, Math.round(distM / GAME_CONFIG.SOLDIER_SPEED_MPS));
+    const loopM = loopPath ? Math.round(pathDistanceM(loopPath)) : 0;
+    const loopSec = Math.max(2, Math.round(loopM / GAME_CONFIG.SOLDIER_SPEED_MPS));
+    const via = wps.length > 1 ? ` via ${wps.length - 1} punkt${wps.length > 2 ? "er" : ""}` : "";
 
     const overlay = document.getElementById("modal-overlay");
-    document.getElementById("modal-title").textContent = `Send ${order.count} soldater af sted?`;
-    document.getElementById("modal-body").innerHTML = `
-        <p><strong>Mål:</strong> ${escapeHtml(target.label)}</p>
+    document.getElementById("modal-title").textContent = order.patrol
+        ? `Send ${order.count} soldater på patrulje?`
+        : `Send ${order.count} soldater af sted?`;
+    document.getElementById("modal-body").innerHTML = order.patrol ? `
+        <p><strong>Patrulje:</strong> ${wps.length} punkter i ring (1 → … → ${wps.length} → 1), indtil du giver en ny ordre.</p>
+        <p><strong>Hen til punkt 1:</strong> ca. ${formatDistance(distM)} · ${formatSeconds(durationSec)}</p>
+        <p><strong>Én runde:</strong> ca. ${formatDistance(loopM)} · ${formatSeconds(loopSec)}</p>
+        <p style="color:#90A4AE;font-size:13px;">Patruljen skyder på fjender, den møder. Brug "Nyt mål" eller "Kald hjem" for at stoppe den.</p>
+    ` : `
+        <p><strong>Mål:</strong> ${escapeHtml(target.label)}${via}</p>
         <p><strong>Afstand langs land/kyst:</strong> ca. ${formatDistance(distM)}</p>
         <p><strong>Rejsetid:</strong> ${formatSeconds(durationSec)}</p>
         <p style="color:#90A4AE;font-size:13px;">Er du sikker på, at du vil sende soldaterne hertil?</p>
     `;
     document.getElementById("modal-actions").innerHTML = `
         <button class="btn" onclick="closeModal(); exitMarchTargetMode();">Annullér</button>
-        <button class="btn" onclick="closeModal();">Vælg andet sted</button>
-        <button class="btn btn-primary" id="btn-confirm-march-go">✅ Ja, send af sted</button>
+        <button class="btn" onclick="closeModal();">${state.pendingMarchOrder ? "Ret ruten" : "Tilbage"}</button>
+        <button class="btn btn-primary" id="btn-confirm-march-go">${order.patrol ? "🔁 Ja, gå patrulje" : "✅ Ja, send af sted"}</button>
     `;
     document.getElementById("btn-confirm-march-go").onclick = () => {
         closeModal();
         exitMarchTargetMode();
-        executeMarchOrder(order, target, landPath);
+        executeMarchOrder(order, target, landPath, loopPath);
     };
     overlay.classList.remove("hidden");
 }
 
-async function executeMarchOrder(order, target, landPath) {
+async function executeMarchOrder(order, target, landPath, loopPath = null) {
     let error;
-    if (order.redirectMarchId) {
+    if (order.patrol && order.redirectMarchId) {
+        const m = findMarch(order.redirectMarchId);
+        const path = m ? [marchCurrentPos(m, Date.now()), ...landPath.slice(1)] : landPath;
+        ({ error } = await sb.rpc("redirect_patrol", { p_march: order.redirectMarchId, p_path: path, p_loop: loopPath }));
+    } else if (order.patrol) {
+        ({ error } = await sb.rpc("start_patrol", {
+            p_from_building: order.from.type === "building" ? order.from.id : null,
+            p_from_garrison: order.from.type === "garrison" ? order.from.id : null,
+            p_count: order.count, p_path: landPath, p_loop: loopPath
+        }));
+    } else if (order.redirectMarchId) {
         // Delingen er gået videre, mens ruten blev beregnet og bekræftet: start fra hvor den er nu.
         const m = findMarch(order.redirectMarchId);
         const path = m ? [marchCurrentPos(m, Date.now()), ...landPath.slice(1)] : landPath;
@@ -2131,9 +2281,11 @@ async function executeMarchOrder(order, target, landPath) {
         return;
     }
     await loadArmy();
-    showToast(order.redirectMarchId
-        ? `Ny ordre: ${order.count} soldater går nu mod ${target.label}!`
-        : `${order.count} soldater er på vej mod ${target.label}!`);
+    showToast(order.patrol
+        ? `🔁 ${order.count} soldater går nu patrulje mellem ${order.waypoints.length} punkter!`
+        : order.redirectMarchId
+            ? `Ny ordre: ${order.count} soldater går nu mod ${target.label}!`
+            : `${order.count} soldater er på vej mod ${target.label}!`);
 }
 
 // Knapperne sender id'et som tekst, serveren giver det som tal.
@@ -2150,7 +2302,7 @@ window.startRedirectMarch = function(marchId) {
         count: m.count,
         redirectMarchId: m.id
     });
-    showToast("Klik på det nye mål på kortet!");
+    showToast("Klik på det nye mål på kortet — eller flere punkter for en rute eller patrulje!");
 };
 
 window.recallMarch = async function(marchId) {
@@ -2852,6 +3004,12 @@ document.getElementById("btn-logout").onclick = async () => {
 document.getElementById("btn-sync").onclick = () => syncAllFromSupabase();
 document.getElementById("btn-admin").onclick = () => openAdminModal();
 document.getElementById("btn-cancel-march-mode").onclick = () => exitMarchTargetMode();
+document.getElementById("btn-route-undo").onclick = () => {
+    state.pendingMarchOrder?.waypoints.pop();
+    renderRouteDraft();
+};
+document.getElementById("btn-route-go").onclick = () => finishRoute(false);
+document.getElementById("btn-route-patrol").onclick = () => finishRoute(true);
 document.getElementById("btn-jump-home").onclick = () => {
     if (state.myBuildings.length > 0) {
         const b = state.myBuildings[0];

@@ -772,3 +772,16 @@ body, html {
 .soldier-bar > div {
     height: 100%;
 }
+
+/* Rute med flere punkter */
+.march-banner-sub {
+    margin-top: 4px;
+    font-size: 12px;
+    color: #A5D6A7;
+}
+
+.march-banner-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
