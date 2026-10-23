@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 23;
+const APP_VERSION = 24;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -53,6 +53,19 @@ const GAME_CONFIG = {
                 per_hour: [2, 5, 10, 18, 30],
                 capacity: [10, 25, 50, 90, 150]
             },
+            size: 30
+        },
+        hospital: {
+            id: "hospital",
+            name: "Felthospitalet",
+            shortName: "felthospital",
+            desc: "Heler sårede soldater lidt efter lidt. Uden hospital kan sårede ikke heles.",
+            stages: ["Sanitetstelt", "Felthospital", "Lazaret", "Hospital", "Militærhospital"],
+            sprites: ["hospital_1", "hospital_2", "hospital_3", "hospital_4", "hospital_5"],
+            prices: [400, 700, 1200, 2000, 3200],
+            materials: [{}, {}, {}, { steel: 10 }, { steel: 30 }],
+            beds: [10, 25, 50, 100, 200],
+            healPerHour: [20, 25, 30, 40, 50],
             size: 30
         }
     }
@@ -149,6 +162,7 @@ const state = {
     isTester: false,       // Testkonto: må bygge uden byggepladsbogmærke (sættes af admin)
     isAdmin: false,        // Admin: ser Admin-knappen med spillerlisten
     groupModal: null,      // åben popup for en gruppe soldater { kind, id }
+    hospital: { hospitals: [], waiting: [], offsetMs: 0 }, // fra hospital_status()
     hasCenteredOnce: false
 };
 
@@ -224,7 +238,73 @@ function deployedSoldierCount() {
 }
 
 function availableInBarracks() {
-    return Math.max(0, state.soldiers - deployedSoldierCount());
+    return Math.max(0, state.soldiers - deployedSoldierCount() - patientCount());
+}
+
+// ============================================================================
+// Felthospitalet: patienter heles lidt efter lidt; sårede uden seng venter i barrakken
+// ============================================================================
+function patientCount() {
+    return state.hospital.hospitals.reduce((n, h) => n + patientsNow(h).length, 0);
+}
+
+async function loadHospitals() {
+    if (!state.user) return;
+    const { data, error } = await sb.rpc("hospital_status");
+    if (error || !data) return; // før 0012 er kørt, findes funktionen ikke
+    state.hospital = {
+        hospitals: data.hospitals || [],
+        waiting: data.waiting || [],
+        offsetMs: data.now ? Date.parse(data.now) - Date.now() : 0
+    };
+    renderBuildingsSidebar();
+    if (state.selected) renderSelectedBox();
+    if (state.hospitalModal) renderHospitalModal();
+}
+
+function hospitalOf(buildingId) {
+    return state.hospital.hospitals.find(h => String(h.building_id) === String(buildingId));
+}
+
+// Patienternes energi lige nu (serveren regner det samme ud, næste gang nogen spørger).
+function patientsNow(h) {
+    const hp = GAME_CONFIG.SOLDIER_HP;
+    const hours = Math.max(0, (Date.now() + state.hospital.offsetMs - Date.parse(h.healed_at)) / 3600000);
+    const gain = Math.floor(hours * h.heal_per_hour);
+    return h.patients.map(e => Math.min(hp, e + gain)).filter(e => e < hp);
+}
+
+function nearestOwn(kind, lat, lon) {
+    return state.myBuildings
+        .filter(b => b.kind === kind)
+        .map(b => ({ b, d: Geo.distanceM(lat, lon, b.lat, b.lon) }))
+        .sort((a, b) => a.d - b.d)[0] || null;
+}
+
+window.openHospitalModal = function(buildingId) {
+    state.groupModal = null;
+    state.hospitalModal = buildingId;
+    renderHospitalModal();
+    document.getElementById("modal-overlay").classList.remove("hidden");
+};
+
+function renderHospitalModal() {
+    const b = state.myBuildings.find(x => String(x.id) === String(state.hospitalModal));
+    const h = hospitalOf(state.hospitalModal);
+    if (!b) return;
+    const cfg = GAME_CONFIG.BUILDINGS.hospital;
+    const beds = h ? h.beds : cfg.beds[b.level - 1];
+    const rate = h ? h.heal_per_hour : cfg.healPerHour[b.level - 1];
+    const patients = h ? patientsNow(h) : [];
+    const waiting = state.hospital.waiting.length;
+    document.getElementById("modal-title").textContent = `${cfg.stages[b.level - 1]}: ${patients.length} / ${beds} senge`;
+    document.getElementById("modal-body").innerHTML = `
+        <p class="muted-hint">Patienterne får <strong>+${rate} energi i timen</strong>. Når de har fuld energi, er de raske og ledige i barrakken igen.
+        ${waiting ? `<br>🩹 <strong>${waiting}</strong> sårede venter i barrakken på en ledig seng.` : ""}</p>
+        ${patients.length
+            ? soldierTilesHtml({ count: patients.length, wounded: patients })
+            : `<p class="muted-hint">Ingen patienter lige nu. Send sårede hertil, eller lad dem gå hjem til barrakken — så bliver de lagt her af sig selv.</p>`}`;
+    document.getElementById("modal-actions").innerHTML = `<button class="btn" onclick="closeModal()">Luk</button>`;
 }
 
 function totalSoldierCapacity() {
@@ -307,7 +387,12 @@ async function installPixelLandscape() {
         ["img-b-skole_2", "assets/skole_2.png", 4],
         ["img-b-skole_3", "assets/skole_3.png", 4],
         ["img-b-skole_4", "assets/skole_4.png", 4],
-        ["img-b-skole_5", "assets/skole_5.png", 4]
+        ["img-b-skole_5", "assets/skole_5.png", 4],
+        ["img-b-hospital_1", "assets/hospital_1.png", 4],
+        ["img-b-hospital_2", "assets/hospital_2.png", 4],
+        ["img-b-hospital_3", "assets/hospital_3.png", 4],
+        ["img-b-hospital_4", "assets/hospital_4.png", 4],
+        ["img-b-hospital_5", "assets/hospital_5.png", 4]
     ];
 
     for (const [id, url, scale] of texList) {
@@ -1162,6 +1247,8 @@ async function syncAllFromSupabase() {
                     if (r.building_production?.[k]) bcfg.production = r.building_production[k];
                     if (r.building_size_m?.[k]) bcfg.size = Number(r.building_size_m[k]);
                 }
+                if (r.hospital_beds) GAME_CONFIG.BUILDINGS.hospital.beds = r.hospital_beds;
+                if (r.hospital_heal_per_hour) GAME_CONFIG.BUILDINGS.hospital.healPerHour = r.hospital_heal_per_hour;
             }
         }
     }
@@ -1194,6 +1281,7 @@ async function syncAllFromSupabase() {
     renderTroopsSidebar();
     renderBookmarksSidebar();
     await refreshViewportData();
+    await loadHospitals();
 }
 
 // Bogmærker, hvis firkant (byggeplads 50×50 m, mål 20×20 m) indeholder punktet.
@@ -1387,9 +1475,11 @@ function renderBuildingBox(bld, box, badge) {
                         <div class="item-sub">${size}×${size} m · ${formatPos(bld.lat, bld.lon)}</div>
                         ${housing ? `<div class="item-sub" style="color:#76FF03">Plads her: ${housing} · Ledige i barrak: ${avail}</div>` : ""}
                         ${prod ? `<div class="item-sub" style="color:#FFD54F">Klar til indkaldelse: ${prod.amount} / ${prod.capacity} (${prod.perHour}/t)</div>` : ""}
+                        ${hospitalLineHtml(bld)}
                     </div>
                 </div>
                 <div class="item-actions">
+                    ${bld.kind === "hospital" ? `<button class="btn btn-small btn-primary" onclick="openHospitalModal(${bld.id})">🏥 Patienter</button>` : ""}
                     ${bld.kind === "barracks" ? `<button class="btn btn-small btn-primary" ${avail <= 0 ? "disabled" : ""} onclick="sendFromBuilding(${bld.id})">🪖 Send soldater (${avail} klar)</button>` : ""}
                     ${prod && prod.amount > 0 ? `<button class="btn btn-small btn-primary" onclick="collectFromBuilding(${bld.id})">📥 Indkald ${prod.amount} soldater</button>` : ""}
                     ${bld.kind === "academy" ? `<button class="btn btn-small btn-gold" onclick="recruitSoldierInstant()">⚡ Uddan 1 straks (${GAME_CONFIG.INSTANT_SOLDIER_STEPS} skridt)</button>` : ""}
@@ -1421,6 +1511,24 @@ function renderBuildingBox(bld, box, badge) {
         `;
     }
     box.innerHTML = html;
+}
+
+// "Senge: 3 / 10 · +20 energi/t" på hospitalet, "🩹 4 sårede venter" på barrakken.
+function hospitalLineHtml(b) {
+    if (b.kind === "hospital") {
+        const cfg = GAME_CONFIG.BUILDINGS.hospital;
+        const h = hospitalOf(b.id);
+        const beds = h ? h.beds : cfg.beds[b.level - 1];
+        const rate = h ? h.heal_per_hour : cfg.healPerHour[b.level - 1];
+        const used = h ? patientsNow(h).length : 0;
+        return `<div class="item-sub" style="color:#FF8A80">Senge: ${used} / ${beds} · +${rate} energi i timen</div>`;
+    }
+    if (b.kind === "barracks" && state.hospital.waiting.length > 0) {
+        const n = state.hospital.waiting.length;
+        const why = state.myBuildings.some(x => x.kind === "hospital") ? "på en ledig seng" : "— byg et felthospital for at hele dem";
+        return `<div class="item-sub" style="color:#FF8A80">🩹 ${n} ${n === 1 ? "såret venter" : "sårede venter"} ${why}</div>`;
+    }
+    return "";
 }
 
 function garrisonRowsHtml(list) {
@@ -1784,10 +1892,12 @@ function renderBuildingsSidebar() {
                         <div class="item-title">${stageName} (Trin ${b.level})</div>
                         <div class="item-sub">${housing ? `Plads: ${housing} soldater` : (cfg?.name || "")}</div>
                         ${prod ? `<div class="item-sub" style="color:#FFD54F">Klar: ${prod.amount}/${prod.capacity} soldater (${prod.perHour}/t)</div>` : ""}
+                        ${hospitalLineHtml(b)}
                     </div>
                 </div>
                 <div class="item-actions">
                     <button class="btn btn-small" onclick="jumpToBuilding(${b.id})">🎯 Hop til</button>
+                    ${b.kind === "hospital" ? `<button class="btn btn-small btn-primary" onclick="openHospitalModal(${b.id})">🏥 Patienter</button>` : ""}
                     ${b.kind === "barracks" ? `<button class="btn btn-small btn-primary" ${avail <= 0 ? "disabled" : ""} onclick="sendFromBuilding(${b.id})">🪖 Send soldater (${avail})</button>` : ""}
                     ${prod && prod.amount > 0 ? `<button class="btn btn-small btn-primary" onclick="collectFromBuilding(${b.id})">📥 Indkald (${prod.amount})</button>` : ""}
                     ${b.kind === "academy" ? `<button class="btn btn-small btn-gold" onclick="recruitSoldierInstant()">⚡ +1 Soldat (${GAME_CONFIG.INSTANT_SOLDIER_STEPS})</button>` : ""}
@@ -2004,6 +2114,10 @@ async function executeMarchOrder(order, target, landPath) {
         ({ error } = await sb.rpc("redirect_march", {
             p_march: order.redirectMarchId, p_to_lat: target.lat, p_to_lon: target.lon, p_path: path
         }));
+    } else if (order.woundedOnly) {
+        ({ error } = await sb.rpc("send_wounded", {
+            p_from_garrison: order.from.id, p_to_lat: target.lat, p_to_lon: target.lon, p_path: landPath
+        }));
     } else {
         ({ error } = await sb.rpc("start_march", {
             p_from_building: order.from.type === "building" ? order.from.id : null,
@@ -2139,6 +2253,7 @@ function soldierTilesHtml(g) {
 }
 
 function openGroupModal(kind, id) {
+    state.hospitalModal = null;
     state.groupModal = { kind, id };
     renderGroupModal();
     document.getElementById("modal-overlay").classList.remove("hidden");
@@ -2172,7 +2287,7 @@ function renderGroupModal() {
         const where = gm.kind === "march" ? marchEtaText(g) : "Står vagt";
         title.textContent = gm.kind === "march" ? `Deling på march: ${g.count} soldater` : `Vagtstyrke: ${g.count} soldater`;
         body.innerHTML = `
-            <p class="muted-hint">${where} · ${g.count - hurt} raske, ${hurt} ${hurt === 1 ? "såret" : "sårede"}. Sårede bliver raske, når de kommer hjem til barrakken.</p>
+            <p class="muted-hint">${where} · ${g.count - hurt} raske, ${hurt} ${hurt === 1 ? "såret" : "sårede"}. Sårede heles kun på et felthospital.</p>
             ${bar}
             ${soldierTilesHtml(g)}`;
         actions.innerHTML = gm.kind === "march" ? `
@@ -2182,6 +2297,7 @@ function renderGroupModal() {
             <button class="btn" onclick="closeModal()">Luk</button>` : `
             <button class="btn" onclick="closeModal(); jumpToPoint(${lat}, ${lon})">🎯 Hop til</button>
             <button class="btn btn-primary" onclick="closeModal(); sendFromGarrison(${g.id})">🪖 Send soldater</button>
+            ${hurt ? `<button class="btn btn-primary" onclick="closeModal(); sendWoundedToHospital(${g.id})">🏥 Send ${hurt} ${hurt === 1 ? "såret" : "sårede"} til hospitalet</button>` : ""}
             <button class="btn btn-danger" onclick="closeModal(); sendGarrisonHome(${g.id})">🏠 Send hjem</button>
             <button class="btn" onclick="closeModal()">Luk</button>`;
         return;
@@ -2219,6 +2335,21 @@ window.sendGarrisonHome = function(id) {
 };
 
 window.openGroupModal = openGroupModal;
+
+// Kun de sårede går til det nærmeste hospital; de raske bliver stående.
+window.sendWoundedToHospital = function(id) {
+    const g = state.garrisons.find(x => String(x.id) === String(id));
+    const n = (g?.wounded || []).length;
+    if (!g || n === 0) return;
+    const near = nearestOwn("hospital", g.lat, g.lon);
+    if (!near) {
+        showToast("Du har intet felthospital. Uden hospital kan sårede ikke heles — byg et først.");
+        return;
+    }
+    openConfirmMarchModal(
+        { from: { type: "garrison", id: g.id, lat: g.lat, lon: g.lon }, count: n, woundedOnly: true },
+        { lat: near.b.lat, lon: near.b.lon, label: buildingLabel(near.b) });
+};
 
 let resolvingArrivals = false;
 async function tickMarches() {
@@ -2266,8 +2397,8 @@ async function loadReports() {
         if (text) queueToast(text(r));
     }
     await sb.from("march_reports").update({ seen: true }).in("id", data.map(r => r.id));
-    // Kamp mod patruljer ændrer antallet af soldater.
-    if (data.some(r => r.kind.startsWith("patrol_"))) {
+    // Kamp mod patruljer ændrer antallet af soldater; hjemkomne sårede lægges på hospitalet.
+    if (data.some(r => r.kind.startsWith("patrol_") || r.kind === "returned")) {
         await loadArmy();
         await syncAllFromSupabase();
     }
@@ -2541,6 +2672,7 @@ window.setTester = async function(playerId, checkbox) {
 // ============================================================================
 window.closeModal = function() {
     state.groupModal = null;
+    state.hospitalModal = null;
     document.getElementById("modal-overlay").classList.add("hidden");
 };
 
@@ -2788,6 +2920,7 @@ setInterval(() => {
 }, 1000);
 setInterval(pollScoutAlerts, GAME_CONFIG.SCOUT_POLL_MS);
 setInterval(maybeSpawnNpcs, GAME_CONFIG.NPC_SPAWN_CHECK_MS);
+setInterval(loadHospitals, 60000);
 setInterval(async () => {
     if (!state.user) return;
     await pollWorld();
