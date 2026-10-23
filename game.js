@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 22;
+const APP_VERSION = 23;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -148,6 +148,7 @@ const state = {
     scoutAlerts: [],       // { id, lat, lon, kind, scouts } — grove advarsler om fjendtlige spejdere
     isTester: false,       // Testkonto: må bygge uden byggepladsbogmærke (sættes af admin)
     isAdmin: false,        // Admin: ser Admin-knappen med spillerlisten
+    groupModal: null,      // åben popup for en gruppe soldater { kind, id }
     hasCenteredOnce: false
 };
 
@@ -187,6 +188,7 @@ async function loadArmy() {
     ]);
     if (mRes.data) state.marches = mRes.data.map(marchFromRow);
     if (gRes.data) state.garrisons = gRes.data;
+    renderGroupModal();
     renderTroopsSidebar();
     renderBuildingsSidebar();
     renderTroopsOnMap();
@@ -1285,6 +1287,7 @@ function onMapClicked(lat, lon) {
         return;
     }
     selectPoint(lat, lon);
+    openGroupModalAt(lat, lon);
 }
 
 function selectPoint(lat, lon) {
@@ -1431,6 +1434,7 @@ function garrisonRowsHtml(list) {
                 </div>
             </div>
             <div class="item-actions">
+                <button class="btn btn-small" onclick="openGroupModal('garrison', '${g.id}')">📋 Soldater</button>
                 <button class="btn btn-small btn-primary" onclick="sendFromGarrison(${g.id})">🪖 Send videre</button>
             </div>
         </div>
@@ -1474,6 +1478,7 @@ function renderPointBox(lat, lon, box, badge) {
                     </div>
                 </div>
                 <div class="item-actions">
+                    <button class="btn btn-small" onclick="openGroupModal('march', '${m.id}')">📋 Soldater</button>
                     <button class="btn btn-small btn-primary" onclick="startRedirectMarch('${m.id}')">🧭 Nyt mål</button>
                     <button class="btn btn-small btn-danger" onclick="recallMarch('${m.id}')">🏠 Kald hjem</button>
                 </div>
@@ -1831,6 +1836,7 @@ function renderTroopsSidebar() {
                     <div class="progress-fill march-prog-bar" style="width:${prog.toFixed(1)}%"></div>
                 </div>
                 <div class="item-actions">
+                    <button class="btn btn-small" onclick="openGroupModal('march', '${m.id}')">📋 Soldater</button>
                     <button class="btn btn-small" onclick="jumpToMarch('${m.id}')">🎯 Hop til</button>
                     <button class="btn btn-small btn-primary" onclick="startRedirectMarch('${m.id}')">🧭 Nyt mål</button>
                     <button class="btn btn-small btn-danger" onclick="recallMarch('${m.id}')">🏠 Kald hjem</button>
@@ -1854,6 +1860,7 @@ function renderTroopsSidebar() {
                     </div>
                 </div>
                 <div class="item-actions">
+                    <button class="btn btn-small" onclick="openGroupModal('garrison', '${g.id}')">📋 Soldater</button>
                     <button class="btn btn-small" onclick="jumpToPoint(${g.lat}, ${g.lon})">🎯 Hop til</button>
                     <button class="btn btn-small btn-primary" onclick="sendFromGarrison(${g.id})">🪖 Send videre</button>
                 </div>
@@ -1897,6 +1904,7 @@ function updateLiveTroopCountdowns() {
 // from = { type: "building" | "garrison", id, lat, lon }; target = { lat, lon, label } eller null.
 window.openSendSoldiersModal = function(from, maxAvail, target = null) {
     if (maxAvail <= 0) return;
+    state.groupModal = null;
     const overlay = document.getElementById("modal-overlay");
     const fromText = from.type === "building" ? "din barrak" : "vagtstyrken";
     document.getElementById("modal-title").textContent = "Send soldater på march";
@@ -1937,6 +1945,7 @@ function exitMarchTargetMode() {
 }
 
 function showRouteCalculating(target) {
+    state.groupModal = null;
     document.getElementById("modal-title").textContent = "Beregner rute…";
     document.getElementById("modal-body").innerHTML = `
         <div class="route-calculating">
@@ -2067,6 +2076,150 @@ window.jumpToMarch = function(marchId) {
     map.flyTo({ center: [lon, lat], zoom: 17.0, duration: 700 });
 };
 
+// ============================================================================
+// Popup for en gruppe soldater: hver soldats energi og alt, man kan gøre med gruppen
+// ============================================================================
+// state.groupModal = { kind: "garrison" | "march" | "enemy-garrison" | "enemy-march" | "npc", id }
+const GROUP_MODAL_MAX_TILES = 60; // større grupper: de sårede enkeltvis, de raske samlet
+
+// Har man klikket på præcis én gruppe, åbnes dens popup. Flere grupper: se listen i sidepanelet.
+function openGroupModalAt(lat, lon) {
+    const hits = [
+        ...garrisonsNear(state.garrisons, lat, lon).map(g => ({ kind: "garrison", id: g.id })),
+        ...marchesNear(lat, lon).map(m => ({ kind: "march", id: m.id })),
+        ...garrisonsNear(state.enemies.garrisons, lat, lon).map(g => ({ kind: "enemy-garrison", id: g.id })),
+        ...npcsNear(lat, lon).map(({ n }) => ({ kind: "npc", id: n.id }))
+    ];
+    if (hits.length === 1) openGroupModal(hits[0].kind, hits[0].id);
+}
+
+function findGroup(kind, id) {
+    const same = x => String(x.id) === String(id);
+    switch (kind) {
+        case "garrison": return state.garrisons.find(same);
+        case "march": return state.marches.find(same);
+        case "enemy-garrison": return state.enemies.garrisons.find(same);
+        case "enemy-march": return state.enemies.marches.find(same);
+        case "npc": return state.enemies.npcs.find(same);
+    }
+    return null;
+}
+
+function groupPos(kind, g) {
+    if (kind === "march") return marchCurrentPos(g, Date.now());
+    if (kind === "npc") return npcCurrentPos(g);
+    return [g.lat, g.lon];
+}
+
+function energyColor(pct) {
+    return pct > 60 ? "#39FF14" : pct > 30 ? "#FFD54F" : "#FF5252";
+}
+
+// Én brik pr. soldat med hans energi. Svageste først.
+function soldierTilesHtml(g) {
+    const hp = GAME_CONFIG.SOLDIER_HP;
+    const wounded = [...(g.wounded || [])].sort((a, b) => a - b);
+    const healthy = Math.max(0, g.count - wounded.length);
+    const tile = (e, nr) => {
+        const pct = Math.round(e / hp * 100);
+        return `
+            <div class="soldier-tile" title="Soldat ${nr}: ${e} af ${hp} energi">
+                <img src="assets/tropper.png" class="pixel-img" />
+                <div class="soldier-hp">${e}</div>
+                <div class="soldier-bar"><div style="width:${pct}%;background:${energyColor(pct)}"></div></div>
+            </div>`;
+    };
+    let nr = 0;
+    let html = wounded.map(e => tile(e, ++nr)).join("");
+    const showHealthy = g.count <= GROUP_MODAL_MAX_TILES ? healthy : 0;
+    for (let i = 0; i < showHealthy; i++) html += tile(hp, ++nr);
+    let more = "";
+    if (showHealthy < healthy) more = `<p class="muted-hint">+ ${healthy} raske soldater med fuld energi (${hp}).</p>`;
+    return `<div class="soldier-grid">${html}</div>${more}`;
+}
+
+function openGroupModal(kind, id) {
+    state.groupModal = { kind, id };
+    renderGroupModal();
+    document.getElementById("modal-overlay").classList.remove("hidden");
+}
+
+// Tegnes igen, når soldaterne er hentet på ny (fx under kamp), så tallene følger med.
+function renderGroupModal() {
+    const gm = state.groupModal;
+    if (!gm) return;
+    const title = document.getElementById("modal-title");
+    const body = document.getElementById("modal-body");
+    const actions = document.getElementById("modal-actions");
+    const g = findGroup(gm.kind, gm.id);
+    if (!g || g.count <= 0) {
+        title.textContent = "Gruppen findes ikke længere";
+        body.innerHTML = `<p class="muted-hint">Soldaterne er nået frem, gået hjem, slået sammen med andre eller faldet i kamp.</p>`;
+        actions.innerHTML = `<button class="btn" onclick="closeModal()">Luk</button>`;
+        return;
+    }
+    const [lat, lon] = groupPos(gm.kind, g);
+    const pct = energyPct(g);
+    const own = gm.kind === "garrison" || gm.kind === "march";
+    const bar = `
+        <div class="group-energy">
+            <span>❤️ Samlet energi: <strong>${pct} %</strong></span>
+            <div class="progress-track"><div class="progress-fill" style="width:${pct}%;background:${energyColor(pct)}"></div></div>
+        </div>`;
+
+    if (own) {
+        const hurt = (g.wounded || []).length;
+        const where = gm.kind === "march" ? marchEtaText(g) : "Står vagt";
+        title.textContent = gm.kind === "march" ? `Deling på march: ${g.count} soldater` : `Vagtstyrke: ${g.count} soldater`;
+        body.innerHTML = `
+            <p class="muted-hint">${where} · ${g.count - hurt} raske, ${hurt} ${hurt === 1 ? "såret" : "sårede"}. Sårede bliver raske, når de kommer hjem til barrakken.</p>
+            ${bar}
+            ${soldierTilesHtml(g)}`;
+        actions.innerHTML = gm.kind === "march" ? `
+            <button class="btn" onclick="closeModal(); jumpToMarch('${g.id}')">🎯 Hop til</button>
+            <button class="btn btn-primary" onclick="closeModal(); startRedirectMarch('${g.id}')">🧭 Nyt mål</button>
+            <button class="btn btn-danger" onclick="closeModal(); recallMarch('${g.id}')">🏠 Kald hjem</button>
+            <button class="btn" onclick="closeModal()">Luk</button>` : `
+            <button class="btn" onclick="closeModal(); jumpToPoint(${lat}, ${lon})">🎯 Hop til</button>
+            <button class="btn btn-primary" onclick="closeModal(); sendFromGarrison(${g.id})">🪖 Send soldater</button>
+            <button class="btn btn-danger" onclick="closeModal(); sendGarrisonHome(${g.id})">🏠 Send hjem</button>
+            <button class="btn" onclick="closeModal()">Luk</button>`;
+        return;
+    }
+
+    // Fjender: kun det, man kan se på afstand — antal og samlet energi.
+    title.textContent = gm.kind === "npc" ? `Fjendtlig patrulje: ${g.count} soldater`
+        : gm.kind === "enemy-march" ? `Fjendtlige soldater på march: ${g.count}` : `Fjendtlige vagter: ${g.count}`;
+    body.innerHTML = `
+        <p class="muted-hint">${gm.kind === "npc"
+            ? (g.fighting ? "💥 I kamp med dine soldater lige nu." : "Computerstyret. Går rundt i området og angriber soldater, den får øje på.")
+            : "En anden spillers soldater."} Du kan ikke se den enkelte fjendes energi, kun gruppens samlede.</p>
+        ${bar}`;
+    actions.innerHTML = `
+        <button class="btn" onclick="closeModal(); jumpToPoint(${lat}, ${lon})">🎯 Hop til</button>
+        <button class="btn btn-danger" onclick="closeModal(); sendSoldiersTo(${lat}, ${lon})">⚔️ Angrib</button>
+        <button class="btn" onclick="closeModal()">Luk</button>`;
+}
+
+// Hele vagtstyrken går hjem til den nærmeste barrak (og bliver rask dér).
+window.sendGarrisonHome = function(id) {
+    const g = state.garrisons.find(x => String(x.id) === String(id));
+    if (!g) return;
+    const home = state.myBuildings
+        .filter(b => b.kind === "barracks")
+        .map(b => ({ b, d: Geo.distanceM(g.lat, g.lon, b.lat, b.lon) }))
+        .sort((a, b) => a.d - b.d)[0];
+    if (!home) {
+        showToast("Du har ingen barrak, soldaterne kan gå hjem til.");
+        return;
+    }
+    openConfirmMarchModal(
+        { from: { type: "garrison", id: g.id, lat: g.lat, lon: g.lon }, count: g.count },
+        { lat: home.b.lat, lon: home.b.lon, label: buildingLabel(home.b) });
+};
+
+window.openGroupModal = openGroupModal;
+
 let resolvingArrivals = false;
 async function tickMarches() {
     const now = Date.now();
@@ -2139,6 +2292,7 @@ async function pollWorld() {
         lastWorldPoll = Date.now();
         announceSightings();
         announceCombat();
+        if (state.groupModal && !["garrison", "march"].includes(state.groupModal.kind)) renderGroupModal();
         renderWorld();
         renderTroopsOnMap();
         renderContactsSidebar();
@@ -2386,6 +2540,7 @@ window.setTester = async function(playerId, checkbox) {
 // Hjælpefunktioner & Login-håndtering
 // ============================================================================
 window.closeModal = function() {
+    state.groupModal = null;
     document.getElementById("modal-overlay").classList.add("hidden");
 };
 

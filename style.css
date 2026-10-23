@@ -721,3 +721,54 @@ body, html {
     align-items: center;
     gap: 6px;
 }
+
+/* Popup for en gruppe soldater: én brik pr. soldat med hans energi */
+.group-energy {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.soldier-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
+    gap: 6px;
+    max-height: 260px;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+
+.soldier-tile {
+    background: #11161C;
+    border: 1px solid #37474F;
+    border-radius: 6px;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+}
+
+.soldier-tile img {
+    width: 32px;
+    height: 28px;
+}
+
+.soldier-hp {
+    font-family: monospace;
+    font-size: 12px;
+    font-weight: 700;
+    color: #ECEFF1;
+}
+
+.soldier-bar {
+    width: 100%;
+    height: 4px;
+    background: #263238;
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.soldier-bar > div {
+    height: 100%;
+}
