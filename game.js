@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 29;
+const APP_VERSION = 30;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -1149,7 +1149,13 @@ function pathDistanceM(path) {
     return sum;
 }
 
-function marchCurrentPos(m, now = Date.now()) {
+// Serverens ur lige nu. Computerens eget ur kan gå forkert (fx et minut for hurtigt), og så ville
+// soldaterne stå et andet sted på kortet end på serveren og hoppe, når de får en ny ordre.
+function serverNow() {
+    return Date.now() + state.serverOffsetMs;
+}
+
+function marchCurrentPos(m, now = serverNow()) {
     const pts = m.path && m.path.length >= 2 ? m.path : [[m.startLat, m.startLon], [m.toLat, m.toLon]];
     const totalMs = Math.max(1, m.arrivesAtMillis - m.startedAtMillis);
     const p = Math.max(0, Math.min(1, (now - m.startedAtMillis) / totalMs));
@@ -1178,7 +1184,7 @@ function marchCurrentPos(m, now = Date.now()) {
     return pts[pts.length - 1];
 }
 
-function marchRemainingPath(m, now = Date.now()) {
+function marchRemainingPath(m, now = serverNow()) {
     const pts = m.path && m.path.length >= 2 ? m.path : [[m.startLat, m.startLon], [m.toLat, m.toLon]];
     const cur = marchCurrentPos(m, now);
     if (pts.length <= 2) return [cur, pts[pts.length - 1]];
@@ -1204,7 +1210,7 @@ function marchRemainingPath(m, now = Date.now()) {
 
 async function renderTroopsOnMap() {
     if (!mapReady) return;
-    const now = Date.now();
+    const now = serverNow();
     const troopFeatures = [];
     const lineFeatures = [];
 
@@ -1297,12 +1303,12 @@ async function renderTroopsOnMap() {
 }
 
 // Hvor en patrulje er nu. Serverens ur bruges, så den står samme sted som på serveren.
-function npcCurrentPos(n, now = Date.now()) {
+function npcCurrentPos(n, now = serverNow()) {
     return marchCurrentPos({
         path: n.path,
         startedAtMillis: Date.parse(n.started_at),
         arrivesAtMillis: Date.parse(n.arrives_at)
-    }, now + state.serverOffsetMs);
+    }, now);
 }
 
 // Skudlinjer mellem patruljer i kamp og dine soldater inden for skudafstand. Kampen afgøres
@@ -1509,7 +1515,7 @@ function selectPoint(lat, lon) {
 function marchesNear(lat, lon) {
     if (!mapReady) return [];
     const pt = map.project([lon, lat]);
-    const now = Date.now();
+    const now = serverNow();
     return state.marches.filter(m => {
         if (m.count <= 0) return false;
         const [mLat, mLon] = marchCurrentPos(m, now);
@@ -1540,8 +1546,8 @@ function computeProductionContents(b) {
     if (!cfg || !cfg.production) return null;
     const perHour = cfg.production.per_hour[b.level - 1] || 0;
     const cap = cfg.production.capacity[b.level - 1] || 0;
-    const emptiedMs = b.emptied_at ? new Date(b.emptied_at).getTime() : Date.now();
-    const hours = Math.max(0, (Date.now() - emptiedMs) / 3600000.0);
+    const emptiedMs = b.emptied_at ? new Date(b.emptied_at).getTime() : serverNow();
+    const hours = Math.max(0, (serverNow() - emptiedMs) / 3600000.0);
     const amount = Math.min(cap, Math.floor(hours * perHour));
     const material = cfg.production.material || "soldiers";
     return { amount, capacity: cap, perHour, material, unit: MATERIAL_NAMES[material] || material };
@@ -2072,7 +2078,7 @@ function renderTroopsSidebar() {
         return;
     }
 
-    const now = Date.now();
+    const now = serverNow();
     let html = "";
 
     for (const m of myMarches) {
@@ -2130,7 +2136,7 @@ function renderTroopsSidebar() {
 }
 
 // "3,2 km tilbage · Ankomst om 1t 4m" — resterende distance langs delingens rute.
-function marchEtaText(m, now = Date.now()) {
+function marchEtaText(m, now = serverNow()) {
     const remSec = Math.max(0, Math.ceil((m.arrivesAtMillis - now) / 1000));
     const left = formatDistance(pathDistanceM(marchRemainingPath(m, now)));
     if (m.patrolPath) {
@@ -2149,7 +2155,7 @@ function formatDistance(meters) {
 
 // Opdaterer KUN nedtællingsteksten og bjælken hvert sekund uden at blinke!
 function updateLiveTroopCountdowns() {
-    const now = Date.now();
+    const now = serverNow();
     for (const m of state.marches) {
         const row = document.querySelector(`.item-row[data-march-id="${m.id}"]`);
         if (!row) continue;
@@ -2227,7 +2233,7 @@ function addRoutePoint(target) {
 function routeStart(order) {
     if (order.redirectMarchId) {
         const m = findMarch(order.redirectMarchId);
-        if (m) return marchCurrentPos(m, Date.now());
+        if (m) return marchCurrentPos(m, serverNow());
     }
     return [order.from.lat, order.from.lon];
 }
@@ -2350,7 +2356,7 @@ async function executeMarchOrder(order, target, landPath, loopPath = null) {
     let error;
     if (order.patrol && order.redirectMarchId) {
         const m = findMarch(order.redirectMarchId);
-        const path = m ? [marchCurrentPos(m, Date.now()), ...landPath.slice(1)] : landPath;
+        const path = m ? [marchCurrentPos(m, serverNow()), ...landPath.slice(1)] : landPath;
         ({ error } = await sb.rpc("redirect_patrol", { p_march: order.redirectMarchId, p_path: path, p_loop: loopPath }));
     } else if (order.patrol) {
         ({ error } = await sb.rpc("start_patrol", {
@@ -2361,7 +2367,7 @@ async function executeMarchOrder(order, target, landPath, loopPath = null) {
     } else if (order.redirectMarchId) {
         // Delingen er gået videre, mens ruten blev beregnet og bekræftet: start fra hvor den er nu.
         const m = findMarch(order.redirectMarchId);
-        const path = m ? [marchCurrentPos(m, Date.now()), ...landPath.slice(1)] : landPath;
+        const path = m ? [marchCurrentPos(m, serverNow()), ...landPath.slice(1)] : landPath;
         ({ error } = await sb.rpc("redirect_march", {
             p_march: order.redirectMarchId, p_to_lat: target.lat, p_to_lon: target.lon, p_path: path
         }));
@@ -2397,7 +2403,7 @@ function findMarch(marchId) {
 window.startRedirectMarch = function(marchId) {
     const m = findMarch(marchId);
     if (!m) return;
-    const [lat, lon] = marchCurrentPos(m, Date.now());
+    const [lat, lon] = marchCurrentPos(m, serverNow());
     enterMarchTargetMode({
         from: { type: "march", id: m.id, lat, lon },
         count: m.count,
@@ -2409,10 +2415,10 @@ window.startRedirectMarch = function(marchId) {
 window.recallMarch = async function(marchId) {
     const m = findMarch(marchId);
     if (!m) return;
-    const cur = marchCurrentPos(m, Date.now());
+    const cur = marchCurrentPos(m, serverNow());
     showToast("Beregner ruten hjem…");
     const homePath = await findLandPathAsync(cur[0], cur[1], m.homeLat, m.homeLon);
-    const path = [marchCurrentPos(m, Date.now()), ...homePath.slice(1)];
+    const path = [marchCurrentPos(m, serverNow()), ...homePath.slice(1)];
     const { error } = await sb.rpc("redirect_march", {
         p_march: m.id, p_to_lat: m.homeLat, p_to_lon: m.homeLon, p_path: path
     });
@@ -2442,7 +2448,7 @@ window.jumpToMarch = function(marchId) {
     state.highlight = { garrisons: new Set(), marches: new Set([String(marchId)]) };
     renderTroopsSidebar();
     renderTroopsOnMap();
-    const [lat, lon] = marchCurrentPos(m, Date.now());
+    const [lat, lon] = marchCurrentPos(m, serverNow());
     map.flyTo({ center: [lon, lat], zoom: 17.0, duration: 700 });
 };
 
@@ -2488,7 +2494,7 @@ function findGroup(kind, id) {
 }
 
 function groupPos(kind, g) {
-    if (kind === "march") return marchCurrentPos(g, Date.now());
+    if (kind === "march") return marchCurrentPos(g, serverNow());
     if (kind === "npc") return npcCurrentPos(g);
     return [g.lat, g.lon];
 }
@@ -2621,7 +2627,7 @@ window.sendWoundedToHospital = function(id) {
 
 let resolvingArrivals = false;
 async function tickMarches() {
-    const now = Date.now();
+    const now = serverNow();
     if (!resolvingArrivals && state.marches.some(m => now >= m.arrivesAtMillis)) {
         // Serveren afgør ankomsten (indtagelse/kamp), når nogen spørger efter verden.
         resolvingArrivals = true;
