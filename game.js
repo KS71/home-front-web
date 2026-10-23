@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 25;
+const APP_VERSION = 26;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -589,6 +589,7 @@ function installGameLayers() {
         filter: ["==", ["geometry-type"], "Point"],
         layout: {
             "text-field": ["to-string", ["get", "nr"]],
+            "text-font": ["Noto Sans Bold"], // kortets server har kun Noto Sans; en ukendt skrift stopper hele laget
             "text-size": 12,
             "text-allow-overlap": true,
             "text-ignore-placement": true
