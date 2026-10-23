@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 26;
+const APP_VERSION = 27;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -669,12 +669,13 @@ const npcImgPromise = new Promise((resolve) => {
 });
 
 // style: "own" (dine), "enemy" (andre spillere) eller "npc" (computerstyret patrulje).
-function troopBadgeId(count, style = "own", pct = 100) {
-    return `img-${style}-${count}-${Math.ceil(pct / 10)}`;
+// status for egne: "guard" (grøn), "patrol" (blå), "march" (orange), "combat" (rød hvis i/har været i kamp).
+function troopBadgeId(count, style = "own", pct = 100, status = "guard") {
+    return `img-${style}-${status}-${count}-${Math.ceil(pct / 10)}`;
 }
 
-async function ensureTroopBadge(count, style = "own", pct = 100) {
-    const imgId = troopBadgeId(count, style, pct);
+async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard") {
+    const imgId = troopBadgeId(count, style, pct, status);
     if (!mapReady || registeredTroopBadges.has(imgId)) return;
     registeredTroopBadges.add(imgId);
     await soldierImgPromise;
@@ -699,7 +700,23 @@ async function ensureTroopBadge(count, style = "own", pct = 100) {
 
     const bx = (canvas.width - badgeW) / 2;
     ctx.fillStyle = "rgba(17, 22, 28, 0.92)";
-    ctx.strokeStyle = style === "own" ? "#39FF14" : style === "npc" ? "#FF9800" : "#FF5252";
+
+    // Farve på cirklen/mærket om tallet over hovedet:
+    // Blå hvis en gruppe går patrulje, grøn hvis den står vagt, orange hvis den er på vej et sted hen,
+    // og rød hvis den har været i kamp (eller fjende).
+    let strokeColor = "#39FF14"; // grøn standard (står vagt)
+    if (style === "npc") {
+        strokeColor = status === "combat" ? "#FF5252" : "#FF9800";
+    } else if (style === "enemy") {
+        strokeColor = "#FF5252";
+    } else {
+        if (status === "combat") strokeColor = "#FF5252";       // rød: har været i kamp
+        else if (status === "patrol") strokeColor = "#4FC3F7";  // blå: patrulje
+        else if (status === "march") strokeColor = "#FF9800";   // orange: på vej et sted hen
+        else strokeColor = "#39FF14";                           // grøn: står vagt
+    }
+
+    ctx.strokeStyle = strokeColor;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.roundRect(bx, 2, badgeW, badgeH, 10);
@@ -1167,57 +1184,87 @@ async function renderTroopsOnMap() {
     const troopFeatures = [];
     const lineFeatures = [];
 
-    const addTroop = async (group, lat, lon, style) => {
+    // Patruljerne går jævnt videre mellem opdateringerne (strækning + tider fra serveren).
+    const npcs = state.enemies.npcs.map(n => ({ n, pos: npcCurrentPos(n, now) }));
+    const isFightingNear = (lat, lon) => {
+        for (const { n, pos } of npcs) {
+            if (Geo.distanceM(pos[0], pos[1], lat, lon) <= GAME_CONFIG.FIRE_RANGE_M) return true;
+        }
+        return false;
+    };
+
+    const addTroop = async (group, lat, lon, style, status = "guard") => {
         const pct = energyPct(group);
-        await ensureTroopBadge(group.count, style, pct);
+        await ensureTroopBadge(group.count, style, pct, status);
         troopFeatures.push({
             type: "Feature",
-            properties: { img: troopBadgeId(group.count, style, pct) },
+            properties: { img: troopBadgeId(group.count, style, pct, status) },
             geometry: { type: "Point", coordinates: [lon, lat] }
         });
     };
 
     // Fjender, som du kan se lige nu (positionen er et øjebliksbillede fra serveren)
     for (const g of state.enemies.garrisons) {
-        await addTroop(g, g.lat, g.lon, "enemy");
+        await addTroop(g, g.lat, g.lon, "enemy", "enemy");
     }
     for (const m of state.enemies.marches) {
-        await addTroop(m, m.lat, m.lon, "enemy");
+        await addTroop(m, m.lat, m.lon, "enemy", "enemy");
     }
-    // Patruljerne går jævnt videre mellem opdateringerne (strækning + tider fra serveren).
-    const npcs = state.enemies.npcs.map(n => ({ n, pos: npcCurrentPos(n, now) }));
     for (const { n, pos } of npcs) {
-        await addTroop(n, pos[0], pos[1], "npc");
+        const status = n.fighting ? "combat" : "npc";
+        await addTroop(n, pos[0], pos[1], "npc", status);
     }
 
     const own = [];
     for (const g of state.garrisons) {
         if (g.count <= 0) continue;
         own.push([g.lat, g.lon]);
-        await addTroop(g, g.lat, g.lon, "own");
+        const inCombat = (g.wounded && g.wounded.length > 0) || energyPct(g) < 100 || isFightingNear(g.lat, g.lon);
+        const status = inCombat ? "combat" : "guard";
+        await addTroop(g, g.lat, g.lon, "own", status);
     }
 
     for (const m of state.marches) {
         if (m.count <= 0) continue;
         const [lat, lon] = marchCurrentPos(m, now);
         own.push([lat, lon]);
-        await addTroop(m, lat, lon, "own");
+        const inCombat = (m.wounded && m.wounded.length > 0) || energyPct(m) < 100 || isFightingNear(lat, lon);
+        const isPatrol = !!m.patrolPath;
+        const status = inCombat ? "combat" : (isPatrol ? "patrol" : "march");
+        await addTroop(m, lat, lon, "own", status);
+
         const rem = marchRemainingPath(m, now);
-        if (m.patrolPath) {
+        const isSelected = state.highlight?.marches?.has(String(m.id))
+            || (state.groupModal?.kind === "march" && String(state.groupModal.id) === String(m.id));
+
+        if (isPatrol) {
+            // Vis KUN den blå patruljerute, når man trykker på den gruppe, der går ruten
+            if (isSelected) {
+                lineFeatures.push({
+                    type: "Feature",
+                    properties: { patrol: true },
+                    geometry: { type: "LineString", coordinates: m.patrolPath.map(pt => [pt[1], pt[0]]) }
+                });
+                lineFeatures.push({
+                    type: "Feature",
+                    properties: { patrol: true },
+                    geometry: {
+                        type: "LineString",
+                        coordinates: rem.map(pt => [pt[1], pt[0]])
+                    }
+                });
+            }
+        } else {
+            // Almindelig march på vej til sit mål
             lineFeatures.push({
                 type: "Feature",
-                properties: { patrol: true },
-                geometry: { type: "LineString", coordinates: m.patrolPath.map(pt => [pt[1], pt[0]]) }
+                properties: { patrol: false },
+                geometry: {
+                    type: "LineString",
+                    coordinates: rem.map(pt => [pt[1], pt[0]])
+                }
             });
         }
-        lineFeatures.push({
-            type: "Feature",
-            properties: { patrol: !!m.patrolPath },
-            geometry: {
-                type: "LineString",
-                coordinates: rem.map(pt => [pt[1], pt[0]])
-            }
-        });
     }
 
     map.getSource("src-troops")?.setData({ type: "FeatureCollection", features: troopFeatures });
@@ -1377,7 +1424,7 @@ function garrisonsNear(list, lat, lon) {
         if (Geo.distanceM(lat, lon, g.lat, g.lon) <= GAME_CONFIG.GARRISON_MERGE_M) return true;
         if (!pt) return false;
         const gp = map.project([g.lon, g.lat]);
-        return Math.hypot(gp.x - pt.x, gp.y - (pt.y + 20)) <= 28;
+        return Math.abs(pt.x - gp.x) <= 30 && pt.y >= gp.y - 85 && pt.y <= gp.y + 15;
     });
 }
 
@@ -1431,6 +1478,7 @@ function selectPoint(lat, lon) {
     state.selected = { lat, lon, buildingId: bld ? bld.id : null };
     highlightTroopsAt(lat, lon);
     renderSelectedBox();
+    renderTroopsOnMap();
 }
 
 // Egne delinger på march, man har klikket på (deres ikon står oven over positionen).
@@ -1442,7 +1490,7 @@ function marchesNear(lat, lon) {
         if (m.count <= 0) return false;
         const [mLat, mLon] = marchCurrentPos(m, now);
         const mp = map.project([mLon, mLat]);
-        return Math.hypot(mp.x - pt.x, mp.y - (pt.y + 20)) <= 28;
+        return Math.abs(pt.x - mp.x) <= 30 && pt.y >= mp.y - 85 && pt.y <= mp.y + 15;
     });
 }
 
@@ -1628,7 +1676,7 @@ function renderPointBox(lat, lon, box, badge) {
                 <div class="item-row-top">
                     <img src="assets/tropper.png" class="pixel-img item-sprite" />
                     <div class="item-info">
-                        <div class="item-title item-title-green">${m.count} soldater på march</div>
+                        <div class="item-title ${m.patrolPath ? 'item-title-blue' : 'item-title-orange'}">${m.count} soldater ${m.patrolPath ? 'på patrulje' : 'på march'}</div>
                         <div class="item-sub">${marchEtaText(m)}</div>
                         <div class="item-sub">${energyText(m)}</div>
                     </div>
@@ -1980,12 +2028,13 @@ function renderTroopsSidebar() {
         const totalMs = Math.max(1, m.arrivesAtMillis - m.startedAtMillis);
         const prog = Math.max(2, Math.min(100, ((now - m.startedAtMillis) / totalMs) * 100));
 
+        const isPatrol = !!m.patrolPath;
         html += `
-            <div class="item-row${state.highlight.marches.has(String(m.id)) ? " item-row-selected" : ""}" data-march-id="${m.id}">
+            <div class="item-row${state.highlight.marches.has(String(m.id)) ? " item-row-selected" : ""}" data-march-id="${m.id}" onclick="selectMarchRow('${m.id}')" style="cursor:pointer">
                 <div class="item-row-top">
                     <img src="assets/tropper.png" class="pixel-img item-sprite" />
                     <div class="item-info">
-                        <div class="item-title item-title-green">${m.count} soldater på march</div>
+                        <div class="item-title ${isPatrol ? "item-title-blue" : "item-title-orange"}">${m.count} soldater ${isPatrol ? "på patrulje" : "på march"}</div>
                         <div class="item-sub march-eta-text">${marchEtaText(m, now)}</div>
                         <div class="item-sub">${energyText(m)}</div>
                     </div>
@@ -1994,10 +2043,10 @@ function renderTroopsSidebar() {
                     <div class="progress-fill march-prog-bar" style="width:${prog.toFixed(1)}%"></div>
                 </div>
                 <div class="item-actions">
-                    <button class="btn btn-small" onclick="openGroupModal('march', '${m.id}')">📋 Soldater</button>
-                    <button class="btn btn-small" onclick="jumpToMarch('${m.id}')">🎯 Hop til</button>
-                    <button class="btn btn-small btn-primary" onclick="startRedirectMarch('${m.id}')">🧭 Nyt mål</button>
-                    <button class="btn btn-small btn-danger" onclick="recallMarch('${m.id}')">🏠 Kald hjem</button>
+                    <button class="btn btn-small" onclick="event.stopPropagation(); openGroupModal('march', '${m.id}')">📋 Soldater</button>
+                    <button class="btn btn-small" onclick="event.stopPropagation(); jumpToMarch('${m.id}')">🎯 Hop til</button>
+                    <button class="btn btn-small btn-primary" onclick="event.stopPropagation(); startRedirectMarch('${m.id}')">🧭 Nyt mål</button>
+                    <button class="btn btn-small btn-danger" onclick="event.stopPropagation(); recallMarch('${m.id}')">🏠 Kald hjem</button>
                 </div>
             </div>
         `;
@@ -2008,19 +2057,19 @@ function renderTroopsSidebar() {
         const where = home && home.d < 60 ? `Står vagt ved din ${buildingLabel(home.b).toLowerCase()}`
             : home ? `Står vagt ${formatDistance(home.d)} fra din nærmeste bygning` : "Står vagt";
         html += `
-            <div class="item-row${state.highlight.garrisons.has(String(g.id)) ? " item-row-selected" : ""}" data-garrison-id="${g.id}">
+            <div class="item-row${state.highlight.garrisons.has(String(g.id)) ? " item-row-selected" : ""}" data-garrison-id="${g.id}" onclick="selectGarrisonRow('${g.id}')" style="cursor:pointer">
                 <div class="item-row-top">
                     <img src="assets/tropper.png" class="pixel-img item-sprite" />
                     <div class="item-info">
-                        <div class="item-title">${g.count} soldater på vagt</div>
+                        <div class="item-title item-title-green">${g.count} soldater på vagt</div>
                         <div class="item-sub">${where}</div>
                         <div class="item-sub">${energyText(g)}</div>
                     </div>
                 </div>
                 <div class="item-actions">
-                    <button class="btn btn-small" onclick="openGroupModal('garrison', '${g.id}')">📋 Soldater</button>
-                    <button class="btn btn-small" onclick="jumpToPoint(${g.lat}, ${g.lon})">🎯 Hop til</button>
-                    <button class="btn btn-small btn-primary" onclick="sendFromGarrison(${g.id})">🪖 Send videre</button>
+                    <button class="btn btn-small" onclick="event.stopPropagation(); openGroupModal('garrison', '${g.id}')">📋 Soldater</button>
+                    <button class="btn btn-small" onclick="event.stopPropagation(); jumpToPoint(${g.lat}, ${g.lon})">🎯 Hop til</button>
+                    <button class="btn btn-small btn-primary" onclick="event.stopPropagation(); sendFromGarrison(${g.id})">🪖 Send videre</button>
                 </div>
             </div>
         `;
@@ -2339,8 +2388,23 @@ window.jumpToBuilding = function(id) {
 window.jumpToMarch = function(marchId) {
     const m = findMarch(marchId);
     if (!m || !map) return;
+    state.highlight = { garrisons: new Set(), marches: new Set([String(marchId)]) };
+    renderTroopsSidebar();
+    renderTroopsOnMap();
     const [lat, lon] = marchCurrentPos(m, Date.now());
     map.flyTo({ center: [lon, lat], zoom: 17.0, duration: 700 });
+};
+
+window.selectMarchRow = function(marchId) {
+    state.highlight = { garrisons: new Set(), marches: new Set([String(marchId)]) };
+    renderTroopsSidebar();
+    renderTroopsOnMap();
+};
+
+window.selectGarrisonRow = function(garrisonId) {
+    state.highlight = { garrisons: new Set([String(garrisonId)]), marches: new Set() };
+    renderTroopsSidebar();
+    renderTroopsOnMap();
 };
 
 // ============================================================================
@@ -2827,7 +2891,12 @@ window.closeModal = function() {
     state.groupModal = null;
     state.hospitalModal = null;
     document.getElementById("modal-overlay").classList.add("hidden");
+    renderTroopsOnMap();
 };
+
+document.getElementById("modal-overlay")?.addEventListener("click", (e) => {
+    if (e.target.id === "modal-overlay") closeModal();
+});
 
 const toastQueue = [];
 let toastBusy = false;

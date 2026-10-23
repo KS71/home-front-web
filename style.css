@@ -313,6 +313,18 @@ body, html {
     color: #39FF14;
 }
 
+.item-title-blue {
+    color: #4FC3F7;
+}
+
+.item-title-orange {
+    color: #FF9800;
+}
+
+.item-title-red {
+    color: #FF5252;
+}
+
 .item-sub {
     font-size: 12px;
     color: #90A4AE;
