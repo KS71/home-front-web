@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 20;
+const APP_VERSION = 21;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -17,6 +17,8 @@ const GAME_CONFIG = {
     GARRISON_MERGE_M: 25,    // soldater inden for 25 m af hinanden er én vagtstyrke
     SOLDIER_SPEED_MPS: 30 / 18,
     SOLDIER_VISION_M: 250,
+    FIRE_RANGE_M: 75,        // skudafstand mellem soldater og fjendtlige patruljer
+    NPC_SPAWN_CHECK_MS: 5 * 60 * 1000, // så tit browseren ser efter, om der mangler patruljer
     WORLD_POLL_MS: 15000,
     INSTANT_SOLDIER_STEPS: 100,
     BUILDING_DEFENSE_PER_LEVEL: 2,
@@ -137,7 +139,9 @@ const state = {
     pendingMarchOrder: null, // { from: { type, id, lat, lon }, count, redirectMarchId }
     marches: [],           // Egne marcher fra serveren (se marchFromRow)
     garrisons: [],         // Egne vagtstyrker fra serveren { id, owner_id, lat, lon, count }
-    enemies: { buildings: [], garrisons: [], marches: [] }, // fra visible_enemies()
+    enemies: { buildings: [], garrisons: [], marches: [], npcs: [] }, // fra visible_enemies()
+    serverOffsetMs: 0,     // serverens ur minus browserens ur (til patruljernes gang)
+    inCombat: new Set(),   // patruljer, dine soldater er i kamp med lige nu
     seenBySoldiers: new Set(), // nøgler på fjender, dine soldater allerede har meldt om
     bookmarks: [],         // { id, lat, lon, purpose: "build" | "target", note } — sat med telefonen på stedet
     scoutAlerts: [],       // { id, lat, lon, kind, scouts } — grove advarsler om fjendtlige spejdere
@@ -355,6 +359,7 @@ function installGameLayers() {
     map.addSource("src-buildings", { type: "geojson", data: empty });
     map.addSource("src-march-lines", { type: "geojson", data: empty });
     map.addSource("src-troops", { type: "geojson", data: empty });
+    map.addSource("src-shots", { type: "geojson", data: empty });
     map.addSource("src-bookmarks", { type: "geojson", data: empty });
 
     // Bogmærker: byggepladser er firkanter på 50×50 m, mål er små firkanter.
@@ -441,6 +446,18 @@ function installGameLayers() {
             "line-opacity": 0.9
         }
     });
+    // Skud mellem dine soldater og fjendtlige patruljer i kamp.
+    map.addLayer({
+        id: "lyr-shots",
+        type: "line",
+        source: "src-shots",
+        paint: {
+            "line-color": ["match", ["get", "from"], "npc", "#FF5252", "#FFD54F"],
+            "line-width": 2,
+            "line-dasharray": [0.5, 2.5],
+            "line-opacity": 0.95
+        }
+    });
     map.addLayer({
         id: "lyr-troops",
         type: "symbol",
@@ -491,20 +508,32 @@ const soldierImgPromise = new Promise((resolve) => {
     img.src = "assets/tropper.png";
 });
 
-function troopBadgeId(count, enemy = false) {
-    return `${enemy ? "img-enemy-" : "img-troop-"}${count}`;
+// Computerstyrede patruljer tegnes som soldater i rød uniform.
+let npcSoldierImg = null;
+const npcImgPromise = new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => { npcSoldierImg = img; resolve(img); };
+    img.onerror = () => resolve(null);
+    img.src = "assets/fjende.png";
+});
+
+// style: "own" (dine), "enemy" (andre spillere) eller "npc" (computerstyret patrulje).
+function troopBadgeId(count, style = "own") {
+    return `img-${style}-${count}`;
 }
 
-async function ensureTroopBadge(count, enemy = false) {
-    const imgId = troopBadgeId(count, enemy);
+async function ensureTroopBadge(count, style = "own") {
+    const imgId = troopBadgeId(count, style);
     if (!mapReady || registeredTroopBadges.has(imgId)) return;
     registeredTroopBadges.add(imgId);
     await soldierImgPromise;
-    if (!baseSoldierImg) return;
+    if (style === "npc") await npcImgPromise;
+    const soldierImg = style === "npc" && npcSoldierImg ? npcSoldierImg : baseSoldierImg;
+    if (!soldierImg) return;
 
     const scale = 3;
-    const sw = baseSoldierImg.width * scale;
-    const sh = baseSoldierImg.height * scale;
+    const sw = soldierImg.width * scale;
+    const sh = soldierImg.height * scale;
     const text = String(count);
 
     const canvas = document.createElement("canvas");
@@ -518,7 +547,7 @@ async function ensureTroopBadge(count, enemy = false) {
 
     const bx = (canvas.width - badgeW) / 2;
     ctx.fillStyle = "rgba(17, 22, 28, 0.92)";
-    ctx.strokeStyle = enemy ? "#FF5252" : "#39FF14";
+    ctx.strokeStyle = style === "own" ? "#39FF14" : style === "npc" ? "#FF9800" : "#FF5252";
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.roundRect(bx, 2, badgeW, badgeH, 10);
@@ -532,7 +561,7 @@ async function ensureTroopBadge(count, enemy = false) {
     ctx.fillText(text, canvas.width / 2, 2 + badgeH / 2);
 
     const sx = (canvas.width - sw) / 2;
-    ctx.drawImage(baseSoldierImg, sx, badgeH + 4, sw, sh);
+    ctx.drawImage(soldierImg, sx, badgeH + 4, sw, sh);
 
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     if (!map.hasImage(imgId)) {
@@ -978,32 +1007,40 @@ async function renderTroopsOnMap() {
     const troopFeatures = [];
     const lineFeatures = [];
 
-    const addTroop = async (count, lat, lon, enemy) => {
-        await ensureTroopBadge(count, enemy);
+    const addTroop = async (count, lat, lon, style) => {
+        await ensureTroopBadge(count, style);
         troopFeatures.push({
             type: "Feature",
-            properties: { img: troopBadgeId(count, enemy) },
+            properties: { img: troopBadgeId(count, style) },
             geometry: { type: "Point", coordinates: [lon, lat] }
         });
     };
 
     // Fjender, som du kan se lige nu (positionen er et øjebliksbillede fra serveren)
     for (const g of state.enemies.garrisons) {
-        await addTroop(g.count, g.lat, g.lon, true);
+        await addTroop(g.count, g.lat, g.lon, "enemy");
     }
     for (const m of state.enemies.marches) {
-        await addTroop(m.count, m.lat, m.lon, true);
+        await addTroop(m.count, m.lat, m.lon, "enemy");
+    }
+    // Patruljerne går jævnt videre mellem opdateringerne (strækning + tider fra serveren).
+    const npcs = state.enemies.npcs.map(n => ({ n, pos: npcCurrentPos(n, now) }));
+    for (const { n, pos } of npcs) {
+        await addTroop(n.count, pos[0], pos[1], "npc");
     }
 
+    const own = [];
     for (const g of state.garrisons) {
         if (g.count <= 0) continue;
-        await addTroop(g.count, g.lat, g.lon, false);
+        own.push([g.lat, g.lon]);
+        await addTroop(g.count, g.lat, g.lon, "own");
     }
 
     for (const m of state.marches) {
         if (m.count <= 0) continue;
         const [lat, lon] = marchCurrentPos(m, now);
-        await addTroop(m.count, lat, lon, false);
+        own.push([lat, lon]);
+        await addTroop(m.count, lat, lon, "own");
         const rem = marchRemainingPath(m, now);
         lineFeatures.push({
             type: "Feature",
@@ -1017,6 +1054,34 @@ async function renderTroopsOnMap() {
 
     map.getSource("src-troops")?.setData({ type: "FeatureCollection", features: troopFeatures });
     map.getSource("src-march-lines")?.setData({ type: "FeatureCollection", features: lineFeatures });
+    map.getSource("src-shots")?.setData({ type: "FeatureCollection", features: shotFeatures(npcs, own, now) });
+}
+
+// Hvor en patrulje er nu. Serverens ur bruges, så den står samme sted som på serveren.
+function npcCurrentPos(n, now = Date.now()) {
+    return marchCurrentPos({
+        path: n.path,
+        startedAtMillis: Date.parse(n.started_at),
+        arrivesAtMillis: Date.parse(n.arrives_at)
+    }, now + state.serverOffsetMs);
+}
+
+// Skudlinjer mellem patruljer i kamp og dine soldater inden for skudafstand. Kampen afgøres
+// på serveren; det her er kun til at se, hvem der skyder på hvem. Linjerne blinker.
+function shotFeatures(npcs, own, now) {
+    const out = [];
+    const flash = Math.floor(now / 1000) % 2;
+    for (const { n, pos } of npcs) {
+        for (const [lat, lon] of own) {
+            if (Geo.distanceM(pos[0], pos[1], lat, lon) > GAME_CONFIG.FIRE_RANGE_M) continue;
+            const ours = { type: "Feature", properties: { from: "own" },
+                geometry: { type: "LineString", coordinates: [[lon, lat], [pos[1], pos[0]]] } };
+            const theirs = { type: "Feature", properties: { from: "npc" },
+                geometry: { type: "LineString", coordinates: [[pos[1], pos[0]], [lon, lat]] } };
+            out.push(flash === (n.id % 2) ? ours : theirs);
+        }
+    }
+    return out;
 }
 
 // ============================================================================
@@ -1047,6 +1112,7 @@ async function syncAllFromSupabase() {
                 if (r.reach_m) GAME_CONFIG.BUILD_RADIUS_M = Number(r.reach_m);
                 if (r.vision_m) GAME_CONFIG.VISION_RADIUS_M = Number(r.vision_m);
                 if (r.soldier_vision_m) GAME_CONFIG.SOLDIER_VISION_M = Number(r.soldier_vision_m);
+                if (r.fire_range_m) GAME_CONFIG.FIRE_RANGE_M = Number(r.fire_range_m);
                 if (r.soldier_speed_mps) GAME_CONFIG.SOLDIER_SPEED_MPS = Number(r.soldier_speed_mps);
                 if (r.building_defense_per_level) GAME_CONFIG.BUILDING_DEFENSE_PER_LEVEL = Number(r.building_defense_per_level);
                 if (r.building_gap_m != null) GAME_CONFIG.BUILDING_GAP_M = Number(r.building_gap_m);
@@ -1141,6 +1207,13 @@ function garrisonsNear(list, lat, lon) {
         const gp = map.project([g.lon, g.lat]);
         return Math.hypot(gp.x - pt.x, gp.y - (pt.y + 20)) <= 28;
     });
+}
+
+// Patruljer ved et klik på kortet (samme slør som for soldater: ikonet står over punktet).
+function npcsNear(lat, lon) {
+    return state.enemies.npcs
+        .map(n => ({ n, pos: npcCurrentPos(n) }))
+        .filter(({ pos }) => garrisonsNear([{ lat: pos[0], lon: pos[1], count: 1 }], lat, lon).length > 0);
 }
 
 // Byggeret (samme regler som build_right_problem i SQL): testkonto, byggepladsbogmærke eller
@@ -1352,7 +1425,8 @@ function renderPointBox(lat, lon, box, badge) {
     const ownGuards = garrisonsNear(state.garrisons, lat, lon);
     const ownMarches = marchesNear(lat, lon);
     const enemyGuards = garrisonsNear(state.enemies.garrisons, lat, lon);
-    if (ownGuards.length > 0 || ownMarches.length > 0 || enemyGuards.length > 0) {
+    const npcsHere = npcsNear(lat, lon);
+    if (ownGuards.length > 0 || ownMarches.length > 0 || enemyGuards.length > 0 || npcsHere.length > 0) {
         setSelectedShape(null);
         badge.textContent = ownGuards.length + ownMarches.length > 0 ? "Dine soldater" : "Fjendtlige soldater";
         html = garrisonRowsHtml(ownGuards) + ownMarches.map(m => `
@@ -1376,6 +1450,20 @@ function renderPointBox(lat, lon, box, badge) {
             html += `
                 <p class="muted-hint"><strong>Fjender her:</strong> ${n} vagter. Send mindst <strong>${n + 1}</strong> soldater for at slå dem.</p>
                 <div class="item-actions"><button class="btn btn-small btn-danger" onclick="sendSoldiersTo(${g.lat}, ${g.lon})">⚔️ Angrib</button></div>
+            `;
+        }
+        for (const { n, pos } of npcsHere) {
+            html += `
+                <div class="item-row" style="margin-top:8px;">
+                    <div class="item-row-top">
+                        <img src="assets/fjende.png" class="pixel-img item-sprite" />
+                        <div class="item-info">
+                            <div class="item-title enemy-title">Fjendtlig patrulje: ${n.count} soldater</div>
+                            <div class="item-sub">${n.fighting ? "💥 i kamp med dine soldater" : "Computerstyret. Går rundt i området og angriber soldater, den får øje på."}</div>
+                        </div>
+                    </div>
+                    <div class="item-actions"><button class="btn btn-small btn-danger" onclick="sendSoldiersTo(${pos[0]}, ${pos[1]})">⚔️ Angrib</button></div>
+                </div>
             `;
         }
         box.innerHTML = html;
@@ -1958,6 +2046,7 @@ async function tickMarches() {
     }
     updateLiveTroopCountdowns();
     renderTroopsOnMap();
+    pollDuringCombat();
 }
 
 const REPORT_TEXT = {
@@ -1968,7 +2057,9 @@ const REPORT_TEXT = {
     victory:    r => `⚔️ Sejr! ${r.survivors} af dine ${r.count} soldater overlevede, og fjenden mistede ${r.enemy_losses}.`,
     defeat:     r => `⚔️ Angrebet blev slået tilbage. Alle ${r.count} soldater faldt (fjenden mistede ${r.enemy_losses}).`,
     defended:   r => `🛡️ Din stilling blev angrebet af ${r.enemy_losses} soldater, men holdt! Du mistede ${r.losses}.`,
-    lost:       r => `🔥 Du har tabt et slag. ${r.losses} vagter faldt, og en bygning kan være jævnet med jorden.`
+    lost:       r => `🔥 Du har tabt et slag. ${r.losses} vagter faldt, og en bygning kan være jævnet med jorden.`,
+    patrol_defeated: r => `🏅 Dine soldater nedkæmpede en fjendtlig patrulje på ${r.enemy_losses} soldater.`,
+    patrol_won: r => `💀 En fjendtlig patrulje nedkæmpede ${r.count} af dine soldater.`
 };
 
 // Rapporter om ankomster og kampe — også dem, der skete mens du var væk.
@@ -1984,10 +2075,16 @@ async function loadReports() {
         if (text) queueToast(text(r));
     }
     await sb.from("march_reports").update({ seen: true }).in("id", data.map(r => r.id));
+    // Kamp mod patruljer ændrer antallet af soldater.
+    if (data.some(r => r.kind.startsWith("patrol_"))) {
+        await loadArmy();
+        await syncAllFromSupabase();
+    }
 }
 
 // Henter alt fjendtligt, du kan se lige nu (telefonen + egne soldater), og melder nye fund.
 let pollingWorld = false;
+let lastWorldPoll = 0;
 async function pollWorld() {
     if (!state.user || pollingWorld) return;
     pollingWorld = true;
@@ -1997,9 +2094,13 @@ async function pollWorld() {
         state.enemies = {
             buildings: data.buildings || [],
             garrisons: data.garrisons || [],
-            marches: data.marches || []
+            marches: data.marches || [],
+            npcs: data.npcs || []
         };
+        if (data.now) state.serverOffsetMs = Date.parse(data.now) - Date.now();
+        lastWorldPoll = Date.now();
         announceSightings();
+        announceCombat();
         renderWorld();
         renderTroopsOnMap();
         renderContactsSidebar();
@@ -2035,8 +2136,34 @@ function announceSightings() {
         now.add(k);
         if (!state.seenBySoldiers.has(k)) fresh.push(`👁️ Dine soldater har fået øje på ${m.count} fjendtlige soldater på march.`);
     }
+    for (const n of state.enemies.npcs.filter(n => n.by_soldiers)) {
+        const k = enemyKey("npc", n);
+        now.add(k);
+        if (!state.seenBySoldiers.has(k)) fresh.push(`👁️ Dine soldater har fået øje på en fjendtlig patrulje på ${n.count} soldater.`);
+    }
     state.seenBySoldiers = now;
     fresh.forEach(queueToast);
+}
+
+// "Dine soldater er i kamp!" — når en patrulje er kommet inden for skudafstand.
+function announceCombat() {
+    const fighting = new Set(state.enemies.npcs.filter(n => n.fighting).map(n => n.id));
+    for (const id of fighting) {
+        if (!state.inCombat.has(id)) {
+            const n = state.enemies.npcs.find(x => x.id === id);
+            queueToast(`💥 Dine soldater er i kamp med en fjendtlig patrulje på ${n.count} soldater!`);
+        }
+    }
+    state.inCombat = fighting;
+}
+
+// Under kamp henter vi oftere, så tabene kan ses, mens det sker.
+const COMBAT_POLL_MS = 5000;
+async function pollDuringCombat() {
+    if (state.inCombat.size === 0 || pollingWorld || Date.now() - lastWorldPoll < COMBAT_POLL_MS) return;
+    await pollWorld();
+    await loadArmy();
+    await loadReports();
 }
 
 function renderContactsSidebar() {
@@ -2044,7 +2171,7 @@ function renderContactsSidebar() {
     const badge = document.getElementById("contacts-summary-badge");
     if (!list) return;
     const e = state.enemies;
-    const total = e.buildings.length + e.garrisons.length + e.marches.length;
+    const total = e.buildings.length + e.garrisons.length + e.marches.length + e.npcs.length;
     badge.textContent = `${total} set`;
 
     if (total === 0) {
@@ -2088,6 +2215,23 @@ function renderContactsSidebar() {
                 </div>
             </div>`);
     }
+    for (const n of e.npcs) {
+        const [lat, lon] = npcCurrentPos(n);
+        rows.push(`
+            <div class="item-row">
+                <div class="item-row-top">
+                    <img src="assets/fjende.png" class="pixel-img item-sprite" />
+                    <div class="item-info">
+                        <div class="item-title enemy-title">Fjendtlig patrulje: ${n.count} soldater</div>
+                        <div class="item-sub">${n.fighting ? "💥 i kamp med dine soldater" : who(n)}</div>
+                    </div>
+                </div>
+                <div class="item-actions">
+                    <button class="btn btn-small" onclick="jumpToPoint(${lat}, ${lon})">🎯 Hop til</button>
+                    <button class="btn btn-small btn-danger" onclick="sendSoldiersTo(${lat}, ${lon})">⚔️ Angrib</button>
+                </div>
+            </div>`);
+    }
     for (const m of e.marches) {
         rows.push(`
             <div class="item-row">
@@ -2104,6 +2248,48 @@ function renderContactsSidebar() {
             </div>`);
     }
     list.innerHTML = rows.join("");
+}
+
+// ============================================================================
+// Computerstyrede patruljer: nye sættes ud på land omkring din første bygning
+// ============================================================================
+// Serveren kender ikke kortets vand. Browseren vælger derfor tilfældige steder og flytter dem
+// hen til nærmeste vej (OSRM), så patruljerne ikke starter ude i havet. Serveren tjekker selv
+// afstand og antal (npc_spawn).
+const NPC_SNAP_MAX_M = 300;
+let spawningNpcs = false;
+async function maybeSpawnNpcs() {
+    if (!state.user || spawningNpcs) return;
+    spawningNpcs = true;
+    try {
+        const { data: info, error } = await sb.rpc("npc_spawn_info");
+        if (error || !info || !(info.missing > 0)) return;
+        const points = [];
+        for (let tries = 0; tries < info.missing * 4 && points.length < info.missing; tries++) {
+            const a = Math.random() * 2 * Math.PI;
+            const d = info.radius_m * Math.sqrt(Math.random());
+            const lat = info.lat + (d * Math.sin(a)) / EARTH_RADIUS_M * DEG_PER_RAD;
+            const lon = info.lon + (d * Math.cos(a)) / (EARTH_RADIUS_M * Math.cos(info.lat * RAD_PER_DEG)) * DEG_PER_RAD;
+            const snapped = await nearestRoadPoint(lat, lon);
+            if (snapped && Geo.distanceM(lat, lon, snapped[0], snapped[1]) <= NPC_SNAP_MAX_M) points.push(snapped);
+        }
+        if (points.length > 0) await sb.rpc("npc_spawn", { p_points: points });
+    } finally {
+        spawningNpcs = false;
+    }
+}
+
+async function nearestRoadPoint(lat, lon) {
+    try {
+        const url = `https://router.project-osrm.org/nearest/v1/foot/${lon.toFixed(6)},${lat.toFixed(6)}?number=1`;
+        const resp = await fetch(url);
+        if (!resp.ok) return null;
+        const json = await resp.json();
+        const loc = json?.waypoints?.[0]?.location;
+        return loc ? [loc[1], loc[0]] : null;
+    } catch (_) {
+        return null;
+    }
 }
 
 // ============================================================================
@@ -2221,6 +2407,7 @@ async function onSignedIn(user) {
     await pollWorld();
     await loadReports();
     pollScoutAlerts();
+    maybeSpawnNpcs();
 }
 
 // ---------------------------------------------------------------- log ind / opret konto
@@ -2330,8 +2517,9 @@ document.getElementById("btn-logout").onclick = async () => {
     document.getElementById("btn-admin").classList.add("hidden");
     state.marches = [];
     state.garrisons = [];
-    state.enemies = { buildings: [], garrisons: [], marches: [] };
+    state.enemies = { buildings: [], garrisons: [], marches: [], npcs: [] };
     state.seenBySoldiers = new Set();
+    state.inCombat = new Set();
     renderScoutBanner();
     document.getElementById("auth-overlay").classList.remove("hidden");
 };
@@ -2406,6 +2594,7 @@ setInterval(() => {
     if (state.user) tickMarches();
 }, 1000);
 setInterval(pollScoutAlerts, GAME_CONFIG.SCOUT_POLL_MS);
+setInterval(maybeSpawnNpcs, GAME_CONFIG.NPC_SPAWN_CHECK_MS);
 setInterval(async () => {
     if (!state.user) return;
     await pollWorld();
