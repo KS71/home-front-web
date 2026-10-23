@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 33;
+const APP_VERSION = 34;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -1752,8 +1752,8 @@ function renderPointBox(lat, lon, box, badge) {
                     <div class="item-row-top">
                         <img src="assets/fjende.png" class="pixel-img item-sprite" />
                         <div class="item-info">
-                            <div class="item-title enemy-title">Fjendtlig patrulje: ${n.count} soldater</div>
-                            <div class="item-sub">${n.fighting ? "💥 i kamp med dine soldater" : "Computerstyret. Går rundt i området og angriber soldater, den får øje på."}</div>
+                            <div class="item-title enemy-title">${n.is_invasion ? "Invasionshær" : "Fjendtlig patrulje"}: ${n.count} soldater</div>
+                            <div class="item-sub">${n.fighting ? "💥 i kamp med dine soldater" : (n.is_invasion ? "Invasionsstyrke fra Malmø." : "Computerstyret. Går rundt i området og angriber soldater, den får øje på.")}</div>
                             <div class="item-sub">${energyText(n)}</div>
                         </div>
                     </div>
@@ -2606,7 +2606,7 @@ function renderGroupModal() {
     }
 
     // Fjender: kun det, man kan se på afstand — antal og samlet energi.
-    title.textContent = gm.kind === "npc" ? `Fjendtlig patrulje: ${g.count} soldater`
+    title.textContent = gm.kind === "npc" ? (g.is_invasion ? `Fjendtlig invasionshær: ${g.count} soldater` : `Fjendtlig patrulje: ${g.count} soldater`)
         : gm.kind === "enemy-march" ? `Fjendtlige soldater på march: ${g.count}` : `Fjendtlige vagter: ${g.count}`;
     body.innerHTML = `
         <p class="muted-hint">${gm.kind === "npc"
@@ -2929,7 +2929,7 @@ function announceSightings() {
     for (const n of state.enemies.npcs.filter(n => n.by_soldiers)) {
         const k = enemyKey("npc", n);
         now.add(k);
-        if (!state.seenBySoldiers.has(k)) fresh.push(`👁️ Dine soldater har fået øje på en fjendtlig patrulje på ${n.count} soldater.`);
+        if (!state.seenBySoldiers.has(k)) fresh.push(`👁️ Dine soldater har fået øje på en ${n.is_invasion ? "fjendtlig invasionshær" : "fjendtlig patrulje"} på ${n.count} soldater.`);
     }
     state.seenBySoldiers = now;
     fresh.forEach(queueToast);
@@ -2941,7 +2941,7 @@ function announceCombat() {
     for (const id of fighting) {
         if (!state.inCombat.has(id)) {
             const n = state.enemies.npcs.find(x => x.id === id);
-            queueToast(`💥 Dine soldater er i kamp med en fjendtlig patrulje på ${n.count} soldater!`);
+            queueToast(`💥 Dine soldater er i kamp med en ${n.is_invasion ? "fjendtlig invasionshær" : "fjendtlig patrulje"} på ${n.count} soldater!`);
         }
     }
     state.inCombat = fighting;
@@ -3012,8 +3012,8 @@ function renderContactsSidebar() {
                 <div class="item-row-top">
                     <img src="assets/fjende.png" class="pixel-img item-sprite" />
                     <div class="item-info">
-                        <div class="item-title enemy-title">Fjendtlig patrulje: ${n.count} soldater</div>
-                        <div class="item-sub">${n.fighting ? "💥 i kamp med dine soldater" : who(n)} · ${energyText(n)}</div>
+                        <div class="item-title enemy-title">${n.is_invasion ? "Invasionshær" : "Fjendtlig patrulje"}: ${n.count} soldater</div>
+                        <div class="item-sub">${n.fighting ? "💥 i kamp med dine soldater" : (n.is_invasion && !n.by_soldiers ? "Radar / efterretning" : who(n))} · ${energyText(n)}</div>
                     </div>
                 </div>
                 <div class="item-actions">
