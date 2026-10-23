@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 27;
+const APP_VERSION = 28;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -67,9 +67,28 @@ const GAME_CONFIG = {
             beds: [10, 25, 50, 100, 200],
             healPerHour: [20, 25, 30, 40, 50],
             size: 30
+        },
+        steel_mill: {
+            id: "steel_mill",
+            name: "Stålværket",
+            shortName: "stålværk",
+            desc: "Producerer stål løbende, som du henter, når du vil. Stål bruges til at opgradere andre bygninger.",
+            stages: ["Smedje", "Støberi", "Valseværk", "Stålværk", "Stålkombinat"],
+            sprites: ["staalvaerk_1", "staalvaerk_2", "staalvaerk_3", "staalvaerk_4", "staalvaerk_5"],
+            prices: [800, 1500, 2500, 4000, 6000],
+            materials: [{}, {}, {}, {}, {}],
+            production: {
+                material: "steel",
+                per_hour: [10, 20, 35, 55, 80],
+                capacity: [50, 120, 250, 450, 800]
+            },
+            size: 100
         }
     }
 };
+
+// "soldater" / "stål" — hvad en bygning producerer.
+const MATERIAL_NAMES = { soldiers: "soldater", steel: "stål" };
 
 // ============================================================================
 // Geometri: GPS-positioner og firkanter i meter (samme formler som SQL i 0009)
@@ -393,7 +412,12 @@ async function installPixelLandscape() {
         ["img-b-hospital_2", "assets/hospital_2.png", 4],
         ["img-b-hospital_3", "assets/hospital_3.png", 4],
         ["img-b-hospital_4", "assets/hospital_4.png", 4],
-        ["img-b-hospital_5", "assets/hospital_5.png", 4]
+        ["img-b-hospital_5", "assets/hospital_5.png", 4],
+        ["img-b-staalvaerk_1", "assets/staalvaerk_1.png", 2],
+        ["img-b-staalvaerk_2", "assets/staalvaerk_2.png", 2],
+        ["img-b-staalvaerk_3", "assets/staalvaerk_3.png", 2],
+        ["img-b-staalvaerk_4", "assets/staalvaerk_4.png", 2],
+        ["img-b-staalvaerk_5", "assets/staalvaerk_5.png", 2]
     ];
 
     for (const [id, url, scale] of texList) {
@@ -1519,7 +1543,8 @@ function computeProductionContents(b) {
     const emptiedMs = b.emptied_at ? new Date(b.emptied_at).getTime() : Date.now();
     const hours = Math.max(0, (Date.now() - emptiedMs) / 3600000.0);
     const amount = Math.min(cap, Math.floor(hours * perHour));
-    return { amount, capacity: cap, perHour };
+    const material = cfg.production.material || "soldiers";
+    return { amount, capacity: cap, perHour, material, unit: MATERIAL_NAMES[material] || material };
 }
 
 function setSelectedShape(feature) {
@@ -1570,14 +1595,14 @@ function renderBuildingBox(bld, box, badge) {
                         <div class="item-sub">${cfg ? cfg.desc : ""}</div>
                         <div class="item-sub">${size}×${size} m · ${formatPos(bld.lat, bld.lon)}</div>
                         ${housing ? `<div class="item-sub" style="color:#76FF03">Plads her: ${housing} · Ledige i barrak: ${avail}</div>` : ""}
-                        ${prod ? `<div class="item-sub" style="color:#FFD54F">Klar til indkaldelse: ${prod.amount} / ${prod.capacity} (${prod.perHour}/t)</div>` : ""}
+                        ${prod ? `<div class="item-sub" style="color:#FFD54F">${prod.material === "steel" ? "Klar til afhentning" : "Klar til indkaldelse"}: ${prod.amount} / ${prod.capacity} ${prod.unit} (${prod.perHour}/t)</div>` : ""}
                         ${hospitalLineHtml(bld)}
                     </div>
                 </div>
                 <div class="item-actions">
                     ${bld.kind === "hospital" ? `<button class="btn btn-small btn-primary" onclick="openHospitalModal(${bld.id})">🏥 Patienter</button>` : ""}
                     ${bld.kind === "barracks" ? `<button class="btn btn-small btn-primary" ${avail <= 0 ? "disabled" : ""} onclick="sendFromBuilding(${bld.id})">🪖 Send soldater (${avail} klar)</button>` : ""}
-                    ${prod && prod.amount > 0 ? `<button class="btn btn-small btn-primary" onclick="collectFromBuilding(${bld.id})">📥 Indkald ${prod.amount} soldater</button>` : ""}
+                    ${prod && prod.amount > 0 ? `<button class="btn btn-small btn-primary" onclick="collectFromBuilding(${bld.id})">📥 ${prod.material === "steel" ? "Hent" : "Indkald"} ${prod.amount} ${prod.unit}</button>` : ""}
                     ${bld.kind === "academy" ? `<button class="btn btn-small btn-gold" onclick="recruitSoldierInstant()">⚡ Uddan 1 straks (${GAME_CONFIG.INSTANT_SOLDIER_STEPS} skridt)</button>` : ""}
                     ${nextPrice ? `<button class="btn btn-small" onclick="upgradeBuilding(${bld.id})">⬆️ Opgradér til trin ${bld.level + 1} (${nextPrice} skridt${nextSteel ? ` + ${nextSteel} stål` : ""})</button>` : `<span class="badge">Fuldt udbygget</span>`}
                 </div>
@@ -1716,7 +1741,7 @@ function renderPointBox(lat, lon, box, badge) {
     }
 
     // Byggeskitse: en firkant på stedet, grøn hvis du må bygge her, rød hvis ikke.
-    const size = Math.max(...Object.values(GAME_CONFIG.BUILDINGS).map(c => c.size || 30));
+    const size = Math.min(...Object.values(GAME_CONFIG.BUILDINGS).map(c => c.size || 30));
     const right = buildRight(lat, lon, size);
     const near = nearestBuildingGap(lat, lon, size);
     const tooClose = near && near.gap < GAME_CONFIG.BUILDING_GAP_M;
@@ -1761,6 +1786,7 @@ function buildChoicesHtml(lat, lon, terr) {
                     <div class="item-info">
                         <div class="item-title">${cfg.name} (${cfg.stages[0]})</div>
                         <div class="item-sub">${cfg.desc} ${size}×${size} m.</div>
+                        ${blocked ? `<div class="item-sub" style="color:#FF8A80">Ikke plads her: ${size}×${size} m skal holde ${GAME_CONFIG.BUILDING_GAP_M} m afstand til andre bygninger og ligge i dit byggeområde.</div>` : ""}
                     </div>
                 </div>
                 <div class="item-actions">
@@ -1925,6 +1951,18 @@ window.upgradeBuilding = async function(id) {
 };
 
 async function collectFromBuilding(id) {
+    const b = state.myBuildings.find(x => String(x.id) === String(id));
+    const prod = b ? computeProductionContents(b) : null;
+    if (prod?.material === "steel") {
+        const { data, error } = await sb.rpc("collect", { p_building: id, p_remote: true });
+        if (error) {
+            showToast("Kunne ikke hente stål: " + error.message);
+            return;
+        }
+        showToast(`🔩 +${data?.amount ?? 0} stål hentet fra stålværket!`);
+        await syncAllFromSupabase();
+        return;
+    }
     if (state.soldiers >= totalSoldierCapacity()) {
         showToast(`Dine barrakker er fulde (${state.soldiers}/${totalSoldierCapacity()})! Opgradér en barrak først.`);
         return;
@@ -1987,7 +2025,7 @@ function renderBuildingsSidebar() {
                     <div class="item-info">
                         <div class="item-title">${stageName} (Trin ${b.level})</div>
                         <div class="item-sub">${housing ? `Plads: ${housing} soldater` : (cfg?.name || "")}</div>
-                        ${prod ? `<div class="item-sub" style="color:#FFD54F">Klar: ${prod.amount}/${prod.capacity} soldater (${prod.perHour}/t)</div>` : ""}
+                        ${prod ? `<div class="item-sub" style="color:#FFD54F">Klar: ${prod.amount}/${prod.capacity} ${prod.unit} (${prod.perHour}/t)</div>` : ""}
                         ${hospitalLineHtml(b)}
                     </div>
                 </div>
@@ -1995,7 +2033,7 @@ function renderBuildingsSidebar() {
                     <button class="btn btn-small" onclick="jumpToBuilding(${b.id})">🎯 Hop til</button>
                     ${b.kind === "hospital" ? `<button class="btn btn-small btn-primary" onclick="openHospitalModal(${b.id})">🏥 Patienter</button>` : ""}
                     ${b.kind === "barracks" ? `<button class="btn btn-small btn-primary" ${avail <= 0 ? "disabled" : ""} onclick="sendFromBuilding(${b.id})">🪖 Send soldater (${avail})</button>` : ""}
-                    ${prod && prod.amount > 0 ? `<button class="btn btn-small btn-primary" onclick="collectFromBuilding(${b.id})">📥 Indkald (${prod.amount})</button>` : ""}
+                    ${prod && prod.amount > 0 ? `<button class="btn btn-small btn-primary" onclick="collectFromBuilding(${b.id})">📥 ${prod.material === "steel" ? "Hent" : "Indkald"} ${prod.amount} ${prod.unit}</button>` : ""}
                     ${b.kind === "academy" ? `<button class="btn btn-small btn-gold" onclick="recruitSoldierInstant()">⚡ +1 Soldat (${GAME_CONFIG.INSTANT_SOLDIER_STEPS})</button>` : ""}
                     ${nextPrice !== null
                         ? `<button class="btn btn-small" ${canAfford ? "" : `title="Du har ${state.balance} skridt${nextSteel ? ` og ${state.steel} stål` : ""}"`} onclick="upgradeBuilding(${b.id})">⬆️ Trin ${b.level + 1} (${nextPrice} skridt${nextSteel ? ` + ${nextSteel} stål` : ""})</button>`
