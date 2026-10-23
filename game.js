@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 34;
+const APP_VERSION = 35;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -1507,18 +1507,26 @@ function nearestBuildingGap(lat, lon, size) {
 
 function onMapClicked(lat, lon) {
     if (state.pendingMarchOrder) {
+        // Tjek om der er klikket på en anden egne vagtstyrke (snapper præcist til dens koordinater)
+        const nearGar = garrisonsNear(state.garrisons, lat, lon).find(g => {
+            return !(state.pendingMarchOrder.from.type === "garrison" && String(state.pendingMarchOrder.from.id) === String(g.id));
+        });
         const bld = buildingAt(lat, lon);
-        const target = bld
-            ? { lat: bld.lat, lon: bld.lon, label: buildingLabel(bld) }
-            : { lat, lon, label: formatPos(lat, lon) };
-        if (!bld && terrainAt(lat, lon).id === "water") {
-            showToast("Stedet ligger ude i vandet! Vælg et sted på land.");
-            return;
+        let target;
+        if (nearGar) {
+            target = { lat: nearGar.lat, lon: nearGar.lon, label: `Slå sammen med vagt (${nearGar.count} soldater)` };
+        } else if (bld) {
+            target = { lat: bld.lat, lon: bld.lon, label: buildingLabel(bld) };
+        } else {
+            if (terrainAt(lat, lon).id === "water") {
+                showToast("Stedet ligger ude i vandet! Vælg et sted på land.");
+                return;
+            }
+            target = { lat, lon, label: formatPos(lat, lon) };
         }
         addRoutePoint(target);
         return;
     }
-    selectPoint(lat, lon);
     openGroupModalAt(lat, lon);
 }
 
@@ -2620,6 +2628,20 @@ function renderGroupModal() {
 }
 
 // Hele vagtstyrken går hjem til den nærmeste barrak (og bliver rask dér).
+// Læg to vagtstyrker sammen til én styrke (0021).
+window.mergeWithGarrison = async function(fromId, toId) {
+    const { data, error } = await sb.rpc("merge_garrisons", { p_from: fromId, p_to: toId });
+    if (error) {
+        showToast("Kunne ikke slå vagtstyrkerne sammen: " + error.message);
+        return;
+    }
+    showToast(`✅ Vagtstyrkerne er lagt sammen (${data.new_count} soldater i alt)!`);
+    await syncAllFromSupabase();
+    await pollWorld();
+    renderTroopsOnMap();
+    if (state.selected) renderSelectedBox();
+};
+
 window.sendGarrisonHome = function(id) {
     const g = state.garrisons.find(x => String(x.id) === String(id));
     if (!g) return;
