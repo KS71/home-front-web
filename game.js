@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 30;
+const APP_VERSION = 31;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -695,7 +695,8 @@ const npcImgPromise = new Promise((resolve) => {
 // style: "own" (dine), "enemy" (andre spillere) eller "npc" (computerstyret patrulje).
 // status for egne: "guard" (grøn), "patrol" (blå), "march" (orange), "combat" (rød hvis i/har været i kamp).
 function troopBadgeId(count, style = "own", pct = 100, status = "guard") {
-    return `img-${style}-${status}-${count}-${Math.ceil(pct / 10)}`;
+    const bucket = pct >= 100 ? "100" : pct < 40 ? `red-${Math.ceil(pct / 10)}` : `orange-${Math.ceil(pct / 10)}`;
+    return `img-${style}-${status}-${count}-${bucket}`;
 }
 
 async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard") {
@@ -758,7 +759,7 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
     const by = badgeH + 5;
     ctx.fillStyle = "rgba(17, 22, 28, 0.92)";
     ctx.fillRect(bx, by, badgeW, barH);
-    ctx.fillStyle = step > 0.6 ? "#39FF14" : step > 0.3 ? "#FFD54F" : "#FF5252";
+    ctx.fillStyle = energyColor(pct);
     ctx.fillRect(bx + 1, by + 1, Math.max(1, (badgeW - 2) * step), barH - 2);
 
     const sx = (canvas.width - sw) / 2;
@@ -2500,7 +2501,9 @@ function groupPos(kind, g) {
 }
 
 function energyColor(pct) {
-    return pct > 60 ? "#39FF14" : pct > 30 ? "#FFD54F" : "#FF5252";
+    if (pct >= 100) return "#39FF14"; // grøn ved 100 %
+    if (pct >= 40) return "#FF9800";  // orange når under 100 %
+    return "#FF5252";                 // rød når under 40 %
 }
 
 // Én brik pr. soldat med hans energi. Svageste først.
