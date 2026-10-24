@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 44;
+const APP_VERSION = 45;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -217,6 +217,7 @@ function marchFromRow(row) {
         count: row.count,
         wounded: row.wounded || [],
         mortars: row.mortars || 0,
+        shells: row.shells || 0,
         patrolPath: row.patrol_path || null,
         homeBuildingId: row.home_building_id,
         homeLat: row.home_lat,
@@ -2389,6 +2390,8 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
             <div id="mortar-val-label" class="mortar-pick-label"></div>
             <input type="range" min="0" max="0" value="0" class="range-slider" id="mortar-range-input" />
             <p id="mortar-pick-hint" class="muted-hint"></p>
+            <div id="shell-val-label" class="mortar-pick-label"></div>
+            <input type="range" min="0" max="0" value="0" class="range-slider" id="shell-range-input" />
         </div>
     `;
     const slider = document.getElementById("soldier-range-input");
@@ -2402,6 +2405,11 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
     const mSlider = document.getElementById("mortar-range-input");
     const mLabel = document.getElementById("mortar-val-label");
     const mHint = document.getElementById("mortar-pick-hint");
+    // Granater: soldaterne bærer dem. Fra barrakkens lager eller vagtstyrkens egne; kun med en morter.
+    const shellsHere = garrison ? (garrison.shells || 0) : state.shells;
+    const sSlider = document.getElementById("shell-range-input");
+    const sLabel = document.getElementById("shell-val-label");
+    let shellsTouched = false;
     document.getElementById("mortar-pick").classList.toggle("hidden", mortarsHere <= 0);
     const updateMortars = () => {
         const n = parseInt(slider.value, 10) || 1;
@@ -2412,9 +2420,20 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
         if (all || Number(mSlider.value) > max) mSlider.value = String(all ? mortarsHere : max);
         mLabel.textContent = `🧨 ${mSlider.value} / ${mortarsHere} morterer med`;
         mHint.textContent = all
-            ? "Hele vagtstyrken går, så alle dens morterer går med."
+            ? "Hele vagtstyrken går, så alle dens morterer og granater går med."
             : `Der skal ${crew} soldater til hver morter. ${garrison ? "Resten bliver stående hos vagten." : "Resten bliver på lager i barrakken."}`;
+
+        const withMortar = Number(mSlider.value) > 0;
+        const sMax = withMortar ? shellsHere : 0;
+        sSlider.max = String(sMax);
+        sSlider.disabled = all || !withMortar;
+        if (all) sSlider.value = String(shellsHere);
+        else if (!shellsTouched || Number(sSlider.value) > sMax) sSlider.value = String(sMax);
+        sLabel.textContent = withMortar
+            ? `💣 ${sSlider.value} / ${shellsHere} granater med`
+            : `💣 Granater kan kun gå med en morter (${shellsHere} ${garrison ? "hos vagten" : "på lager"})`;
     };
+    sSlider.oninput = () => { shellsTouched = true; updateMortars(); };
     slider.oninput = () => {
         label.textContent = `${slider.value} / ${maxAvail} soldater`;
         updateMortars();
@@ -2429,8 +2448,9 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
     document.getElementById("btn-pick-target-confirm").onclick = () => {
         const chosen = parseInt(slider.value, 10) || 1;
         const mortars = parseInt(mSlider.value, 10) || 0;
+        const shells = mortars > 0 ? (parseInt(sSlider.value, 10) || 0) : 0;
         closeModal();
-        const order = { from, count: chosen, mortars };
+        const order = { from, count: chosen, mortars, shells };
         if (target) openConfirmMarchModal(order, target);
         else enterMarchTargetMode(order);
     };
@@ -2559,7 +2579,7 @@ async function openConfirmMarchModal(order, target) {
     const via = wps.length > 1 ? ` via ${wps.length - 1} punkt${wps.length > 2 ? "er" : ""}` : "";
 
     const overlay = document.getElementById("modal-overlay");
-    const withMortars = order.mortars > 0 ? ` med ${order.mortars} ${order.mortars === 1 ? "morter" : "morterer"}` : "";
+    const withMortars = order.mortars > 0 ? ` med ${order.mortars} ${order.mortars === 1 ? "morter" : "morterer"}${order.shells > 0 ? ` og ${order.shells} granater` : ""}` : "";
     document.getElementById("modal-title").textContent = order.patrol
         ? `Send ${order.count} soldater${withMortars} på patrulje?`
         : `Send ${order.count} soldater${withMortars} af sted?`;
@@ -2598,7 +2618,8 @@ async function executeMarchOrder(order, target, landPath, loopPath = null) {
             p_from_building: order.from.type === "building" ? order.from.id : null,
             p_from_garrison: order.from.type === "garrison" ? order.from.id : null,
             p_count: order.count, p_path: landPath, p_loop: loopPath,
-            ...(order.mortars > 0 ? { p_mortars: order.mortars } : {})
+            ...(order.mortars > 0 ? { p_mortars: order.mortars } : {}),
+            ...(order.shells > 0 ? { p_shells: order.shells } : {})
         }));
     } else if (order.redirectMarchId) {
         // Delingen er gået videre, mens ruten blev beregnet og bekræftet: start fra hvor den er nu.
@@ -2623,7 +2644,8 @@ async function executeMarchOrder(order, target, landPath, loopPath = null) {
             p_from_garrison: order.from.type === "garrison" ? order.from.id : null,
             p_to_lat: target.lat, p_to_lon: target.lon,
             p_count: order.count, p_path: landPath,
-            ...(order.mortars > 0 ? { p_mortars: order.mortars } : {})
+            ...(order.mortars > 0 ? { p_mortars: order.mortars } : {}),
+            ...(order.shells > 0 ? { p_shells: order.shells } : {})
         }));
     }
     if (error) {
@@ -2911,7 +2933,7 @@ window.sendWoundedFromMarch = function(marchId) {
 // Morterne følger soldaterne, men kun en vagtstyrke (soldater, der står stille) kan skyde.
 // Serveren vælger, hvor hver granat lander inde i spredningscirklen, og afgør nedslaget.
 function mortarTag(g) {
-    return g.mortars > 0 ? ` · 🧨 ${g.mortars}` : "";
+    return g.mortars > 0 ? ` · 🧨 ${g.mortars} · 💣 ${g.shells || 0}` : "";
 }
 
 function mortarSpreadM(dist) {
@@ -2943,7 +2965,7 @@ function mortarLineHtml(kind, g) {
     }
     const usable = usableMortars(g);
     const wait = mortarReadyInS(g);
-    return `<p class="muted-hint">🧨 ${g.mortars} ${name} · 💣 ${state.shells} granater på lager · skyder op til ${formatDistance(M.rangeM)}${
+    return `<p class="muted-hint">🧨 ${g.mortars} ${name} · 💣 ${g.shells || 0} granater med · skyder op til ${formatDistance(M.rangeM)}${
         usable < g.mortars ? ` · kun ${usable} kan betjenes (${M.crew} soldater pr. morter)` : ""}${
         wait ? ` · lades, klar om ${wait} s` : ""}</p>`;
 }
@@ -3015,8 +3037,8 @@ window.startMortarAim = function(garrisonId) {
         showToast(`Der skal mindst ${GAME_CONFIG.MORTAR.crew} soldater til at betjene morteren.`);
         return;
     }
-    if (state.shells <= 0) {
-        showToast("Du har ingen granater. Køb granater i en af dine barrakker.");
+    if (!(g.shells > 0)) {
+        showToast("Vagtstyrken har ingen granater med. Send granater ud fra barrakken sammen med soldater og en morter.");
         return;
     }
     if (state.pendingMarchOrder) exitMarchTargetMode();
@@ -3068,7 +3090,7 @@ function renderMortarAim(lat, lon) {
                 : `${formatDistance(d)} væk · granaterne lander inden for ${Math.round(r)} m af målet · flyvetid ca. ${Math.round(mortarFlightS(d))} s`;
         }
     } else if (info) {
-        info.textContent = `Den gule ring viser rækkevidden (${formatDistance(M.rangeM)}). Du har ${state.shells} granater.`;
+        info.textContent = `Den gule ring viser rækkevidden (${formatDistance(M.rangeM)}). Vagten har ${g.shells || 0} granater med.`;
     }
     map.getSource("src-mortar-aim")?.setData({ type: "FeatureCollection", features });
 }
@@ -3103,7 +3125,7 @@ function openFireMortarModal(lat, lon) {
     renderMortarAim(lat, lon);
     const r = mortarSpreadM(d);
     const usable = usableMortars(g);
-    const maxShells = Math.max(1, Math.min(M.salvoMax, state.shells));
+    const maxShells = Math.max(1, Math.min(M.salvoMax, g.shells || 0));
     const danger = r + M.blastM;
     const ownNear = ownSoldiersNear(lat, lon, danger);
     const wait = mortarReadyInS(g);
@@ -3125,7 +3147,7 @@ function openFireMortarModal(lat, lon) {
     const update = () => {
         const n = parseInt(slider.value, 10) || 1;
         const secs = Math.ceil(n / usable) * M.reloadS;
-        label.textContent = `${n} ${n === 1 ? "granat" : "granater"} af ${state.shells} · ${secs} s at skyde`;
+        label.textContent = `${n} ${n === 1 ? "granat" : "granater"} af ${g.shells || 0} · ${secs} s at skyde`;
     };
     slider.oninput = update;
     update();
@@ -3149,8 +3171,10 @@ async function fireMortar(garrisonId, lat, lon, n) {
     }
     exitMortarAim();
     const g = state.garrisons.find(x => String(x.id) === String(garrisonId));
-    state.shells = data.left;
-    if (g) g.mortar_ready_at = data.ready_at;
+    if (g) {
+        g.mortar_ready_at = data.ready_at;
+        g.shells = data.left;
+    }
     data.impacts.forEach((imp, i) => state.craters.push({
         id: `ny-${Date.now()}-${i}`, lat: imp.lat, lon: imp.lon, lands_at: imp.lands_at,
         mine: true, from_lat: g?.lat, from_lon: g?.lon, fired_at: data.fired_at
