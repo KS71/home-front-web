@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 42;
+const APP_VERSION = 43;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -1651,7 +1651,7 @@ function selectPoint(lat, lon) {
     renderSelectedBox();
     renderTroopsOnMap();
     // Sidepanelet kan være rullet ned: vis "Valgt sted" øverst, så menuen ses med det samme.
-    document.querySelector(".command-sidebar")?.scrollTo({ top: 0, behavior: "smooth" });
+    document.querySelector(".command-sidebar")?.scrollTo({ top: 0, behavior: "auto" });
 }
 
 // Egne delinger på march, man har klikket på (deres ikon står oven over positionen).
@@ -1679,7 +1679,10 @@ function highlightTroopsAt(lat, lon) {
     renderTroopsSidebar();
     if (garrisons.length + marches.length === 0) return;
     openSidebarSection("troops");
-    document.querySelector("#troops-list .item-row-selected")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    // Har man valgt en bygning, skal sidepanelet blive stående øverst, så "Valgt sted" ses.
+    if (state.selected?.buildingId == null) {
+        document.querySelector("#troops-list .item-row-selected")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
 }
 
 function buildingLabel(b) {
