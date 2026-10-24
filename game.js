@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 43;
+const APP_VERSION = 44;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -1641,6 +1641,7 @@ function onMapClicked(lat, lon) {
         addRoutePoint(target);
         return;
     }
+    selectPoint(lat, lon);
     openGroupModalAt(lat, lon);
 }
 
