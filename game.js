@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 41;
+const APP_VERSION = 42;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -1650,6 +1650,8 @@ function selectPoint(lat, lon) {
     highlightTroopsAt(lat, lon);
     renderSelectedBox();
     renderTroopsOnMap();
+    // Sidepanelet kan være rullet ned: vis "Valgt sted" øverst, så menuen ses med det samme.
+    document.querySelector(".command-sidebar")?.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 // Egne delinger på march, man har klikket på (deres ikon står oven over positionen).
