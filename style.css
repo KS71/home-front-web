@@ -797,3 +797,22 @@ body, html {
     gap: 6px;
     flex-wrap: wrap;
 }
+
+/* Let morter: sigte-banneret og valg af morterer, når man sender soldater */
+.mortar-banner {
+    border-color: #FF9800;
+    background: rgba(48, 32, 12, 0.96);
+}
+
+.mortar-pick {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid #263238;
+}
+
+.mortar-pick-label {
+    text-align: center;
+    font-size: 16px;
+    font-weight: 800;
+    color: #FFB74D;
+}

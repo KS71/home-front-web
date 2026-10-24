@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 36;
+const APP_VERSION = 37;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -26,6 +26,18 @@ const GAME_CONFIG = {
     BUILD_RADIUS_M: 100,
     VISION_RADIUS_M: 500,
     SCOUT_POLL_MS: 30000,
+    // Let morter (0022). Overskrives af config.rules (mortar_*).
+    MORTAR: {
+        priceSteps: 300, priceSteel: 40,       // én morter
+        shellSteps: 10, shellSteel: 5,         // én granat
+        rangeM: 5000, minRangeM: 75,
+        spreadBaseM: 20, spreadPct: 0.02,      // spredningscirklens radius = base + procent af afstanden
+        blastM: 25,                            // soldater inden for denne afstand af nedslaget rammes
+        crew: 2,                               // soldater pr. morter
+        reloadS: 4, salvoMax: 10,
+        flightBaseS: 8, flightMps: 150,        // flyvetid = base + afstand / fart
+        craterHours: 24
+    },
     BUILDINGS: {
         barracks: {
             id: "barracks",
@@ -165,6 +177,10 @@ const state = {
     balance: 0,
     steel: 0,
     soldiers: 0,
+    mortarsHome: 0,        // morterer på lager i barrakken
+    shells: 0,             // mortergranater på lager
+    mortarAim: null,       // { garrisonId, lat, lon } mens man sigter med en morter
+    craters: [],           // nedslag fra mortar_craters(): { id, lat, lon, lands_at, mine, from_lat, from_lon, fired_at }
     myBuildings: [],       // Alle spillerens egne bygninger { id, owner_id, kind, level, lat, lon, emptied_at }
     visibleBuildings: [],  // Egne + fjendtlige bygninger, du kan se
     selected: null,        // Det valgte sted på kortet { lat, lon, buildingId }
@@ -199,6 +215,7 @@ function marchFromRow(row) {
         owner_id: row.owner_id,
         count: row.count,
         wounded: row.wounded || [],
+        mortars: row.mortars || 0,
         patrolPath: row.patrol_path || null,
         homeBuildingId: row.home_building_id,
         homeLat: row.home_lat,
@@ -362,10 +379,15 @@ function initMap() {
     map.on("move", () => waterCache.clear());
 
     map.on("moveend", () => {
-        if (mapReady) refreshViewportData();
+        if (!mapReady) return;
+        refreshViewportData();
+        loadCratersSoon();
     });
 
     map.on("click", (e) => onMapClicked(e.lngLat.lat, e.lngLat.lng));
+    map.on("mousemove", (e) => {
+        if (state.mortarAim) renderMortarAim(e.lngLat.lat, e.lngLat.lng);
+    });
 }
 
 function loadPixelTexture(url, scale = 2) {
@@ -418,7 +440,9 @@ async function installPixelLandscape() {
         ["img-b-staalvaerk_2", "assets/staalvaerk_2.png", 2],
         ["img-b-staalvaerk_3", "assets/staalvaerk_3.png", 2],
         ["img-b-staalvaerk_4", "assets/staalvaerk_4.png", 2],
-        ["img-b-staalvaerk_5", "assets/staalvaerk_5.png", 2]
+        ["img-b-staalvaerk_5", "assets/staalvaerk_5.png", 2],
+        ["img-crater", "assets/krater.png", 2],
+        ["img-shell", "assets/granat.png", 1]
     ];
 
     for (const [id, url, scale] of texList) {
@@ -499,6 +523,25 @@ function installGameLayers() {
     map.addSource("src-route-draft", { type: "geojson", data: empty });
     map.addSource("src-bookmarks", { type: "geojson", data: empty });
     map.addSource("src-battles", { type: "geojson", data: empty });
+    map.addSource("src-craters", { type: "geojson", data: empty });
+    map.addSource("src-shells", { type: "geojson", data: empty });
+    map.addSource("src-mortar-aim", { type: "geojson", data: empty });
+
+    // Kratere efter mortergranater: hullet i jorden blegner, jo ældre det er.
+    map.addLayer({
+        id: "lyr-craters",
+        type: "symbol",
+        source: "src-craters",
+        layout: {
+            "icon-image": "img-crater",
+            "icon-size": ["interpolate", ["exponential", 2], ["zoom"], 12, 0.15, 16, 0.6, 19, 2.4],
+            "icon-rotate": ["get", "rot"],
+            "icon-rotation-alignment": "map",
+            "icon-allow-overlap": true,
+            "icon-ignore-placement": true
+        },
+        paint: { "icon-opacity": ["get", "op"] }
+    });
 
     // Bogmærker: byggepladser er firkanter på 50×50 m, mål er små firkanter.
     map.addLayer({
@@ -661,6 +704,58 @@ function installGameLayers() {
             "icon-allow-overlap": true,
             "icon-ignore-placement": true
         }
+    });
+
+    // Sigte med morteren: rækkevidden (stiplet ring) og cirklen, granaterne kan lande i.
+    map.addLayer({
+        id: "lyr-mortar-aim-fill",
+        type: "fill",
+        source: "src-mortar-aim",
+        filter: ["==", ["get", "kind"], "spread"],
+        paint: { "fill-color": ["case", ["get", "ok"], "#FF9800", "#FF5252"], "fill-opacity": 0.18 }
+    });
+    map.addLayer({
+        id: "lyr-mortar-aim",
+        type: "line",
+        source: "src-mortar-aim",
+        paint: {
+            "line-color": ["match", ["get", "kind"], "range", "#FFD54F", "spread",
+                ["case", ["get", "ok"], "#FF9800", "#FF5252"], "#FFFFFF"],
+            "line-width": ["match", ["get", "kind"], "range", 2, 2.5],
+            "line-dasharray": [2, 2]
+        }
+    });
+
+    // Granater i luften: en stiplet bane, en skygge på jorden og selve granaten højt oppe.
+    // Nedslag: en eksplosion i et par sekunder.
+    map.addLayer({
+        id: "lyr-shell-trails",
+        type: "line",
+        source: "src-shells",
+        filter: ["==", ["geometry-type"], "LineString"],
+        paint: { "line-color": "#FFF3C4", "line-width": 2, "line-dasharray": [1, 2.5], "line-opacity": 0.85 }
+    });
+    map.addLayer({
+        id: "lyr-shell-shadows",
+        type: "circle",
+        source: "src-shells",
+        filter: ["==", ["get", "kind"], "shadow"],
+        paint: { "circle-radius": 3, "circle-color": "#000000", "circle-opacity": 0.35 }
+    });
+    map.addLayer({
+        id: "lyr-shells",
+        type: "symbol",
+        source: "src-shells",
+        filter: ["in", ["get", "kind"], ["literal", ["shell", "blast"]]],
+        layout: {
+            "icon-image": ["match", ["get", "kind"], "blast", "img-explosion", "img-shell"],
+            "icon-size": ["get", "size"],
+            "icon-rotate": ["get", "rot"],
+            "icon-rotation-alignment": "map",
+            "icon-allow-overlap": true,
+            "icon-ignore-placement": true
+        },
+        paint: { "icon-opacity": ["get", "op"] }
     });
 }
 
@@ -1391,6 +1486,18 @@ async function syncAllFromSupabase() {
                     if (r.building_production?.[k]) bcfg.production = r.building_production[k];
                     if (r.building_size_m?.[k]) bcfg.size = Number(r.building_size_m[k]);
                 }
+                const mortarRules = {
+                    priceSteps: "mortar_price_steps", priceSteel: "mortar_price_steel",
+                    shellSteps: "mortar_shell_price_steps", shellSteel: "mortar_shell_price_steel",
+                    rangeM: "mortar_range_m", minRangeM: "mortar_min_range_m",
+                    spreadBaseM: "mortar_spread_base_m", spreadPct: "mortar_spread_pct",
+                    blastM: "mortar_blast_m", crew: "mortar_crew", reloadS: "mortar_reload_s",
+                    salvoMax: "mortar_salvo_max", flightBaseS: "mortar_flight_base_s",
+                    flightMps: "mortar_flight_mps", craterHours: "mortar_crater_hours"
+                };
+                for (const [k, key] of Object.entries(mortarRules)) {
+                    if (r[key] != null) GAME_CONFIG.MORTAR[k] = Number(r[key]);
+                }
                 if (r.hospital_beds) GAME_CONFIG.BUILDINGS.hospital.beds = r.hospital_beds;
                 if (r.hospital_heal_per_hour) GAME_CONFIG.BUILDINGS.hospital.healPerHour = r.hospital_heal_per_hour;
             }
@@ -1405,6 +1512,8 @@ async function syncAllFromSupabase() {
         matRes.data.forEach(r => { mapMat[r.material] = r.amount; });
         state.steel = mapMat.steel || 0;
         state.soldiers = mapMat.soldiers || 0;
+        state.mortarsHome = mapMat.mortars || 0;
+        state.shells = mapMat.mortar_shells || 0;
     }
     if (myBldRes.data) {
         state.myBuildings = myBldRes.data;
@@ -1506,6 +1615,10 @@ function nearestBuildingGap(lat, lon, size) {
 }
 
 function onMapClicked(lat, lon) {
+    if (state.mortarAim) {
+        openFireMortarModal(lat, lon);
+        return;
+    }
     if (state.pendingMarchOrder) {
         // Tjek om der er klikket på en anden egne vagtstyrke (snapper præcist til dens koordinater)
         const nearGar = garrisonsNear(state.garrisons, lat, lon).find(g => {
@@ -1628,6 +1741,7 @@ function renderBuildingBox(bld, box, badge) {
                         <div class="item-sub">${cfg ? cfg.desc : ""}</div>
                         <div class="item-sub">${size}×${size} m · ${formatPos(bld.lat, bld.lon)}</div>
                         ${housing ? `<div class="item-sub" style="color:#76FF03">Plads her: ${housing} · Ledige i barrak: ${avail}</div>` : ""}
+                        ${bld.kind === "barracks" ? `<div class="item-sub" style="color:#FFB74D">🧨 Morterer på lager: ${state.mortarsHome} · 💣 Granater: ${state.shells}</div>` : ""}
                         ${prod ? `<div class="item-sub" style="color:#FFD54F">${prod.material === "steel" ? "Klar til afhentning" : "Klar til indkaldelse"}: ${prod.amount} / ${prod.capacity} ${prod.unit} (${prod.perHour}/t)</div>` : ""}
                         ${hospitalLineHtml(bld)}
                     </div>
@@ -1635,6 +1749,8 @@ function renderBuildingBox(bld, box, badge) {
                 <div class="item-actions">
                     ${bld.kind === "hospital" ? `<button class="btn btn-small btn-primary" onclick="openHospitalModal(${bld.id})">🏥 Patienter</button>` : ""}
                     ${bld.kind === "barracks" ? `<button class="btn btn-small btn-primary" ${avail <= 0 ? "disabled" : ""} onclick="sendFromBuilding(${bld.id})">🪖 Send soldater (${avail} klar)</button>` : ""}
+                    ${bld.kind === "barracks" ? `<button class="btn btn-small btn-gold" onclick="openBuyEquipmentModal('mortars')">🧨 Køb morter</button>
+                    <button class="btn btn-small btn-gold" onclick="openBuyEquipmentModal('mortar_shells')">💣 Køb granater</button>` : ""}
                     ${prod && prod.amount > 0 ? `<button class="btn btn-small btn-primary" onclick="collectFromBuilding(${bld.id})">📥 ${prod.material === "steel" ? "Hent" : "Indkald"} ${prod.amount} ${prod.unit}</button>` : ""}
                     ${bld.kind === "academy" ? `<button class="btn btn-small btn-gold" onclick="recruitSoldierInstant()">⚡ Uddan 1 straks (${GAME_CONFIG.INSTANT_SOLDIER_STEPS} skridt)</button>` : ""}
                     ${nextPrice ? `<button class="btn btn-small" onclick="upgradeBuilding(${bld.id})">⬆️ Opgradér til trin ${bld.level + 1} (${nextPrice} skridt${nextSteel ? ` + ${nextSteel} stål` : ""})</button>` : `<span class="badge">Fuldt udbygget</span>`}
@@ -1691,13 +1807,14 @@ function garrisonRowsHtml(list) {
             <div class="item-row-top">
                 <img src="assets/tropper.png" class="pixel-img item-sprite" />
                 <div class="item-info">
-                    <div class="item-title item-title-green">Vagtstyrke: ${g.count} soldater</div>
+                    <div class="item-title item-title-green">Vagtstyrke: ${g.count} soldater${mortarTag(g)}</div>
                     <div class="item-sub">Står vagt her · ${energyText(g)}</div>
                 </div>
             </div>
             <div class="item-actions">
                 <button class="btn btn-small" onclick="openGroupModal('garrison', '${g.id}')">📋 Soldater</button>
                 <button class="btn btn-small btn-primary" onclick="sendFromGarrison(${g.id})">🪖 Send videre</button>
+                ${g.mortars > 0 ? `<button class="btn btn-small btn-gold" onclick="startMortarAim(${g.id})">💣 Affyr morter</button>` : ""}
             </div>
         </div>
     `).join("");
@@ -1734,7 +1851,7 @@ function renderPointBox(lat, lon, box, badge) {
                 <div class="item-row-top">
                     <img src="assets/tropper.png" class="pixel-img item-sprite" />
                     <div class="item-info">
-                        <div class="item-title ${m.patrolPath ? 'item-title-blue' : 'item-title-orange'}">${m.count} soldater ${m.patrolPath ? 'på patrulje' : 'på march'}</div>
+                        <div class="item-title ${m.patrolPath ? 'item-title-blue' : 'item-title-orange'}">${m.count} soldater ${m.patrolPath ? 'på patrulje' : 'på march'}${mortarTag(m)}</div>
                         <div class="item-sub">${marchEtaText(m)}</div>
                         <div class="item-sub">${energyText(m)}</div>
                     </div>
@@ -2118,7 +2235,7 @@ function renderTroopsSidebar() {
                 <div class="item-row-top">
                     <img src="assets/tropper.png" class="pixel-img item-sprite" />
                     <div class="item-info">
-                        <div class="item-title ${isPatrol ? "item-title-blue" : "item-title-orange"}">${m.count} soldater ${isPatrol ? "på patrulje" : "på march"}</div>
+                        <div class="item-title ${isPatrol ? "item-title-blue" : "item-title-orange"}">${m.count} soldater ${isPatrol ? "på patrulje" : "på march"}${mortarTag(m)}</div>
                         <div class="item-sub march-eta-text">${marchEtaText(m, now)}</div>
                         <div class="item-sub">${energyText(m)}</div>
                     </div>
@@ -2145,7 +2262,7 @@ function renderTroopsSidebar() {
                 <div class="item-row-top">
                     <img src="assets/tropper.png" class="pixel-img item-sprite" />
                     <div class="item-info">
-                        <div class="item-title item-title-green">${g.count} soldater på vagt</div>
+                        <div class="item-title item-title-green">${g.count} soldater på vagt${mortarTag(g)}</div>
                         <div class="item-sub">${where}</div>
                         <div class="item-sub">${energyText(g)}</div>
                     </div>
@@ -2154,6 +2271,7 @@ function renderTroopsSidebar() {
                     <button class="btn btn-small" onclick="event.stopPropagation(); openGroupModal('garrison', '${g.id}')">📋 Soldater</button>
                     <button class="btn btn-small" onclick="event.stopPropagation(); jumpToPoint(${g.lat}, ${g.lon})">🎯 Hop til</button>
                     <button class="btn btn-small btn-primary" onclick="event.stopPropagation(); sendFromGarrison(${g.id})">🪖 Send videre</button>
+                    ${g.mortars > 0 ? `<button class="btn btn-small btn-gold" onclick="event.stopPropagation(); startMortarAim(${g.id})">💣 Affyr</button>` : ""}
                 </div>
             </div>
         `;
@@ -2210,12 +2328,42 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
         <p>Vælg hvor mange soldater du vil sende af sted fra ${fromText}${target ? ` mod ${escapeHtml(target.label)}` : ""}:</p>
         <div style="text-align:center;font-size:20px;font-weight:800;color:#39FF14;" id="slider-val-label">${maxAvail} / ${maxAvail} soldater</div>
         <input type="range" min="1" max="${maxAvail}" value="${maxAvail}" class="range-slider" id="soldier-range-input" />
+        <div id="mortar-pick" class="mortar-pick hidden">
+            <div id="mortar-val-label" class="mortar-pick-label"></div>
+            <input type="range" min="0" max="0" value="0" class="range-slider" id="mortar-range-input" />
+            <p id="mortar-pick-hint" class="muted-hint"></p>
+        </div>
     `;
     const slider = document.getElementById("soldier-range-input");
     const label = document.getElementById("slider-val-label");
+
+    // Morterer, der kan gå med: fra barrakkens lager eller vagtstyrkens egne. Hver morter kræver
+    // MORTAR.crew soldater. Går hele vagtstyrken, går alle dens morterer med.
+    const crew = GAME_CONFIG.MORTAR.crew;
+    const garrison = from.type === "garrison" ? state.garrisons.find(x => String(x.id) === String(from.id)) : null;
+    const mortarsHere = garrison ? (garrison.mortars || 0) : state.mortarsHome;
+    const mSlider = document.getElementById("mortar-range-input");
+    const mLabel = document.getElementById("mortar-val-label");
+    const mHint = document.getElementById("mortar-pick-hint");
+    document.getElementById("mortar-pick").classList.toggle("hidden", mortarsHere <= 0);
+    const updateMortars = () => {
+        const n = parseInt(slider.value, 10) || 1;
+        const all = garrison && n >= garrison.count;
+        const max = all ? mortarsHere : Math.min(mortarsHere, Math.floor(n / crew));
+        mSlider.max = String(max);
+        mSlider.disabled = all;
+        if (all || Number(mSlider.value) > max) mSlider.value = String(all ? mortarsHere : max);
+        mLabel.textContent = `🧨 ${mSlider.value} / ${mortarsHere} morterer med`;
+        mHint.textContent = all
+            ? "Hele vagtstyrken går, så alle dens morterer går med."
+            : `Der skal ${crew} soldater til hver morter. ${garrison ? "Resten bliver stående hos vagten." : "Resten bliver på lager i barrakken."}`;
+    };
     slider.oninput = () => {
         label.textContent = `${slider.value} / ${maxAvail} soldater`;
+        updateMortars();
     };
+    mSlider.oninput = updateMortars;
+    updateMortars();
 
     document.getElementById("modal-actions").innerHTML = `
         <button class="btn" onclick="closeModal()">Luk</button>
@@ -2223,8 +2371,9 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
     `;
     document.getElementById("btn-pick-target-confirm").onclick = () => {
         const chosen = parseInt(slider.value, 10) || 1;
+        const mortars = parseInt(mSlider.value, 10) || 0;
         closeModal();
-        const order = { from, count: chosen };
+        const order = { from, count: chosen, mortars };
         if (target) openConfirmMarchModal(order, target);
         else enterMarchTargetMode(order);
     };
@@ -2232,6 +2381,7 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
 };
 
 function enterMarchTargetMode(order) {
+    if (state.mortarAim) exitMortarAim();
     state.pendingMarchOrder = { ...order, waypoints: [] };
     document.getElementById("banner-soldier-count").textContent = order.count;
     document.getElementById("march-target-banner").classList.remove("hidden");
@@ -2352,9 +2502,10 @@ async function openConfirmMarchModal(order, target) {
     const via = wps.length > 1 ? ` via ${wps.length - 1} punkt${wps.length > 2 ? "er" : ""}` : "";
 
     const overlay = document.getElementById("modal-overlay");
+    const withMortars = order.mortars > 0 ? ` med ${order.mortars} ${order.mortars === 1 ? "morter" : "morterer"}` : "";
     document.getElementById("modal-title").textContent = order.patrol
-        ? `Send ${order.count} soldater på patrulje?`
-        : `Send ${order.count} soldater af sted?`;
+        ? `Send ${order.count} soldater${withMortars} på patrulje?`
+        : `Send ${order.count} soldater${withMortars} af sted?`;
     document.getElementById("modal-body").innerHTML = order.patrol ? `
         <p><strong>Patrulje:</strong> ${wps.length} punkter i ring (1 → … → ${wps.length} → 1), indtil du giver en ny ordre.</p>
         <p><strong>Hen til punkt 1:</strong> ca. ${formatDistance(distM)} · ${formatSeconds(durationSec)}</p>
@@ -2389,7 +2540,8 @@ async function executeMarchOrder(order, target, landPath, loopPath = null) {
         ({ error } = await sb.rpc("start_patrol", {
             p_from_building: order.from.type === "building" ? order.from.id : null,
             p_from_garrison: order.from.type === "garrison" ? order.from.id : null,
-            p_count: order.count, p_path: landPath, p_loop: loopPath
+            p_count: order.count, p_path: landPath, p_loop: loopPath,
+            ...(order.mortars > 0 ? { p_mortars: order.mortars } : {})
         }));
     } else if (order.redirectMarchId) {
         // Delingen er gået videre, mens ruten blev beregnet og bekræftet: start fra hvor den er nu.
@@ -2413,7 +2565,8 @@ async function executeMarchOrder(order, target, landPath, loopPath = null) {
             p_from_building: order.from.type === "building" ? order.from.id : null,
             p_from_garrison: order.from.type === "garrison" ? order.from.id : null,
             p_to_lat: target.lat, p_to_lon: target.lon,
-            p_count: order.count, p_path: landPath
+            p_count: order.count, p_path: landPath,
+            ...(order.mortars > 0 ? { p_mortars: order.mortars } : {})
         }));
     }
     if (error) {
@@ -2421,6 +2574,7 @@ async function executeMarchOrder(order, target, landPath, loopPath = null) {
         return;
     }
     await loadArmy();
+    if (order.mortars > 0 && order.from.type === "building") await syncAllFromSupabase();
     showToast(order.patrol
         ? `🔁 ${order.count} soldater går nu patrulje mellem ${order.waypoints.length} punkter!`
         : order.redirectMarchId
@@ -2597,6 +2751,7 @@ function renderGroupModal() {
         title.textContent = gm.kind === "march" ? `Deling på march: ${g.count} soldater` : `Vagtstyrke: ${g.count} soldater`;
         body.innerHTML = `
             <p class="muted-hint">${where} · ${g.count - hurt} raske, ${hurt} ${hurt === 1 ? "såret" : "sårede"}. Sårede heles kun på et felthospital.</p>
+            ${mortarLineHtml(gm.kind, g)}
             ${bar}
             ${soldierTilesHtml(g)}`;
         actions.innerHTML = gm.kind === "march" ? `
@@ -2607,6 +2762,7 @@ function renderGroupModal() {
             <button class="btn" onclick="closeModal()">Luk</button>` : `
             <button class="btn" onclick="closeModal(); jumpToPoint(${lat}, ${lon})">🎯 Hop til</button>
             <button class="btn btn-primary" onclick="closeModal(); sendFromGarrison(${g.id})">🪖 Send soldater</button>
+            ${g.mortars > 0 ? `<button class="btn btn-gold" onclick="closeModal(); startMortarAim(${g.id})">💣 Affyr morter</button>` : ""}
             ${hurt ? `<button class="btn btn-primary" onclick="closeModal(); sendWoundedToHospital(${g.id})">🏥 Send ${hurt} ${hurt === 1 ? "såret" : "sårede"} til hospitalet</button>` : ""}
             <button class="btn btn-danger" onclick="closeModal(); sendGarrisonHome(${g.id})">🏠 Send hjem</button>
             <button class="btn" onclick="closeModal()">Luk</button>`;
@@ -2691,6 +2847,370 @@ window.sendWoundedFromMarch = function(marchId) {
         { lat: near.b.lat, lon: near.b.lon, label: buildingLabel(near.b) });
 };
 
+// ============================================================================
+// Let morter (0022): køb, sigt, skyd, granater i luften og kratere
+// ============================================================================
+// Morterne følger soldaterne, men kun en vagtstyrke (soldater, der står stille) kan skyde.
+// Serveren vælger, hvor hver granat lander inde i spredningscirklen, og afgør nedslaget.
+function mortarTag(g) {
+    return g.mortars > 0 ? ` · 🧨 ${g.mortars}` : "";
+}
+
+function mortarSpreadM(dist) {
+    const M = GAME_CONFIG.MORTAR;
+    return M.spreadBaseM + M.spreadPct * dist;
+}
+
+function mortarFlightS(dist) {
+    const M = GAME_CONFIG.MORTAR;
+    return M.flightBaseS + dist / Math.max(M.flightMps, 1);
+}
+
+// Morterer, vagten kan betjene lige nu (MORTAR.crew soldater pr. morter).
+function usableMortars(g) {
+    return Math.min(g.mortars || 0, Math.floor(g.count / GAME_CONFIG.MORTAR.crew));
+}
+
+function mortarReadyInS(g) {
+    if (!g.mortar_ready_at) return 0;
+    return Math.max(0, Math.ceil((Date.parse(g.mortar_ready_at) - serverNow()) / 1000));
+}
+
+function mortarLineHtml(kind, g) {
+    if (!(g.mortars > 0)) return "";
+    const M = GAME_CONFIG.MORTAR;
+    const name = g.mortars === 1 ? "morter" : "morterer";
+    if (kind === "march") {
+        return `<p class="muted-hint">🧨 Bærer ${g.mortars} ${name}. Morteren kan kun skyde, når soldaterne står vagt.</p>`;
+    }
+    const usable = usableMortars(g);
+    const wait = mortarReadyInS(g);
+    return `<p class="muted-hint">🧨 ${g.mortars} ${name} · 💣 ${state.shells} granater på lager · skyder op til ${formatDistance(M.rangeM)}${
+        usable < g.mortars ? ` · kun ${usable} kan betjenes (${M.crew} soldater pr. morter)` : ""}${
+        wait ? ` · lades, klar om ${wait} s` : ""}</p>`;
+}
+
+// En cirkel med radius r meter som GeoJSON-ring [lon, lat].
+function circleRing(lat, lon, r, n = 72) {
+    const dLat = r / EARTH_RADIUS_M * DEG_PER_RAD;
+    const dLon = dLat / Math.max(Math.cos(lat * RAD_PER_DEG), MIN_COS);
+    const ring = [];
+    for (let i = 0; i <= n; i++) {
+        const a = i / n * 2 * Math.PI;
+        ring.push([lon + dLon * Math.cos(a), lat + dLat * Math.sin(a)]);
+    }
+    return ring;
+}
+
+// ---------------------------------------------------------------- køb
+window.openBuyEquipmentModal = function(item) {
+    const M = GAME_CONFIG.MORTAR;
+    const isMortar = item === "mortars";
+    const steps = isMortar ? M.priceSteps : M.shellSteps;
+    const steel = isMortar ? M.priceSteel : M.shellSteel;
+    const afford = Math.floor(Math.min(state.balance / Math.max(steps, 1), steel > 0 ? state.steel / steel : Infinity));
+    const max = Math.max(1, Math.min(isMortar ? 10 : 100, afford));
+    state.groupModal = null;
+    document.getElementById("modal-title").textContent = isMortar ? "🧨 Køb let morter" : "💣 Køb mortergranater";
+    document.getElementById("modal-body").innerHTML = `
+        <div class="item-row-top" style="margin-bottom:8px;">
+            <img src="assets/${isMortar ? "morter" : "granat"}.png" class="pixel-img item-sprite" />
+            <p class="muted-hint" style="margin:0;">${isMortar
+                ? `En let morter, som soldaterne bærer med. Den kan skyde op til <strong>${formatDistance(M.rangeM)}</strong>, når soldaterne står vagt, og kræver ${M.crew} soldater. Den står på lager i barrakken, til du sender den ud med soldater.`
+                : `Granater til dine morterer. Alle dine morterer skyder fra det samme lager.`}</p>
+        </div>
+        <p>Pris pr. stk.: <strong>${steps} skridt + ${steel} stål</strong>. Du har ${state.balance.toLocaleString("da-DK")} skridt og ${state.steel.toLocaleString("da-DK")} stål.</p>
+        <div style="text-align:center;font-size:20px;font-weight:800;color:#FFD54F;" id="buy-val-label"></div>
+        <input type="range" min="1" max="${max}" value="1" class="range-slider" id="buy-range-input" ${afford < 1 ? "disabled" : ""} />
+        ${afford < 1 ? `<p class="muted-hint" style="color:#FF8A80">Du har ikke skridt og stål nok til at købe ${isMortar ? "en morter" : "en granat"}.</p>` : ""}
+    `;
+    const slider = document.getElementById("buy-range-input");
+    const label = document.getElementById("buy-val-label");
+    const update = () => {
+        const n = parseInt(slider.value, 10) || 1;
+        label.textContent = `${n} ${isMortar ? (n === 1 ? "morter" : "morterer") : (n === 1 ? "granat" : "granater")} · ${n * steps} skridt + ${n * steel} stål`;
+    };
+    slider.oninput = update;
+    update();
+    document.getElementById("modal-actions").innerHTML = `
+        <button class="btn" onclick="closeModal()">Luk</button>
+        <button class="btn btn-gold" id="btn-buy-confirm" ${afford < 1 ? "disabled" : ""}>🛒 Køb</button>`;
+    document.getElementById("btn-buy-confirm").onclick = async () => {
+        const n = parseInt(slider.value, 10) || 1;
+        const { error } = await sb.rpc("buy_equipment", { p_item: item, p_count: n });
+        if (error) {
+            showToast("Kunne ikke købe: " + error.message);
+            return;
+        }
+        closeModal();
+        showToast(isMortar ? `🧨 ${n} ${n === 1 ? "morter" : "morterer"} står nu i barrakken.` : `💣 +${n} granater på lager.`);
+        await syncAllFromSupabase();
+    };
+    document.getElementById("modal-overlay").classList.remove("hidden");
+};
+
+// ---------------------------------------------------------------- sigt og skyd
+window.startMortarAim = function(garrisonId) {
+    const g = state.garrisons.find(x => String(x.id) === String(garrisonId));
+    if (!g || !(g.mortars > 0)) return;
+    if (usableMortars(g) < 1) {
+        showToast(`Der skal mindst ${GAME_CONFIG.MORTAR.crew} soldater til at betjene morteren.`);
+        return;
+    }
+    if (state.shells <= 0) {
+        showToast("Du har ingen granater. Køb granater i en af dine barrakker.");
+        return;
+    }
+    if (state.pendingMarchOrder) exitMarchTargetMode();
+    state.mortarAim = { garrisonId: g.id };
+    document.getElementById("mortar-banner").classList.remove("hidden");
+    map.getCanvas().style.cursor = "crosshair";
+    renderMortarAim(null, null);
+    // Vis hele rækkevidden, hvis man er zoomet tættere ind.
+    const ring = circleRing(g.lat, g.lon, GAME_CONFIG.MORTAR.rangeM, 8);
+    const lons = ring.map(p => p[0]), lats = ring.map(p => p[1]);
+    if (!map.getBounds().contains([Math.min(...lons), Math.min(...lats)])) {
+        map.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]], { padding: 60, duration: 700 });
+    }
+};
+
+function exitMortarAim() {
+    state.mortarAim = null;
+    document.getElementById("mortar-banner").classList.add("hidden");
+    if (!mapReady) return;
+    map.getCanvas().style.cursor = "";
+    map.getSource("src-mortar-aim")?.setData({ type: "FeatureCollection", features: [] });
+}
+
+// Rækkevidden om morteren og spredningscirklen der, hvor musen står (eller det valgte mål).
+function renderMortarAim(lat, lon) {
+    const aim = state.mortarAim;
+    if (!aim || !mapReady) return;
+    const g = state.garrisons.find(x => String(x.id) === String(aim.garrisonId));
+    if (!g) {
+        exitMortarAim();
+        return;
+    }
+    const M = GAME_CONFIG.MORTAR;
+    const line = (coords, props) => ({ type: "Feature", properties: props, geometry: { type: "LineString", coordinates: coords } });
+    const features = [
+        line(circleRing(g.lat, g.lon, M.rangeM, 180), { kind: "range" }),
+        line(circleRing(g.lat, g.lon, M.minRangeM), { kind: "range" })
+    ];
+    const info = document.getElementById("mortar-banner-info");
+    if (lat != null) {
+        const d = Geo.distanceM(g.lat, g.lon, lat, lon);
+        const ok = d <= M.rangeM && d >= M.minRangeM;
+        const r = mortarSpreadM(d);
+        features.push({ type: "Feature", properties: { kind: "spread", ok },
+            geometry: { type: "Polygon", coordinates: [circleRing(lat, lon, r)] } });
+        if (info) {
+            info.textContent = d > M.rangeM ? `${formatDistance(d)} — for langt væk (højst ${formatDistance(M.rangeM)}).`
+                : d < M.minRangeM ? `${formatDistance(d)} — for tæt på (mindst ${M.minRangeM} m).`
+                : `${formatDistance(d)} væk · granaterne lander inden for ${Math.round(r)} m af målet · flyvetid ca. ${Math.round(mortarFlightS(d))} s`;
+        }
+    } else if (info) {
+        info.textContent = `Den gule ring viser rækkevidden (${formatDistance(M.rangeM)}). Du har ${state.shells} granater.`;
+    }
+    map.getSource("src-mortar-aim")?.setData({ type: "FeatureCollection", features });
+}
+
+// Egne soldater (vagter og delinger) inden for r meter af et punkt.
+function ownSoldiersNear(lat, lon, r) {
+    const now = serverNow();
+    const pts = [
+        ...state.garrisons.map(g => [g.lat, g.lon, g.count]),
+        ...state.marches.map(m => [...marchCurrentPos(m, now), m.count])
+    ];
+    return pts.filter(([a, b]) => Geo.distanceM(a, b, lat, lon) <= r).reduce((s, p) => s + p[2], 0);
+}
+
+function openFireMortarModal(lat, lon) {
+    const aim = state.mortarAim;
+    const g = aim && state.garrisons.find(x => String(x.id) === String(aim.garrisonId));
+    if (!g) {
+        exitMortarAim();
+        return;
+    }
+    const M = GAME_CONFIG.MORTAR;
+    const d = Geo.distanceM(g.lat, g.lon, lat, lon);
+    if (d > M.rangeM) {
+        showToast(`Målet er ${formatDistance(d)} væk — morteren skyder højst ${formatDistance(M.rangeM)}.`);
+        return;
+    }
+    if (d < M.minRangeM) {
+        showToast(`Målet er for tæt på (${Math.round(d)} m) — morteren skal skyde mindst ${M.minRangeM} m.`);
+        return;
+    }
+    renderMortarAim(lat, lon);
+    const r = mortarSpreadM(d);
+    const usable = usableMortars(g);
+    const maxShells = Math.max(1, Math.min(M.salvoMax, state.shells));
+    const danger = r + M.blastM;
+    const ownNear = ownSoldiersNear(lat, lon, danger);
+    const wait = mortarReadyInS(g);
+
+    state.groupModal = null;
+    document.getElementById("modal-title").textContent = "💣 Affyr morteren?";
+    document.getElementById("modal-body").innerHTML = `
+        <p><strong>Mål:</strong> ${formatPos(lat, lon)} · ${formatDistance(d)} væk</p>
+        <p><strong>Usikkerhed:</strong> hver granat lander et tilfældigt sted inden for <strong>${Math.round(r)} m</strong> af målet (den orange cirkel). Soldater inden for ${M.blastM} m af et nedslag kan blive ramt.</p>
+        <p><strong>Flyvetid:</strong> ca. ${Math.round(mortarFlightS(d))} s · ${usable} ${usable === 1 ? "morter" : "morterer"} skyder</p>
+        ${ownNear > 0 ? `<p style="color:#FF8A80"><strong>⚠️ ${ownNear} af dine egne soldater</strong> står inden for ${Math.round(danger)} m af målet og kan blive ramt!</p>` : ""}
+        ${wait ? `<p style="color:#FFB74D">Morteren lades stadig — klar om ${wait} s.</p>` : ""}
+        <div style="text-align:center;font-size:20px;font-weight:800;color:#FFD54F;" id="shell-val-label"></div>
+        <input type="range" min="1" max="${maxShells}" value="${Math.min(3, maxShells)}" class="range-slider" id="shell-range-input" />
+        <p class="muted-hint">Du ser kun virkningen, hvis dine soldater eller din telefon kan se nedslaget. Krateret kan alle se.</p>
+    `;
+    const slider = document.getElementById("shell-range-input");
+    const label = document.getElementById("shell-val-label");
+    const update = () => {
+        const n = parseInt(slider.value, 10) || 1;
+        const secs = Math.ceil(n / usable) * M.reloadS;
+        label.textContent = `${n} ${n === 1 ? "granat" : "granater"} af ${state.shells} · ${secs} s at skyde`;
+    };
+    slider.oninput = update;
+    update();
+    document.getElementById("modal-actions").innerHTML = `
+        <button class="btn" onclick="closeModal(); exitMortarAim();">Annullér</button>
+        <button class="btn" onclick="closeModal();">Vælg et andet mål</button>
+        <button class="btn btn-gold" id="btn-fire-mortar">💣 Skyd</button>`;
+    document.getElementById("btn-fire-mortar").onclick = () => {
+        const n = parseInt(slider.value, 10) || 1;
+        closeModal();
+        fireMortar(g.id, lat, lon, n);
+    };
+    document.getElementById("modal-overlay").classList.remove("hidden");
+}
+
+async function fireMortar(garrisonId, lat, lon, n) {
+    const { data, error } = await sb.rpc("fire_mortar", { p_garrison: garrisonId, p_lat: lat, p_lon: lon, p_shells: n });
+    if (error) {
+        showToast("Morteren kunne ikke skyde: " + error.message);
+        return;
+    }
+    exitMortarAim();
+    const g = state.garrisons.find(x => String(x.id) === String(garrisonId));
+    state.shells = data.left;
+    if (g) g.mortar_ready_at = data.ready_at;
+    data.impacts.forEach((imp, i) => state.craters.push({
+        id: `ny-${Date.now()}-${i}`, lat: imp.lat, lon: imp.lon, lands_at: imp.lands_at,
+        mine: true, from_lat: g?.lat, from_lon: g?.lon, fired_at: data.fired_at
+    }));
+    startShellAnimation();
+    showToast(`💣 ${n} ${n === 1 ? "granat er" : "granater er"} affyret! ${n === 1 ? "Den lander" : "De lander"} om ca. ${data.flight_s} s inden for ${data.spread_m} m af målet.`);
+
+    // Når den sidste granat er landet, hentes verden igen, så man ser virkningen.
+    const last = Math.max(...data.impacts.map(x => Date.parse(x.lands_at)));
+    setTimeout(async () => {
+        await pollWorld();
+        await loadArmy();
+        await loadReports();
+    }, Math.max(0, last - serverNow()) + 1500);
+}
+
+// ---------------------------------------------------------------- kratere og granater i luften
+let loadingCraters = false;
+async function loadCraters() {
+    if (!state.user || !mapReady || loadingCraters) return;
+    loadingCraters = true;
+    try {
+        const c = map.getCenter();
+        const b = map.getBounds();
+        const r = Math.min(30000, Math.max(3000, Geo.distanceM(c.lat, c.lng, b.getNorth(), b.getEast())));
+        const { data, error } = await sb.rpc("mortar_craters", { p_lat: c.lat, p_lon: c.lng, p_r: r });
+        if (error || !data) return; // før 0022 er kørt, findes funktionen ikke
+        state.craters = data.craters || [];
+        startShellAnimation();
+    } finally {
+        loadingCraters = false;
+    }
+}
+
+let cratersTimer = null;
+function loadCratersSoon() {
+    clearTimeout(cratersTimer);
+    cratersTimer = setTimeout(loadCraters, 600);
+}
+
+let shellAnimRunning = false;
+function startShellAnimation() {
+    renderCratersAndShells();
+    if (shellAnimRunning) return;
+    shellAnimRunning = true;
+    const step = () => {
+        if (renderCratersAndShells()) requestAnimationFrame(step);
+        else shellAnimRunning = false;
+    };
+    requestAnimationFrame(step);
+}
+
+// Samme krater drejes altid ens, så de ikke ser ens ud.
+function craterRotation(id) {
+    let h = 0;
+    for (const ch of String(id)) h = (h * 31 + ch.charCodeAt(0)) % 360;
+    return h;
+}
+
+const BLAST_MS = 2500;
+
+// Tegner kratere, eksplosioner og egne granater i luften. Returnerer true, så længe noget bevæger sig.
+function renderCratersAndShells() {
+    if (!mapReady) return false;
+    const now = serverNow();
+    const M = GAME_CONFIG.MORTAR;
+    const point = (lat, lon, props) => ({ type: "Feature", properties: props, geometry: { type: "Point", coordinates: [lon, lat] } });
+    const craters = [];
+    const shells = [];
+    let busy = false;
+
+    for (const c of state.craters) {
+        const land = Date.parse(c.lands_at);
+        if (now >= land) {
+            const ageH = (now - land) / 3600000;
+            craters.push(point(c.lat, c.lon, { op: Math.max(0.3, 1 - ageH / M.craterHours * 0.7), rot: craterRotation(c.id) }));
+            const age = now - land;
+            if (age < BLAST_MS) {
+                busy = true;
+                const k = age / BLAST_MS;
+                shells.push(point(c.lat, c.lon, { kind: "blast", size: 0.6 + 0.9 * Math.sin(Math.PI * Math.min(1, k * 1.6)), rot: 0, op: 1 - k * k }));
+            }
+            continue;
+        }
+        if (!c.mine || c.from_lat == null) continue;
+        busy = true;
+
+        // Granaten flyver i en bue: positionen langs jorden + en højde, der løfter den op på skærmen.
+        const dist = Geo.distanceM(c.from_lat, c.from_lon, c.lat, c.lon);
+        const flightMs = mortarFlightS(dist) * 1000;
+        const launch = land - flightMs;
+        const t = (now - launch) / flightMs;
+        if (t < 0) continue; // salve: venter på sin tur
+        const apexPx = Math.min(260, 50 + dist / 25);
+        const lifted = (tt) => {
+            const la = c.from_lat + (c.lat - c.from_lat) * tt;
+            const lo = c.from_lon + (c.lon - c.from_lon) * tt;
+            const p = map.project([lo, la]);
+            p.y -= 4 * apexPx * tt * (1 - tt);
+            const ll = map.unproject(p);
+            return [ll.lng, ll.lat, p];
+        };
+        const arc = [];
+        for (let i = 0; i <= 24; i++) arc.push(lifted(i / 24).slice(0, 2));
+        shells.push({ type: "Feature", properties: { kind: "trail" }, geometry: { type: "LineString", coordinates: arc } });
+
+        const [lon, lat, p] = lifted(t);
+        const [, , p2] = lifted(Math.min(1, t + 0.01));
+        const rot = Math.atan2(p2.x - p.x, -(p2.y - p.y)) * 180 / Math.PI;
+        shells.push(point(c.from_lat + (c.lat - c.from_lat) * t, c.from_lon + (c.lon - c.from_lon) * t, { kind: "shadow" }));
+        shells.push(point(lat, lon, { kind: "shell", size: 1.6, rot, op: 1 }));
+    }
+
+    map.getSource("src-craters")?.setData({ type: "FeatureCollection", features: craters });
+    map.getSource("src-shells")?.setData({ type: "FeatureCollection", features: shells });
+    return busy;
+}
+
 let resolvingArrivals = false;
 async function tickMarches() {
     const now = serverNow();
@@ -2721,7 +3241,11 @@ const REPORT_TEXT = {
     defended:   r => `🛡️ Din stilling blev angrebet af ${r.enemy_losses} soldater, men holdt! Du mistede ${r.losses}.`,
     lost:       r => `🔥 Du har tabt et slag. ${r.losses} vagter faldt, og en bygning kan være jævnet med jorden.`,
     patrol_defeated: r => `🏅 Dine soldater nedkæmpede en fjendtlig patrulje på ${r.enemy_losses} soldater.`,
-    patrol_won: r => `💀 En fjendtlig patrulje nedkæmpede ${r.count} af dine soldater.`
+    patrol_won: r => `💀 En fjendtlig patrulje nedkæmpede ${r.count} af dine soldater.`,
+    shelled: r => r.survivors <= 0
+        ? `💥 En mortergranat ramte dine ${r.count} soldater — ingen overlevede.`
+        : `💥 En mortergranat ramte dine soldater: ${r.enemy_losses} træffere${r.losses ? `, ${r.losses} faldt` : ""}.`,
+    mortar_hit: r => `💣 Din granat ramte fjenden: ${r.count} træffere${r.enemy_losses ? `, ${r.enemy_losses} faldt` : ""}.`
 };
 
 // ---------------------------------------------------------------- kamprapporter
@@ -2803,14 +3327,15 @@ function renderBattlesSidebar() {
     } else {
         for (const b of battles) {
             const o = battleOutcome(b);
-            const enemy = b.enemy === "player" ? "en anden spiller" : "en fjendtlig patrulje";
+            const enemy = b.enemy === "player" ? "mod en anden spiller"
+                : b.enemy === "mortar" ? "mortergranater" : "mod en fjendtlig patrulje";
             const sel = String(b.id) === String(selectedBattleId);
             html += `
                 <div class="item-row ${sel ? "item-row-selected" : ""}" style="cursor:pointer;" onclick="showBattle(${b.id})">
                     <div class="item-row-top">
                         <div class="item-info">
                             <div class="item-title" style="color:${o.color}">${o.text}</div>
-                            <div class="item-sub">${battleTimeText(b.last_at)} · mod ${enemy}</div>
+                            <div class="item-sub">${battleTimeText(b.last_at)} · ${enemy}</div>
                             <div class="item-sub">📍 ${formatPos(b.lat, b.lon)}</div>
                             <div class="item-sub">Dine tab: ${b.own_killed} faldne${b.own_hits > b.own_killed ? ` (${b.own_hits} ramt)` : ""} · Fjendens tab: ${b.enemy_killed}</div>
                         </div>
@@ -2887,7 +3412,7 @@ async function loadReports() {
     await sb.from("march_reports").update({ seen: true }).in("id", data.map(r => r.id));
     // Kamp mod patruljer ændrer antallet af soldater; hjemkomne sårede lægges på hospitalet.
     if (data.some(r => r.kind !== "returned" && r.kind !== "arrived")) loadBattles();
-    if (data.some(r => r.kind.startsWith("patrol_") || r.kind === "returned")) {
+    if (data.some(r => r.kind.startsWith("patrol_") || r.kind === "returned" || r.kind === "shelled")) {
         await loadArmy();
         await syncAllFromSupabase();
     }
@@ -2920,6 +3445,7 @@ async function pollWorld() {
     } finally {
         pollingWorld = false;
     }
+    loadCraters();
 }
 
 function enemyKey(kind, o) {
@@ -3340,6 +3866,8 @@ document.getElementById("btn-logout").onclick = async () => {
     state.enemies = { buildings: [], garrisons: [], marches: [], npcs: [] };
     state.seenBySoldiers = new Set();
     state.inCombat = new Set();
+    state.craters = [];
+    exitMortarAim();
     renderScoutBanner();
     document.getElementById("auth-overlay").classList.remove("hidden");
 };
@@ -3347,6 +3875,7 @@ document.getElementById("btn-logout").onclick = async () => {
 document.getElementById("btn-sync").onclick = () => syncAllFromSupabase();
 document.getElementById("btn-admin").onclick = () => openAdminModal();
 document.getElementById("btn-cancel-march-mode").onclick = () => exitMarchTargetMode();
+document.getElementById("btn-cancel-mortar").onclick = () => exitMortarAim();
 document.getElementById("btn-route-undo").onclick = () => {
     state.pendingMarchOrder?.waypoints.pop();
     renderRouteDraft();

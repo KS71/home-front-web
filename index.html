@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>HOME FRONT — Command Center</title>
     <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
-    <link rel="stylesheet" href="style.css?v=36" />
+    <link rel="stylesheet" href="style.css?v=37" />
 </head>
 <body>
     <!-- Login / Titelskærm Overlay -->
@@ -93,6 +93,17 @@
                     <button id="btn-route-go" class="btn btn-small btn-primary" disabled>✅ Send af sted</button>
                     <button id="btn-route-patrol" class="btn btn-small btn-gold" disabled>🔁 Gå patrulje</button>
                     <button id="btn-cancel-march-mode" class="btn btn-small btn-danger">Annullér</button>
+                </div>
+            </div>
+
+            <!-- Banner når man sigter med en morter -->
+            <div id="mortar-banner" class="march-banner mortar-banner hidden">
+                <div class="march-banner-text">
+                    💣 <strong>VÆLG MÅL FOR MORTEREN:</strong> Klik på kortet. Granaterne lander tilfældigt inde i den orange cirkel.
+                    <div id="mortar-banner-info" class="march-banner-sub"></div>
+                </div>
+                <div class="march-banner-actions">
+                    <button id="btn-cancel-mortar" class="btn btn-small btn-danger">Annullér</button>
                 </div>
             </div>
 
@@ -184,6 +195,6 @@
 
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="game.js?v=36"></script>
+    <script src="game.js?v=37"></script>
 </body>
 </html>
