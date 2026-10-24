@@ -2029,6 +2029,24 @@ window.deleteBookmark = async function(id) {
 // Send soldater fra den nærmeste egne barrak til et punkt — et bogmærke eller hvor som helst i verden.
 // Ligger punktet i en bygning, er bygningen målet.
 window.sendSoldiersTo = function(lat, lon) {
+    const bld = buildingAt(lat, lon);
+    const target = bld
+        ? { lat: bld.lat, lon: bld.lon, label: buildingLabel(bld) }
+        : { lat, lon, label: formatPos(lat, lon) };
+
+    // Har du valgt en af dine vagtstyrker, er det den, der angriber. Valgte du en marcherende
+    // deling, kan den ikke sende nye soldater (serveren kræver en barrak eller vagtstyrke).
+    const chosenId = state.groupModal?.kind === "garrison" ? state.groupModal.id
+        : (state.highlight.garrisons.size === 1 ? [...state.highlight.garrisons][0] : null);
+    const chosen = chosenId != null ? state.garrisons.find(x => String(x.id) === String(chosenId)) : null;
+    if (chosen && chosen.count > 0) {
+        openSendSoldiersModal({ type: "garrison", id: chosen.id, lat: chosen.lat, lon: chosen.lon }, chosen.count, target);
+        return;
+    }
+    if (state.highlight.marches.size > 0) {
+        showToast("Den valgte deling er på march og kan ikke angribe. Vælg en vagtstyrke eller en barrak.");
+    }
+
     const from = nearestOwnBuilding(lat, lon, "barracks");
     if (!from) {
         showToast("Du har ingen barrak at sende soldater fra.");
@@ -2039,10 +2057,6 @@ window.sendSoldiersTo = function(lat, lon) {
         showToast("Du har ingen ledige soldater i dine barrakker.");
         return;
     }
-    const bld = buildingAt(lat, lon);
-    const target = bld
-        ? { lat: bld.lat, lon: bld.lon, label: buildingLabel(bld) }
-        : { lat, lon, label: formatPos(lat, lon) };
     openSendSoldiersModal({ type: "building", id: from.b.id, lat: from.b.lat, lon: from.b.lon }, avail, target);
 };
 
