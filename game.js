@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 38;
+const APP_VERSION = 39;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -2050,6 +2050,8 @@ window.sendSoldiersTo = function(lat, lon) {
     if (chosenId != null) state.attackFromId = null;  // vagtstyrken findes ikke længere
     if (state.highlight.marches.size > 0) {
         showToast("Den valgte deling er på march og kan ikke angribe. Vælg en vagtstyrke eller en barrak.");
+    } else if (state.garrisons.some(g => g.count > 0)) {
+        showToast("Klik først på din vagtstyrke på kortet, så angriber den. Ellers sendes soldaterne fra din barrak.");
     }
 
     const from = nearestOwnBuilding(lat, lon, "barracks");
