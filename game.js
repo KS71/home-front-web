@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 40;
+const APP_VERSION = 41;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -2043,20 +2043,31 @@ window.sendSoldiersTo = function(lat, lon) {
     const choices = state.garrisons
         .filter(g => g.count > 0)
         .map(g => ({ d: Geo.distanceM(g.lat, g.lon, lat, lon), label: `Vagtstyrke · ${g.count} soldater`,
-                     garrisonId: g.id, from: { type: "garrison", id: g.id, lat: g.lat, lon: g.lon }, avail: g.count }))
-        .sort((a, b) => a.d - b.d);
+                     garrisonId: g.id,
+                     open: t => openSendSoldiersModal({ type: "garrison", id: g.id, lat: g.lat, lon: g.lon }, g.count, t) }));
+    // Grupper på march (også patruljer) kan ændre kurs direkte mod målet, ligesom "Nyt mål".
+    const now = serverNow();
+    for (const m of state.marches) {
+        if (m.count <= 0) continue;
+        const [mLat, mLon] = marchCurrentPos(m, now);
+        choices.push({ d: Geo.distanceM(mLat, mLon, lat, lon), label: `På march · ${m.count} soldater`,
+                       garrisonId: null,
+                       open: t => openConfirmMarchModal({ from: { type: "march", id: m.id, lat: mLat, lon: mLon },
+                                                          count: m.count, redirectMarchId: m.id }, t) });
+    }
+    choices.sort((a, b) => a.d - b.d);
     const from = nearestOwnBuilding(lat, lon, "barracks");
     const avail = availableInBarracks();
     if (from && avail > 0) {
         choices.push({ d: Infinity, label: `Barrak · ${avail} ledige soldater`, garrisonId: null,
-                       from: { type: "building", id: from.b.id, lat: from.b.lat, lon: from.b.lon }, avail });
+                       open: t => openSendSoldiersModal({ type: "building", id: from.b.id, lat: from.b.lat, lon: from.b.lon }, avail, t) });
     }
     if (choices.length === 0) {
         showToast("Du har ingen soldater, der kan angribe herfra.");
         return;
     }
     if (choices.length === 1) {
-        openSendSoldiersModal(choices[0].from, choices[0].avail, target);
+        choices[0].open(target);
         return;
     }
     openAttackSourceModal(choices, target);
@@ -2080,7 +2091,7 @@ function openAttackSourceModal(choices, target) {
         btn.onclick = () => {
             const c = choices[Number(btn.dataset.choice)];
             if (c.garrisonId != null) state.attackFromId = c.garrisonId;
-            openSendSoldiersModal(c.from, c.avail, target);
+            c.open(target);
         };
     });
     overlay.classList.remove("hidden");
