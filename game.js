@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 35;
+const APP_VERSION = 36;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -2747,7 +2747,7 @@ async function loadBattles() {
         .order("last_at", { ascending: false })
         .limit(300);
     battlesMissing = !!error;
-    battles = data || [];
+    battles = (data || []).slice().sort((a, b) => new Date(b.last_at).getTime() - new Date(a.last_at).getTime());
     renderBattlesSidebar();
     renderBattlesOnMap();
 }
