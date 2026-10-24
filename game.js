@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 37;
+const APP_VERSION = 38;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -185,6 +185,7 @@ const state = {
     visibleBuildings: [],  // Egne + fjendtlige bygninger, du kan se
     selected: null,        // Det valgte sted på kortet { lat, lon, buildingId }
     highlight: { garrisons: new Set(), marches: new Set() }, // valgte soldater, lyser op i listen
+    attackFromId: null,    // den vagtstyrke, Angrib sender fra (husket, også når man klikker på fjenden)
     pendingMarchOrder: null, // { from: { type, id, lat, lon }, count, redirectMarchId }
     marches: [],           // Egne marcher fra serveren (se marchFromRow)
     garrisons: [],         // Egne vagtstyrker fra serveren { id, owner_id, lat, lon, count }
@@ -1669,6 +1670,10 @@ function highlightTroopsAt(lat, lon) {
     const garrisons = garrisonsNear(state.garrisons, lat, lon).map(g => String(g.id));
     const marches = marchesNear(lat, lon).map(m => String(m.id));
     state.highlight = { garrisons: new Set(garrisons), marches: new Set(marches) };
+    // Klikker du på en af dine vagtstyrker, husker vi den, så Angrib bruger den, også når du
+    // bagefter klikker på fjenden (det nulstiller ikke valget).
+    if (garrisons.length === 1) state.attackFromId = garrisons[0];
+    else if (marches.length > 0) state.attackFromId = null;
     renderTroopsSidebar();
     if (garrisons.length + marches.length === 0) return;
     openSidebarSection("troops");
@@ -2036,13 +2041,13 @@ window.sendSoldiersTo = function(lat, lon) {
 
     // Har du valgt en af dine vagtstyrker, er det den, der angriber. Valgte du en marcherende
     // deling, kan den ikke sende nye soldater (serveren kræver en barrak eller vagtstyrke).
-    const chosenId = state.groupModal?.kind === "garrison" ? state.groupModal.id
-        : (state.highlight.garrisons.size === 1 ? [...state.highlight.garrisons][0] : null);
+    const chosenId = state.groupModal?.kind === "garrison" ? state.groupModal.id : state.attackFromId;
     const chosen = chosenId != null ? state.garrisons.find(x => String(x.id) === String(chosenId)) : null;
     if (chosen && chosen.count > 0) {
         openSendSoldiersModal({ type: "garrison", id: chosen.id, lat: chosen.lat, lon: chosen.lon }, chosen.count, target);
         return;
     }
+    if (chosenId != null) state.attackFromId = null;  // vagtstyrken findes ikke længere
     if (state.highlight.marches.size > 0) {
         showToast("Den valgte deling er på march og kan ikke angribe. Vælg en vagtstyrke eller en barrak.");
     }
@@ -2660,6 +2665,7 @@ window.selectMarchRow = function(marchId) {
 };
 
 window.selectGarrisonRow = function(garrisonId) {
+    state.attackFromId = String(garrisonId);
     state.highlight = { garrisons: new Set([String(garrisonId)]), marches: new Set() };
     renderTroopsSidebar();
     renderTroopsOnMap();
