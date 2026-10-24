@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 39;
+const APP_VERSION = 40;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -2039,33 +2039,52 @@ window.sendSoldiersTo = function(lat, lon) {
         ? { lat: bld.lat, lon: bld.lon, label: buildingLabel(bld) }
         : { lat, lon, label: formatPos(lat, lon) };
 
-    // Har du valgt en af dine vagtstyrker, er det den, der angriber. Valgte du en marcherende
-    // deling, kan den ikke sende nye soldater (serveren kræver en barrak eller vagtstyrke).
-    const chosenId = state.groupModal?.kind === "garrison" ? state.groupModal.id : state.attackFromId;
-    const chosen = chosenId != null ? state.garrisons.find(x => String(x.id) === String(chosenId)) : null;
-    if (chosen && chosen.count > 0) {
-        openSendSoldiersModal({ type: "garrison", id: chosen.id, lat: chosen.lat, lon: chosen.lon }, chosen.count, target);
-        return;
-    }
-    if (chosenId != null) state.attackFromId = null;  // vagtstyrken findes ikke længere
-    if (state.highlight.marches.size > 0) {
-        showToast("Den valgte deling er på march og kan ikke angribe. Vælg en vagtstyrke eller en barrak.");
-    } else if (state.garrisons.some(g => g.count > 0)) {
-        showToast("Klik først på din vagtstyrke på kortet, så angriber den. Ellers sendes soldaterne fra din barrak.");
-    }
-
+    // Hvem kan angribe: alle dine vagtstyrker med soldater, og din nærmeste barrak med ledige soldater.
+    const choices = state.garrisons
+        .filter(g => g.count > 0)
+        .map(g => ({ d: Geo.distanceM(g.lat, g.lon, lat, lon), label: `Vagtstyrke · ${g.count} soldater`,
+                     garrisonId: g.id, from: { type: "garrison", id: g.id, lat: g.lat, lon: g.lon }, avail: g.count }))
+        .sort((a, b) => a.d - b.d);
     const from = nearestOwnBuilding(lat, lon, "barracks");
-    if (!from) {
-        showToast("Du har ingen barrak at sende soldater fra.");
-        return;
-    }
     const avail = availableInBarracks();
-    if (avail <= 0) {
-        showToast("Du har ingen ledige soldater i dine barrakker.");
+    if (from && avail > 0) {
+        choices.push({ d: Infinity, label: `Barrak · ${avail} ledige soldater`, garrisonId: null,
+                       from: { type: "building", id: from.b.id, lat: from.b.lat, lon: from.b.lon }, avail });
+    }
+    if (choices.length === 0) {
+        showToast("Du har ingen soldater, der kan angribe herfra.");
         return;
     }
-    openSendSoldiersModal({ type: "building", id: from.b.id, lat: from.b.lat, lon: from.b.lon }, avail, target);
+    if (choices.length === 1) {
+        openSendSoldiersModal(choices[0].from, choices[0].avail, target);
+        return;
+    }
+    openAttackSourceModal(choices, target);
 };
+
+// Lader spilleren vælge, hvilken af hans grupper der angriber. Den sidst valgte vagtstyrke står øverst.
+function openAttackSourceModal(choices, target) {
+    const overlay = document.getElementById("modal-overlay");
+    document.getElementById("modal-title").textContent = "Hvem skal angribe?";
+    const rows = choices.map((c, i) => {
+        const dist = Number.isFinite(c.d) ? ` · ${formatDistance(c.d)} væk` : "";
+        const picked = c.garrisonId != null && String(c.garrisonId) === String(state.attackFromId);
+        return `<button class="btn ${picked ? "btn-primary" : ""}" data-choice="${i}" style="width:100%;margin-bottom:6px;text-align:left;">${c.label}${dist}${picked ? " (valgt)" : ""}</button>`;
+    }).join("");
+    document.getElementById("modal-body").innerHTML = `
+        <p>Vælg hvilken af dine grupper der skal angribe ${escapeHtml(target.label)}:</p>
+        ${rows}
+    `;
+    document.getElementById("modal-actions").innerHTML = `<button class="btn" onclick="closeModal()">Luk</button>`;
+    document.querySelectorAll("#modal-body [data-choice]").forEach(btn => {
+        btn.onclick = () => {
+            const c = choices[Number(btn.dataset.choice)];
+            if (c.garrisonId != null) state.attackFromId = c.garrisonId;
+            openSendSoldiersModal(c.from, c.avail, target);
+        };
+    });
+    overlay.classList.remove("hidden");
+}
 
 window.sendFromBuilding = function(id) {
     const b = state.myBuildings.find(x => String(x.id) === String(id));
