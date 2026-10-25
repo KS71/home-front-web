@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 55;
+const APP_VERSION = 56;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -4111,7 +4111,7 @@ const RULE_GROUPS = [
 const RULE_INFO = {
     vision_m:                   ["vision", "Telefonens udsyn (fjender ses så langt fra telefonen)", "m"],
     soldier_vision_m:           ["vision", "Soldaternes udsyn", "m"],
-    soldier_speed_mps:          ["vision", "Soldaternes gå-fart (1,67 m/s ≈ 6 km/t)", "m/s"],
+    soldier_speed_mps:          ["vision", "Soldaternes gå-fart", "km/t"],
     garrison_merge_m:           ["vision", "Soldater så tæt på hinanden er én vagtstyrke", "m"],
     march_snap_m:               ["vision", "Tilladt afvigelse for rutens ender", "m"],
     march_max_points:           ["vision", "Flest punkter i en rute", "stk."],
@@ -4141,13 +4141,13 @@ const RULE_INFO = {
     mortar_reload_s:            ["mortar", "Tid mellem to granater fra samme morter", "s"],
     mortar_salvo_max:           ["mortar", "Flest granater pr. ordre", "stk."],
     mortar_flight_base_s:       ["mortar", "Flyvetid: grundværdi", "s"],
-    mortar_flight_mps:          ["mortar", "Flyvetid: granatens fart", "m/s"],
+    mortar_flight_mps:          ["mortar", "Flyvetid: granatens fart", "km/t"],
     mortar_crater_hours:        ["mortar", "Så længe et krater kan ses", "timer"],
     truck_price_steps:          ["truck", "Pris for én lastbil", "skridt"],
     truck_price_steel:          ["truck", "Pris for én lastbil", "stål"],
     truck_capacity:             ["truck", "Soldater pr. lastbil", "soldater"],
-    truck_road_speed_mps:       ["truck", "Fart på vej (22,22 m/s = 80 km/t)", "m/s"],
-    truck_field_speed_mps:      ["truck", "Fart uden for vejene (5,556 m/s = 20 km/t)", "m/s"],
+    truck_road_speed_mps:       ["truck", "Fart på vej", "km/t"],
+    truck_field_speed_mps:      ["truck", "Fart uden for vejene", "km/t"],
     truck_hp:                   ["truck", "Energi pr. lastbil", "energi"],
     truck_hit_share:            ["truck", "Andel af træfferne, der rammer en lastbil (0,4 = 40 %)", "0–1"],
     truck_wreck_hours:          ["truck", "Så længe et udbrændt vrag kan ses", "timer"],
@@ -4157,7 +4157,7 @@ const RULE_INFO = {
     npc_size_min:               ["npc", "Mindst antal soldater i en ny patrulje", "stk."],
     npc_size_max:               ["npc", "Højst antal soldater i en ny patrulje", "stk."],
     npc_wander_m:               ["npc", "Så langt fra hjemstedet de strejfer", "m"],
-    npc_speed_mps:              ["npc", "Gå-fart på patrulje", "m/s"],
+    npc_speed_mps:              ["npc", "Gå-fart på patrulje", "km/t"],
     npc_vision_m:               ["npc", "Så langt de ser dine soldater", "m"],
     npc_chase_leash_m:          ["npc", "Længst væk fra hjemstedet de forfølger", "m"],
     building_gap_m:             ["build", "Mindste afstand mellem to bygningers kanter", "m"],
@@ -4178,7 +4178,7 @@ const RULE_INFO = {
     tile_price_steps:           ["economy", "(Fra den gamle udgave med felter – bruges ikke)", "skridt"],
     online_window_s:            ["economy", "Spiller tæller som online så længe efter sidste livstegn", "s"],
     location_max_age_s:         ["gps", "Telefonens position gælder så længe", "s"],
-    location_max_speed_mps:     ["gps", "Højeste tilladte fart mellem to positioner", "m/s"],
+    location_max_speed_mps:     ["gps", "Højeste tilladte fart mellem to positioner", "km/t"],
     location_jitter_m:          ["gps", "Tilladt GPS-uro", "m"],
     location_max_accuracy_m:    ["gps", "Dårligste GPS-nøjagtighed, der godtages", "m"]
 };
@@ -4195,8 +4195,17 @@ function ruleSubLabel(k) {
 }
 
 // Ét eller flere inputfelter for en værdi. path er stien i rules-objektet.
+// Farter står i m/s i reglerne, men vises og rettes i km/t (enheden "km/t" i RULE_INFO).
+function ruleIsKmh(path) {
+    return path.length === 1 && RULE_INFO[path[0]]?.[2] === "km/t";
+}
+
 function ruleInputs(value, path) {
     const p = escapeHtml(JSON.stringify(path));
+    if (typeof value === "number" && ruleIsKmh(path)) {
+        const kmh = Math.round(value * 3.6 * 10) / 10;
+        return `<input type="number" step="any" class="rule-input" data-path="${p}" data-type="kmh" data-orig="${value}" value="${kmh}" />`;
+    }
     if (typeof value === "number") {
         return `<input type="number" step="any" class="rule-input" data-path="${p}" data-type="number" value="${value}" />`;
     }
@@ -4311,6 +4320,11 @@ window.saveRules = async function(btn) {
                 return;
             }
             if (type === "material") v = v > 0 ? { steel: v } : {};
+            // km/t → m/s. Er tallet ikke rettet, beholdes det gamle præcist.
+            if (type === "kmh") {
+                const orig = Number(el.dataset.orig);
+                v = Math.round(orig * 3.6 * 10) / 10 === v ? orig : v / 3.6;
+            }
         }
         el.classList.remove("rule-bad");
         setAtPath(rules, path, v);
