@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 61;
+const APP_VERSION = 62;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -3570,14 +3570,16 @@ async function checkCraterFires() {
             fireCheckedCraters.add(c.id);
             const hit = map.queryRenderedFeatures(map.project([c.lon, c.lat]), { layers: ["building"] })
                 .find(f => f.id != null);
-            if (!hit || state.fires.some(f => String(f.osm_id) === String(hit.id))) continue;
+            if (!hit) { console.info(`Brand: granat ${c.id} ramte ingen bygning på kortet.`); continue; }
+            if (state.fires.some(f => String(f.osm_id) === String(hit.id))) { console.info(`Brand: bygning ${hit.id} brænder allerede.`); continue; }
             const geom = mapBuildingPolygons(hit);
-            if (!geom.length) continue;
+            if (!geom.length) { console.info(`Brand: bygning ${hit.id} har intet omrids.`); continue; }
             const { data, error } = await sb.rpc("ignite_map_building", { p_impact: c.id, p_osm_id: hit.id, p_geom: geom });
             if (error) {
                 console.warn("Brand i bygning:", error.message);
                 continue;
             }
+            console.info(`Brand: granat ${c.id} i bygning ${hit.id}, svar fra serveren:`, data);
             if (data?.burning) lit = true;
         }
     } finally {
