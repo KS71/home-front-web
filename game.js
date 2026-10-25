@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 60;
+const APP_VERSION = 61;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -3535,6 +3535,8 @@ async function loadCraters() {
         const r = Math.min(30000, Math.max(3000, Geo.distanceM(c.lat, c.lng, b.getNorth(), b.getEast())));
         const { data, error } = await sb.rpc("mortar_craters", { p_lat: c.lat, p_lon: c.lng, p_r: r });
         if (error || !data) return; // før 0022 er kørt, findes funktionen ikke
+        // Serverens ur også herfra, så granaterne flyver rigtigt, selvom visible_enemies fejler.
+        if (data.now) state.serverOffsetMs = Date.parse(data.now) - Date.now();
         state.craters = data.craters || [];
         state.wrecks = data.wrecks || [];
         state.fires = data.fires || [];
