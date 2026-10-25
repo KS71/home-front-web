@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 58;
+const APP_VERSION = 59;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -46,6 +46,12 @@ const GAME_CONFIG = {
         hp: 300,                               // energi pr. lastbil
         hitShare: 0.4,                         // andel af træfferne, der rammer en lastbil
         wreckHours: 24                         // så længe et udbrændt vrag kan ses
+    },
+    // Kortets bygninger brænder, når en mortergranat lander i dem (0030). Overskrives af config.rules (map_*).
+    MAP_FIRE: {
+        chance: 0.3,                           // chance for at en granat sætter bygningen i brand
+        fireHours: 24,                         // så længe den brænder
+        ruinHours: 168                         // så længe ruinen kan ses bagefter
     },
     BUILDINGS: {
         barracks: {
@@ -191,7 +197,8 @@ const state = {
     trucksHome: 0,         // lastbiler på lager i barrakken
     wrecks: [],            // udbrændte køretøjer fra mortar_craters(): { id, kind, lat, lon, burned_at, mine }
     mortarAim: null,       // { garrisonId, lat, lon } mens man sigter med en morter
-    craters: [],           // nedslag fra mortar_craters(): { id, lat, lon, lands_at, mine, from_lat, from_lon, fired_at }
+    craters: [],           // nedslag fra mortar_craters(): { id, lat, lon, lands_at, fire_checked, mine, from_lat, from_lon, fired_at }
+    fires: [],             // kortets brændende/udbrændte bygninger fra mortar_craters(): { id, osm_id, geom, started_at }
     myBuildings: [],       // Alle spillerens egne bygninger { id, owner_id, kind, level, lat, lon, emptied_at }
     visibleBuildings: [],  // Egne + fjendtlige bygninger, du kan se
     selected: null,        // Det valgte sted på kortet { lat, lon, buildingId }
@@ -399,6 +406,11 @@ function initMap() {
         loadCratersSoon();
     });
 
+    // Når kortet er færdigt med at tegne, ses der efter kratere i kortets bygninger.
+    map.on("idle", () => {
+        if (mapReady) checkCraterFires();
+    });
+
     map.on("click", (e) => onMapClicked(e.lngLat.lat, e.lngLat.lng));
     map.on("mousemove", (e) => {
         if (state.mortarAim) renderMortarAim(e.lngLat.lat, e.lngLat.lng);
@@ -458,6 +470,11 @@ async function installPixelLandscape() {
         ["img-b-staalvaerk_5", "assets/staalvaerk_5.png", 2],
         ["img-crater", "assets/krater.png", 2],
         ["img-wreck", "assets/lastbil_vrag.png", 2],
+        ["img-flame-0", "assets/flamme_1.png", 2],
+        ["img-flame-1", "assets/flamme_2.png", 2],
+        ["img-flame-2", "assets/flamme_3.png", 2],
+        ["img-ruin", "assets/ruin.png", 2],
+        ["img-ruin-glow", "assets/ruin_glod.png", 2],
         ["img-shell", "assets/granat.png", 1]
     ];
 
@@ -543,6 +560,32 @@ function installGameLayers() {
     map.addSource("src-shells", { type: "geojson", data: empty });
     map.addSource("src-wrecks", { type: "geojson", data: empty });
     map.addSource("src-mortar-aim", { type: "geojson", data: empty });
+    map.addSource("src-fire-areas", { type: "geojson", data: empty });
+    map.addSource("src-fire-flames", { type: "geojson", data: empty });
+
+    // Kortets bygninger, der brænder (glødende) eller er udbrændte ruiner. Tegnes i bygningens
+    // rigtige form oven på den brune bygning.
+    map.addLayer({
+        id: "lyr-fire-areas",
+        type: "fill",
+        source: "src-fire-areas",
+        paint: { "fill-pattern": ["match", ["get", "state"], "burning", "img-ruin-glow", "img-ruin"] }
+    });
+    // Flammerne blafrer: billedet skiftes med animateFlames().
+    map.addLayer({
+        id: "lyr-fire-flames",
+        type: "symbol",
+        source: "src-fire-flames",
+        minzoom: 13,
+        layout: {
+            "icon-image": flameImageExpression(0),
+            "icon-anchor": "bottom",
+            "icon-size": ["interpolate", ["exponential", 2], ["zoom"],
+                13, ["*", ["get", "s"], 0.12], 16, ["*", ["get", "s"], 0.5], 19, ["*", ["get", "s"], 2.0]],
+            "icon-allow-overlap": true,
+            "icon-ignore-placement": true
+        }
+    });
 
     // Kratere efter mortergranater: hullet i jorden blegner, jo ældre det er.
     map.addLayer({
@@ -1669,6 +1712,10 @@ async function syncAllFromSupabase() {
                 };
                 for (const [k, key] of Object.entries(truckRules)) {
                     if (r[key] != null) GAME_CONFIG.TRUCK[k] = Number(r[key]);
+                }
+                const fireRules = { chance: "map_fire_chance", fireHours: "map_fire_hours", ruinHours: "map_ruin_hours" };
+                for (const [k, key] of Object.entries(fireRules)) {
+                    if (r[key] != null) GAME_CONFIG.MAP_FIRE[k] = Number(r[key]);
                 }
                 if (r.hospital_beds) GAME_CONFIG.BUILDINGS.hospital.beds = r.hospital_beds;
                 if (r.hospital_heal_per_hour) GAME_CONFIG.BUILDINGS.hospital.healPerHour = r.hospital_heal_per_hour;
@@ -3490,9 +3537,158 @@ async function loadCraters() {
         if (error || !data) return; // før 0022 er kørt, findes funktionen ikke
         state.craters = data.craters || [];
         state.wrecks = data.wrecks || [];
+        state.fires = data.fires || [];
         startShellAnimation();
+        renderMapFires();
     } finally {
         loadingCraters = false;
+    }
+    checkCraterFires();
+}
+
+// ---------------------------------------------------------------- kortets bygninger brænder
+// Serveren kan ikke se kortet. Når et krater ligger inde i en af kortets brune bygninger, sender
+// browseren bygningens nummer og omrids, og serveren kaster terningen (én gang pr. granat).
+const fireCheckedCraters = new Set();   // kratere, denne browser har set på
+let checkingFires = false;
+
+async function checkCraterFires() {
+    if (!mapReady || checkingFires || !map.getLayer("building") || map.getZoom() < 14 || !map.areTilesLoaded()) return;
+    const now = serverNow();
+    const bounds = map.getBounds();
+    const due = state.craters.filter(c =>
+        typeof c.id === "number" && !c.fire_checked && !fireCheckedCraters.has(c.id)
+        && Date.parse(c.lands_at) <= now && bounds.contains([c.lon, c.lat]));
+    if (!due.length) return;
+
+    checkingFires = true;
+    let lit = false;
+    try {
+        for (const c of due) {
+            fireCheckedCraters.add(c.id);
+            const hit = map.queryRenderedFeatures(map.project([c.lon, c.lat]), { layers: ["building"] })
+                .find(f => f.id != null);
+            if (!hit || state.fires.some(f => String(f.osm_id) === String(hit.id))) continue;
+            const geom = mapBuildingPolygons(hit);
+            if (!geom.length) continue;
+            const { data, error } = await sb.rpc("ignite_map_building", { p_impact: c.id, p_osm_id: hit.id, p_geom: geom });
+            if (error) {
+                console.warn("Brand i bygning:", error.message);
+                continue;
+            }
+            if (data?.burning) lit = true;
+        }
+    } finally {
+        checkingFires = false;
+    }
+    if (lit) {
+        showToast("🔥 En bygning er gået i brand!");
+        loadCraters();
+    }
+}
+
+// Alle stykker af kortets bygning med samme nummer (en stor bygning er delt over flere
+// kortstykker). Returnerer [[ring, …], …] med ringe af [lon, lat].
+function mapBuildingPolygons(hit) {
+    const parts = [hit, ...map.querySourceFeatures(hit.source, {
+        sourceLayer: hit.sourceLayer || "building",
+        filter: ["==", ["id"], hit.id]
+    })];
+    const seen = new Set();
+    const polys = [];
+    let points = 0;
+    const round = ring => ring.map(([lon, lat]) => [Math.round(lon * 1e7) / 1e7, Math.round(lat * 1e7) / 1e7]);
+    for (const f of parts) {
+        const g = f.geometry;
+        const list = g.type === "Polygon" ? [g.coordinates] : g.type === "MultiPolygon" ? g.coordinates : [];
+        for (const poly of list) {
+            const rings = poly.map(round);
+            const key = JSON.stringify(rings);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            points += rings.reduce((n, r) => n + r.length, 0);
+            polys.push(rings);
+        }
+    }
+    // Serveren tager højst 50 stykker og 5000 punkter; ellers nøjes vi med det ramte stykke.
+    if (polys.length > 50 || points > 5000) return polys.slice(0, 1);
+    return polys;
+}
+
+// Lige-ulige-reglen over alle ringe, så gårde i bygningen ikke tæller med.
+function pointInRings(lon, lat, rings) {
+    let inside = false;
+    for (const ring of rings) {
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+            const [xi, yi] = ring[i], [xj, yj] = ring[j];
+            if ((yi > lat) !== (yj > lat) && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi) inside = !inside;
+        }
+    }
+    return inside;
+}
+
+// Flammerne i en bygning: faste, tilfældige steder inde i omridset, ca. én pr. 150 m².
+const flameCache = new Map();
+function flamePoints(fire) {
+    if (flameCache.has(fire.id)) return flameCache.get(fire.id);
+    let seed = (Number(fire.id) * 2654435761) % 4294967296 || 1;
+    const rnd = () => (seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296;
+    const all = fire.geom.flat(2);
+    const lons = all.map(p => p[0]), lats = all.map(p => p[1]);
+    const w = Math.min(...lons), e = Math.max(...lons), s = Math.min(...lats), n = Math.max(...lats);
+    const boxM2 = Geo.distanceM(s, w, s, e) * Geo.distanceM(s, w, n, w);
+    const inside = [];
+    const tries = 400;
+    for (let i = 0; i < tries; i++) {
+        const lon = w + rnd() * (e - w), lat = s + rnd() * (n - s);
+        if (fire.geom.some(poly => pointInRings(lon, lat, poly))) inside.push([lon, lat]);
+    }
+    const want = Math.max(2, Math.min(50, Math.round(boxM2 * inside.length / tries / 150)));
+    const pts = inside.slice(0, want).map(c => ({ c, ph: Math.floor(rnd() * 3), s: 0.75 + rnd() * 0.5 }));
+    flameCache.set(fire.id, pts);
+    return pts;
+}
+
+function flameImageExpression(frame) {
+    return ["concat", "img-flame-", ["to-string", ["%", ["+", ["get", "ph"], frame], 3]]];
+}
+
+let flameTimer = null;
+let flameFrame = 0;
+function renderMapFires() {
+    if (!mapReady) return;
+    const now = serverNow();
+    const F = GAME_CONFIG.MAP_FIRE;
+    const areas = [];
+    const flames = [];
+    for (const f of state.fires) {
+        const ageH = (now - Date.parse(f.started_at)) / 3600000;
+        if (ageH < 0 || ageH > F.fireHours + F.ruinHours) continue;
+        const burning = ageH < F.fireHours;
+        areas.push({
+            type: "Feature",
+            properties: { state: burning ? "burning" : "ruin" },
+            geometry: { type: "MultiPolygon", coordinates: f.geom }
+        });
+        if (burning) {
+            for (const p of flamePoints(f)) {
+                flames.push({ type: "Feature", properties: { ph: p.ph, s: p.s }, geometry: { type: "Point", coordinates: p.c } });
+            }
+        }
+    }
+    map.getSource("src-fire-areas")?.setData({ type: "FeatureCollection", features: areas });
+    map.getSource("src-fire-flames")?.setData({ type: "FeatureCollection", features: flames });
+
+    // Flammerne blafrer, så længe noget brænder; hvert minut ses der efter, om en brand er gået ud.
+    clearInterval(flameTimer);
+    flameTimer = null;
+    if (flames.length) {
+        let ticks = 0;
+        flameTimer = setInterval(() => {
+            flameFrame = (flameFrame + 1) % 3;
+            if (map.getLayer("lyr-fire-flames")) map.setLayoutProperty("lyr-fire-flames", "icon-image", flameImageExpression(flameFrame));
+            if (++ticks >= 375) renderMapFires();
+        }, 160);
     }
 }
 
@@ -4209,6 +4405,7 @@ const RULE_GROUPS = [
     ["fire", "Kamp: geværild og energi"],
     ["mortar", "Let morter"],
     ["truck", "Lastbil"],
+    ["mapfire", "Brændende bygninger på kortet"],
     ["npc", "Fjendtlige patruljer"],
     ["build", "Bygninger og byggeri"],
     ["economy", "Skridt og økonomi"],
@@ -4260,6 +4457,9 @@ const RULE_INFO = {
     truck_hp:                   ["truck", "Energi pr. lastbil", "energi"],
     truck_hit_share:            ["truck", "Andel af træfferne, der rammer en lastbil (0,4 = 40 %)", "0–1"],
     truck_wreck_hours:          ["truck", "Så længe et udbrændt vrag kan ses", "timer"],
+    map_fire_chance:            ["mapfire", "Chance for at en mortergranat sætter kortets bygning i brand (0,3 = 30 %)", "0–1"],
+    map_fire_hours:             ["mapfire", "Så længe bygningen brænder", "timer"],
+    map_ruin_hours:             ["mapfire", "Så længe den udbrændte ruin kan ses bagefter (168 = en uge)", "timer"],
     npc_per_player:             ["npc", "Patruljer omkring hver spiller", "stk."],
     npc_spawn_radius_m:         ["npc", "Så langt fra spillerens første bygning de opstår", "m"],
     npc_spawn_clear_m:          ["npc", "Opstår ikke tættere på en bygning end", "m"],
@@ -4653,6 +4853,8 @@ document.getElementById("btn-logout").onclick = async () => {
     state.seenBySoldiers = new Set();
     state.inCombat = new Set();
     state.craters = [];
+    state.fires = [];
+    renderMapFires();
     exitMortarAim();
     renderScoutBanner();
     document.getElementById("auth-overlay").classList.remove("hidden");
@@ -4792,7 +4994,7 @@ function codexWeaponsHtml() {
                 <div class="codex-card">
                     <div class="codex-card-head"><h3>Mortergranat</h3><span class="badge">købes i barrakken</span></div>
                     <div class="codex-weapon-img"><img src="assets/granat.png" class="pixel-img" alt="" /></div>
-                    <p class="muted-hint">Ammunition til morteren. Soldaterne bærer granaterne med ud, og et krater kan ses i ${fmtNum(M.craterHours)} timer.</p>
+                    <p class="muted-hint">Ammunition til morteren. Soldaterne bærer granaterne med ud, og et krater kan ses i ${fmtNum(M.craterHours)} timer. Lander en granat i en af kortets brune bygninger, går den i brand med ${fmtNum(Math.round(GAME_CONFIG.MAP_FIRE.chance * 100))} % chance: den brænder i ${fmtNum(GAME_CONFIG.MAP_FIRE.fireHours)} timer og står derefter som udbrændt ruin i ${fmtNum(GAME_CONFIG.MAP_FIRE.ruinHours)} timer.</p>
                     ${codexStats([
                         ["Pris", codexPrice(M.shellSteps, M.shellSteel)]
                     ])}
