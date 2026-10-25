@@ -735,6 +735,28 @@ body, html {
     gap: 6px;
 }
 
+.admin-res {
+    white-space: nowrap;
+    text-align: right;
+}
+
+.admin-res label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-right: 8px;
+    color: #90A4AE;
+}
+
+.admin-res input {
+    width: 80px;
+    padding: 4px 6px;
+    background: #0f171c;
+    color: #ECEFF1;
+    border: 1px solid #37474F;
+    border-radius: 4px;
+}
+
 /* Admin: faner og regler */
 .modal-box.modal-wide {
     max-width: 760px;

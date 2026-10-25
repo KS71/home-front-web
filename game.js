@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 53;
+const APP_VERSION = 54;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -3792,6 +3792,11 @@ async function openAdminModal() {
                 <div>${p.email ? escapeHtml(p.email) : `<span class="muted-hint">anonym telefon-konto</span>`}</div>
                 <div class="admin-sub">${escapeHtml(p.display_name)}${p.is_admin ? " · admin" : ""} · oprettet ${new Date(p.created_at).toLocaleDateString("da-DK")}</div>
             </td>
+            <td class="admin-res">
+                <label>Skridt <input type="number" min="0" step="1" id="adm-steps-${p.id}" value="${p.steps ?? 0}" /></label>
+                <label>Stål <input type="number" min="0" step="1" id="adm-steel-${p.id}" value="${p.steel ?? 0}" /></label>
+                <button class="btn btn-small" onclick="saveResources('${p.id}', this)">Gem</button>
+            </td>
             <td class="admin-check">
                 <label>
                     <input type="checkbox" ${p.is_tester ? "checked" : ""} onchange="setTester('${p.id}', this)" />
@@ -3803,6 +3808,7 @@ async function openAdminModal() {
 
     document.getElementById("modal-body").innerHTML = `
         <p class="muted-hint">En testkonto må bygge hvor som helst uden bogmærke fra telefonen (dog stadig med ${GAME_CONFIG.BUILDING_GAP_M} m til andre bygninger). Spilleren skal genindlæse siden, før det slår igennem.</p>
+        <p class="muted-hint">Skridt og stål: skriv de nye tal ud for spilleren, og tryk Gem. Tallene viser, hvad spilleren har lige nu.</p>
         <div class="admin-list"><table class="admin-table">${rows}</table></div>
     `;
 }
@@ -3821,6 +3827,24 @@ window.setTester = async function(playerId, checkbox) {
         state.isTester = checkbox.checked;
         if (state.selected) renderSelectedBox();
     }
+};
+
+window.saveResources = async function(playerId, button) {
+    const steps = Number(document.getElementById(`adm-steps-${playerId}`).value);
+    const steel = Number(document.getElementById(`adm-steel-${playerId}`).value);
+    if (!Number.isInteger(steps) || steps < 0 || !Number.isInteger(steel) || steel < 0) {
+        showToast("Skridt og stål skal være hele tal, 0 eller mere.");
+        return;
+    }
+    button.disabled = true;
+    const { error } = await sb.rpc("admin_set_resources", { p_player: playerId, p_steps: steps, p_steel: steel });
+    button.disabled = false;
+    if (error) {
+        showToast("Kunne ikke gemme: " + error.message);
+        return;
+    }
+    showToast(`Gemt: ${steps} skridt og ${steel} stål.`);
+    if (playerId === state.user?.id) syncAllFromSupabase();
 };
 
 // ============================================================================
