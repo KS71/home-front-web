@@ -972,27 +972,64 @@ body, html {
     padding: 20px;
     display: flex;
     flex-direction: column;
-    gap: 28px;
+    gap: 12px;
 }
 
-.codex-section h2 {
+.codex-section {
+    background: #171E26;
+    border: 1px solid #263238;
+    border-radius: 12px;
+}
+
+.codex-section > summary {
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    padding: 16px 20px;
+    user-select: none;
+}
+
+.codex-section > summary::-webkit-details-marker {
+    display: none;
+}
+
+.codex-section > summary::before {
+    content: "▸";
+    color: #FFD54F;
+    display: inline-block;
+    transition: transform 0.15s ease;
+}
+
+.codex-section[open] > summary::before {
+    transform: rotate(90deg);
+}
+
+.codex-section > summary:hover {
+    background: #1C252E;
+    border-radius: 12px;
+}
+
+.codex-sum-title {
     color: #FFD54F;
     font-size: 17px;
-    margin-bottom: 8px;
+    font-weight: 700;
 }
 
-.codex-section > .muted-hint {
-    margin-bottom: 12px;
+.codex-sum-sub {
+    color: #78909C;
+    font-size: 13px;
+}
+
+.codex-section > :not(summary) {
+    margin: 0 20px 16px;
 }
 
 .codex-hero {
     display: flex;
     gap: 28px;
     align-items: center;
-    background: #171E26;
-    border: 1px solid #263238;
-    border-radius: 12px;
-    padding: 20px 28px;
 }
 
 .codex-hero-img {

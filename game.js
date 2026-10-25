@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 50;
+const APP_VERSION = 51;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -4309,10 +4309,11 @@ function codexSoldierHtml() {
     const C = GAME_CONFIG;
     const dmgMin = codexRule("hit_damage_min", 15), dmgMax = codexRule("hit_damage_max", 40);
     return `
-        <section class="codex-section codex-hero">
+        <details class="codex-section">
+            <summary><span class="codex-sum-title">🪖 Soldater</span><span class="codex-sum-sub">din hær: energi, fart, udsyn og pris</span></summary>
+            <div class="codex-hero">
             <img src="assets/figur.png" class="pixel-img codex-hero-img" alt="Soldat" />
             <div class="codex-hero-text">
-                <h2>🪖 Soldaten</h2>
                 <p class="muted-hint">Din eneste enhedstype indtil videre. Soldater uddannes i militærskolen og bor i barrakkerne. De går i realistisk tempo, ser fjender omkring sig og skyder, når fjenden er inden for skudafstand. Sårede soldater heles kun i et felthospital.</p>
                 ${codexStats([
                     ["Energi", `${fmtNum(C.SOLDIER_HP)}`],
@@ -4323,7 +4324,8 @@ function codexSoldierHtml() {
                 ])}
                 <p class="muted-hint">Hvert træffer koster ${fmtNum(dmgMin)}–${fmtNum(dmgMax)} energi, og ${fmtPct(codexRule("hit_kill_chance", 0.05))} af træfferne dræber med det samme.</p>
             </div>
-        </section>`;
+            </div>
+        </details>`;
 }
 
 function codexBuildingsHtml() {
@@ -4345,18 +4347,18 @@ function codexBuildingsHtml() {
             </div>
         </div>`).join("");
     return `
-        <section class="codex-section">
-            <h2>🏰 Bygninger</h2>
+        <details class="codex-section">
+            <summary><span class="codex-sum-title">🏰 Bygninger</span><span class="codex-sum-sub">${Object.keys(GAME_CONFIG.BUILDINGS).length} bygninger med 5 trin hver: priser og hvad de giver</span></summary>
             <p class="muted-hint">Priserne gælder for at bygge eller opgradere til trinnet. En ny bygning skal stå i et byggepladsbogmærke fra telefonen eller højst ${formatDistance(GAME_CONFIG.BUILD_CHAIN_M)} fra en af dine egne, og mindst ${formatDistance(GAME_CONFIG.BUILDING_GAP_M)} fra andre bygninger. Når fjenden angriber en bygning, forsvarer den sig som ${fmtNum(GAME_CONFIG.BUILDING_DEFENSE_PER_LEVEL)} ekstra soldater pr. trin.</p>
             <div class="codex-grid">${cards}</div>
-        </section>`;
+        </details>`;
 }
 
 function codexWeaponsHtml() {
     const C = GAME_CONFIG, M = C.MORTAR;
     return `
-        <section class="codex-section">
-            <h2>🔫 Våben</h2>
+        <details class="codex-section">
+            <summary><span class="codex-sum-title">🔫 Våben</span><span class="codex-sum-sub">gevær, let morter og mortergranat</span></summary>
             <div class="codex-grid codex-grid-3">
                 <div class="codex-card">
                     <div class="codex-card-head"><h3>Gevær</h3><span class="badge">alle soldater</span></div>
@@ -4394,13 +4396,13 @@ function codexWeaponsHtml() {
                     ])}
                 </div>
             </div>
-        </section>`;
+        </details>`;
 }
 
 function codexEnemiesHtml() {
     return `
-        <section class="codex-section">
-            <h2>☠ Fjender</h2>
+        <details class="codex-section">
+            <summary><span class="codex-sum-title">☠ Fjender</span><span class="codex-sum-sub">patruljer og andre spillere</span></summary>
             <div class="codex-grid codex-grid-3">
                 <div class="codex-card">
                     <div class="codex-card-head"><h3>Fjendtlig patrulje</h3><span class="badge">computerstyret</span></div>
@@ -4419,7 +4421,7 @@ function codexEnemiesHtml() {
                     <p class="muted-hint">Andre spilleres soldater har samme tal som dine. Du ser dem kun inden for ${formatDistance(GAME_CONFIG.SOLDIER_VISION_M)} af dine soldater eller ${formatDistance(GAME_CONFIG.VISION_RADIUS_M)} af din telefon.</p>
                 </div>
             </div>
-        </section>`;
+        </details>`;
 }
 
 window.openCodex = function() {
