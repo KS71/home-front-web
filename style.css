@@ -1131,7 +1131,9 @@ body, html {
 
 .codex-weapon-img img {
     height: 80px;
+    max-width: 90%;
     width: auto;
+    object-fit: contain;
 }
 
 .codex-stats {

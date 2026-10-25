@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 51;
+const APP_VERSION = 52;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -4362,7 +4362,7 @@ function codexWeaponsHtml() {
             <div class="codex-grid codex-grid-3">
                 <div class="codex-card">
                     <div class="codex-card-head"><h3>Gevær</h3><span class="badge">alle soldater</span></div>
-                    <div class="codex-weapon-img"><img src="assets/tropper.png" class="pixel-img" alt="" /></div>
+                    <div class="codex-weapon-img"><img src="assets/gevaer.png" class="pixel-img" alt="Gevær" /></div>
                     <p class="muted-hint">Hver soldat har et gevær. Skud udveksles automatisk, når fjenden er inden for skudafstand.</p>
                     ${codexStats([
                         ["Skudafstand", formatDistance(C.FIRE_RANGE_M)],
