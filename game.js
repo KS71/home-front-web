@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 48;
+const APP_VERSION = 49;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -3765,8 +3765,16 @@ async function nearestRoadPoint(lat, lon) {
 // ============================================================================
 // Admin: spillerliste med flueben for testkonto
 // ============================================================================
+function adminTabs(active) {
+    return `<div class="admin-tabs">
+        <button class="btn btn-small ${active === "players" ? "btn-gold" : ""}" onclick="openAdminModal()">Spillere</button>
+        <button class="btn btn-small ${active === "rules" ? "btn-gold" : ""}" onclick="openRulesModal()">Regler</button>
+    </div>`;
+}
+
 async function openAdminModal() {
-    document.getElementById("modal-title").textContent = "Admin: spillere";
+    document.querySelector(".modal-box")?.classList.add("modal-wide");
+    document.getElementById("modal-title").innerHTML = `Admin: spillere ${adminTabs("players")}`;
     document.getElementById("modal-body").innerHTML = `<p class="muted-hint">Henter spillere…</p>`;
     document.getElementById("modal-actions").innerHTML = `<button class="btn" onclick="closeModal()">Luk</button>`;
     document.getElementById("modal-overlay").classList.remove("hidden");
@@ -3815,9 +3823,252 @@ window.setTester = async function(playerId, checkbox) {
 };
 
 // ============================================================================
+// Admin: regler (alle tal i config → rules). Serveren læser dem ved hvert kald,
+// så en ændring virker med det samme. Hver gemning lægger den gamle udgave i historikken.
+// ============================================================================
+const RULE_GROUPS = [
+    ["vision", "Udsyn og bevægelse"],
+    ["fire", "Kamp: geværild og energi"],
+    ["mortar", "Let morter"],
+    ["npc", "Fjendtlige patruljer"],
+    ["build", "Bygninger og byggeri"],
+    ["economy", "Skridt og økonomi"],
+    ["gps", "Telefon og GPS"],
+    ["other", "Andet"]
+];
+
+// Nøgle → [gruppe, forklaring, enhed]. Nøgler, der ikke står her, vises under "Andet".
+const RULE_INFO = {
+    vision_m:                   ["vision", "Telefonens udsyn (fjender ses så langt fra telefonen)", "m"],
+    soldier_vision_m:           ["vision", "Soldaternes udsyn", "m"],
+    soldier_speed_mps:          ["vision", "Soldaternes gå-fart (1,67 m/s ≈ 6 km/t)", "m/s"],
+    garrison_merge_m:           ["vision", "Soldater så tæt på hinanden er én vagtstyrke", "m"],
+    march_snap_m:               ["vision", "Tilladt afvigelse for rutens ender", "m"],
+    march_max_points:           ["vision", "Flest punkter i en rute", "stk."],
+    fire_range_m:               ["fire", "Skudafstand", "m"],
+    fire_round_s:               ["fire", "Sekunder pr. skudrunde", "s"],
+    hit_chance_near:            ["fire", "Chance for at ramme helt tæt på (0,30 = 30 %)", "0–1"],
+    hit_chance_far:             ["fire", "Chance for at ramme ved største skudafstand", "0–1"],
+    hit_damage_min:             ["fire", "Mindste skade pr. træffer", "energi"],
+    hit_damage_max:             ["fire", "Største skade pr. træffer", "energi"],
+    hit_kill_chance:            ["fire", "Chance for at et træffer dræber med det samme", "0–1"],
+    soldier_hp:                 ["fire", "Energi pr. soldat", "energi"],
+    building_defense_per_level: ["fire", "Forsvar pr. bygningstrin", ""],
+    battle_merge_m:             ["fire", "Kamprapporter: slå kampe sammen inden for", "m"],
+    battle_merge_s:             ["fire", "Kamprapporter: slå kampe sammen inden for", "s"],
+    fire_hit_chance:            ["fire", "(Bruges ikke længere – erstattet af chance tæt på/langt væk)", "0–1"],
+    mortar_price_steps:         ["mortar", "Pris for én morter", "skridt"],
+    mortar_price_steel:         ["mortar", "Pris for én morter", "stål"],
+    mortar_shell_price_steps:   ["mortar", "Pris for én granat", "skridt"],
+    mortar_shell_price_steel:   ["mortar", "Pris for én granat", "stål"],
+    mortar_range_m:             ["mortar", "Længste skud", "m"],
+    mortar_min_range_m:         ["mortar", "Korteste skud", "m"],
+    mortar_spread_base_m:       ["mortar", "Spredning: grundværdi", "m"],
+    mortar_spread_pct:          ["mortar", "Spredning: andel af afstanden (0,02 = 2 %)", "0–1"],
+    mortar_blast_m:             ["mortar", "Granatsplinter rækker så langt fra nedslaget", "m"],
+    mortar_hits:                ["mortar", "Træffere midt i nedslaget (færre længere ude)", "træffere"],
+    mortar_crew:                ["mortar", "Soldater pr. morter", "stk."],
+    mortar_reload_s:            ["mortar", "Tid mellem to granater fra samme morter", "s"],
+    mortar_salvo_max:           ["mortar", "Flest granater pr. ordre", "stk."],
+    mortar_flight_base_s:       ["mortar", "Flyvetid: grundværdi", "s"],
+    mortar_flight_mps:          ["mortar", "Flyvetid: granatens fart", "m/s"],
+    mortar_crater_hours:        ["mortar", "Så længe et krater kan ses", "timer"],
+    npc_per_player:             ["npc", "Patruljer omkring hver spiller", "stk."],
+    npc_spawn_radius_m:         ["npc", "Så langt fra spillerens første bygning de opstår", "m"],
+    npc_spawn_clear_m:          ["npc", "Opstår ikke tættere på en bygning end", "m"],
+    npc_size_min:               ["npc", "Mindst antal soldater i en ny patrulje", "stk."],
+    npc_size_max:               ["npc", "Højst antal soldater i en ny patrulje", "stk."],
+    npc_wander_m:               ["npc", "Så langt fra hjemstedet de strejfer", "m"],
+    npc_speed_mps:              ["npc", "Gå-fart på patrulje", "m/s"],
+    npc_vision_m:               ["npc", "Så langt de ser dine soldater", "m"],
+    npc_chase_leash_m:          ["npc", "Længst væk fra hjemstedet de forfølger", "m"],
+    building_gap_m:             ["build", "Mindste afstand mellem to bygningers kanter", "m"],
+    build_bookmark_size_m:      ["build", "Et byggepladsbogmærke er en firkant på", "m"],
+    build_chain_m:              ["build", "Ny bygning højst så langt fra en af dine egne", "m"],
+    reach_m:                    ["build", "Telefonens rækkevidde for byggepladsbogmærker", "m"],
+    building_size_m:            ["build", "Bygningernes størrelse (side i firkanten)", "m"],
+    building_prices:            ["build", "Byggepris pr. trin", "skridt"],
+    building_materials:         ["build", "Stål pr. trin", "stål"],
+    building_housing:           ["build", "Sengepladser pr. trin", "soldater"],
+    building_production:        ["build", "Produktion pr. trin", ""],
+    hospital_beds:              ["build", "Felthospitalet: senge pr. trin", "sårede"],
+    hospital_heal_per_hour:     ["build", "Felthospitalet: heling pr. time pr. trin", "energi"],
+    building_terrain:           ["build", "Terræn, man må bygge på (adskilt med komma)", ""],
+    starting_steps:             ["economy", "Skridt ved start", "skridt"],
+    instant_soldier_steps:      ["economy", "Pris for at straks-uddanne én soldat", "skridt"],
+    remote_empty_steps:         ["economy", "Pris for at tømme en bygning på afstand", "skridt"],
+    tile_price_steps:           ["economy", "(Fra den gamle udgave med felter – bruges ikke)", "skridt"],
+    location_max_age_s:         ["gps", "Telefonens position gælder så længe", "s"],
+    location_max_speed_mps:     ["gps", "Højeste tilladte fart mellem to positioner", "m/s"],
+    location_jitter_m:          ["gps", "Tilladt GPS-uro", "m"],
+    location_max_accuracy_m:    ["gps", "Dårligste GPS-nøjagtighed, der godtages", "m"]
+};
+
+const RULE_SUBLABELS = {
+    per_hour: "pr. time", capacity: "lager", material: "materiale",
+    soldiers: "soldater", steel: "stål"
+};
+
+let adminRules = null;   // reglerne, som de så ud, da fanen blev åbnet
+
+function ruleSubLabel(k) {
+    return GAME_CONFIG.BUILDINGS[k]?.name || RULE_SUBLABELS[k] || k;
+}
+
+// Ét eller flere inputfelter for en værdi. path er stien i rules-objektet.
+function ruleInputs(value, path) {
+    const p = escapeHtml(JSON.stringify(path));
+    if (typeof value === "number") {
+        return `<input type="number" step="any" class="rule-input" data-path="${p}" data-type="number" value="${value}" />`;
+    }
+    if (typeof value === "boolean") {
+        return `<input type="checkbox" data-path="${p}" data-type="boolean" ${value ? "checked" : ""} />`;
+    }
+    if (typeof value === "string") {
+        return `<span class="muted-hint">${escapeHtml(value)}</span>`;
+    }
+    if (Array.isArray(value)) {
+        if (value.every(v => typeof v === "string")) {
+            return `<input type="text" class="rule-input rule-wide" data-path="${p}" data-type="strings" value="${escapeHtml(value.join(", "))}" />`;
+        }
+        // Lister pr. trin: tal, eller materialer som {steel: 15}
+        return `<div class="rule-steps">${value.map((v, i) => {
+            const field = (v && typeof v === "object" && !Array.isArray(v))
+                ? `<input type="number" step="any" class="rule-input" data-path="${escapeHtml(JSON.stringify([...path, i]))}" data-type="material" value="${Number(v.steel || 0)}" />`
+                : ruleInputs(v, [...path, i]);
+            return `<label class="rule-step"><span>Trin ${i + 1}</span>${field}</label>`;
+        }).join("")}</div>`;
+    }
+    if (value && typeof value === "object") {
+        return `<div class="rule-sub">${Object.entries(value).map(([k, v]) => `
+            <div class="rule-subrow"><span class="rule-sublabel">${escapeHtml(ruleSubLabel(k))}</span>${ruleInputs(v, [...path, k])}</div>
+        `).join("")}</div>`;
+    }
+    return `<span class="muted-hint">${escapeHtml(JSON.stringify(value))}</span>`;
+}
+
+window.openRulesModal = async function() {
+    document.querySelector(".modal-box")?.classList.add("modal-wide");
+    document.getElementById("modal-title").innerHTML = `Admin: regler ${adminTabs("rules")}`;
+    document.getElementById("modal-body").innerHTML = `<p class="muted-hint">Henter regler…</p>`;
+    document.getElementById("modal-actions").innerHTML = `<button class="btn" onclick="closeModal()">Luk</button>`;
+    document.getElementById("modal-overlay").classList.remove("hidden");
+
+    const [cfgRes, histRes] = await Promise.all([
+        sb.from("config").select("value").eq("key", "rules").maybeSingle(),
+        sb.rpc("admin_rules_history")
+    ]);
+    if (cfgRes.error || !cfgRes.data) {
+        document.getElementById("modal-body").innerHTML = `<p class="muted-hint">Kunne ikke hente reglerne: ${escapeHtml(cfgRes.error?.message || "ingen regler")}</p>`;
+        return;
+    }
+    adminRules = cfgRes.data.value;
+
+    const groups = {};
+    for (const [key, value] of Object.entries(adminRules)) {
+        const info = RULE_INFO[key] || ["other", "", ""];
+        (groups[info[0]] ||= []).push(`
+            <div class="rule-row">
+                <div class="rule-label">
+                    <div>${escapeHtml(info[1] || key)}${info[2] ? ` <span class="rule-unit">(${escapeHtml(info[2])})</span>` : ""}</div>
+                    <div class="admin-sub">${escapeHtml(key)}</div>
+                </div>
+                <div class="rule-value">${ruleInputs(value, [key])}</div>
+            </div>`);
+    }
+
+    const sections = RULE_GROUPS.filter(([g]) => groups[g]).map(([g, title], i) => `
+        <details class="rule-group" ${i === 0 ? "open" : ""}>
+            <summary>${escapeHtml(title)}</summary>
+            ${groups[g].join("")}
+        </details>`).join("");
+
+    const hist = histRes.error
+        ? `<p class="muted-hint">Historikken kunne ikke hentes: ${escapeHtml(histRes.error.message)}</p>`
+        : (histRes.data || []).length === 0
+            ? `<p class="muted-hint">Ingen tidligere udgaver endnu.</p>`
+            : `<table class="admin-table">${histRes.data.map(h => `
+                <tr>
+                    <td>${new Date(h.changed_at).toLocaleString("da-DK")}<div class="admin-sub">udgaven før ${escapeHtml(h.changed_by || "ukendt")} gemte</div></td>
+                    <td class="admin-check"><button class="btn btn-small" onclick="restoreRules(${Number(h.id)})">Gendan</button></td>
+                </tr>`).join("")}</table>`;
+
+    document.getElementById("modal-body").innerHTML = `
+        <p class="muted-hint">Ændringerne gælder for alle spillere med det samme, når du trykker Gem. Andre spillere ser de nye tal i browseren, når de genindlæser siden. Den gamle udgave gemmes, så du altid kan gå tilbage.</p>
+        <div class="admin-list rules-list">
+            ${sections}
+            <details class="rule-group">
+                <summary>Tidligere udgaver (fortryd)</summary>
+                ${hist}
+            </details>
+        </div>`;
+    document.getElementById("modal-actions").innerHTML = `
+        <button class="btn" onclick="closeModal()">Luk</button>
+        <button class="btn btn-gold" onclick="saveRules(this)">Gem regler</button>`;
+};
+
+function setAtPath(obj, path, value) {
+    let o = obj;
+    for (let i = 0; i < path.length - 1; i++) o = o[path[i]];
+    o[path[path.length - 1]] = value;
+}
+
+window.saveRules = async function(btn) {
+    if (!adminRules) return;
+    const rules = structuredClone(adminRules);
+    for (const el of document.querySelectorAll("#modal-body [data-path]")) {
+        const path = JSON.parse(el.dataset.path);
+        const type = el.dataset.type;
+        let v;
+        if (type === "boolean") v = el.checked;
+        else if (type === "strings") v = el.value.split(",").map(s => s.trim()).filter(Boolean);
+        else {
+            v = Number(String(el.value).replace(",", "."));
+            if (el.value === "" || !Number.isFinite(v)) {
+                el.classList.add("rule-bad");
+                el.closest("details")?.setAttribute("open", "");
+                el.focus();
+                showToast("Ugyldigt tal ved " + path.join(" → "));
+                return;
+            }
+            if (type === "material") v = v > 0 ? { steel: v } : {};
+        }
+        el.classList.remove("rule-bad");
+        setAtPath(rules, path, v);
+    }
+    if (JSON.stringify(rules) === JSON.stringify(adminRules)) {
+        showToast("Ingen ændringer at gemme.");
+        return;
+    }
+    btn.disabled = true;
+    const { error } = await sb.rpc("admin_set_rules", { p_rules: rules });
+    btn.disabled = false;
+    if (error) {
+        showToast("Kunne ikke gemme: " + error.message);
+        return;
+    }
+    showToast("Reglerne er gemt.");
+    await syncAllFromSupabase();
+    await openRulesModal();
+};
+
+window.restoreRules = async function(id) {
+    if (!confirm("Sæt reglerne tilbage til denne udgave? Den nuværende gemmes i historikken.")) return;
+    const { error } = await sb.rpc("admin_restore_rules", { p_id: id });
+    if (error) {
+        showToast("Kunne ikke gendanne: " + error.message);
+        return;
+    }
+    showToast("Reglerne er gendannet.");
+    await syncAllFromSupabase();
+    await openRulesModal();
+};
+
+// ============================================================================
 // Hjælpefunktioner & Login-håndtering
 // ============================================================================
 window.closeModal = function() {
+    document.querySelector(".modal-box")?.classList.remove("modal-wide");
     state.groupModal = null;
     state.hospitalModal = null;
     document.getElementById("modal-overlay").classList.add("hidden");

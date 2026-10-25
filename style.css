@@ -734,6 +734,115 @@ body, html {
     gap: 6px;
 }
 
+/* Admin: faner og regler */
+.modal-box.modal-wide {
+    max-width: 760px;
+}
+
+.admin-tabs {
+    display: inline-flex;
+    gap: 6px;
+    margin-left: 10px;
+    vertical-align: middle;
+}
+
+.rules-list {
+    max-height: 62vh;
+}
+
+.rule-group {
+    border: 1px solid #263238;
+    border-radius: 8px;
+    margin-bottom: 8px;
+    padding: 4px 10px;
+}
+
+.rule-group summary {
+    cursor: pointer;
+    font-weight: bold;
+    color: #FFD54F;
+    padding: 6px 0;
+}
+
+.rule-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 8px 0;
+    border-top: 1px solid #263238;
+    font-size: 13px;
+}
+
+.rule-label {
+    flex: 1 1 45%;
+}
+
+.rule-unit {
+    color: #78909C;
+}
+
+.rule-value {
+    flex: 1 1 55%;
+    display: flex;
+    justify-content: flex-end;
+}
+
+.rule-input {
+    width: 80px;
+    background: #0F141A;
+    color: #ECEFF1;
+    border: 1px solid #37474F;
+    border-radius: 4px;
+    padding: 4px 6px;
+    font-size: 13px;
+}
+
+.rule-input.rule-wide {
+    width: 100%;
+}
+
+.rule-input.rule-bad {
+    border-color: #FF5252;
+}
+
+.rule-steps {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    justify-content: flex-end;
+}
+
+.rule-step {
+    display: flex;
+    flex-direction: column;
+    font-size: 10px;
+    color: #78909C;
+}
+
+.rule-step .rule-input {
+    width: 62px;
+}
+
+.rule-sub {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 100%;
+}
+
+.rule-subrow {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+}
+
+.rule-sublabel {
+    color: #B0BEC5;
+    white-space: nowrap;
+}
+
 /* Popup for en gruppe soldater: én brik pr. soldat med hans energi */
 .group-energy {
     display: flex;
