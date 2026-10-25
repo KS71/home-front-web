@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 47;
+const APP_VERSION = 48;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -684,16 +684,30 @@ function installGameLayers() {
         }
     });
 
-    // Skud mellem dine soldater og fjendtlige patruljer i kamp.
+    // Geværild mellem dine soldater og fjendtlige patruljer i kamp: lysspor og mundingsglimt.
     map.addLayer({
         id: "lyr-shots",
         type: "line",
         source: "src-shots",
+        filter: ["==", ["geometry-type"], "LineString"],
+        layout: { "line-cap": "round" },
         paint: {
-            "line-color": ["match", ["get", "from"], "npc", "#FF5252", "#FFD54F"],
-            "line-width": 2,
-            "line-dasharray": [0.5, 2.5],
+            "line-color": ["match", ["get", "from"], "npc", "#FF6E40", "#FFF176"],
+            "line-width": 3,
+            "line-blur": 1,
             "line-opacity": 0.95
+        }
+    });
+    map.addLayer({
+        id: "lyr-shot-flash",
+        type: "circle",
+        source: "src-shots",
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: {
+            "circle-color": "#FFE082",
+            "circle-radius": ["get", "r"],
+            "circle-blur": 0.6,
+            "circle-opacity": 0.9
         }
     });
     map.addLayer({
@@ -1417,7 +1431,8 @@ async function renderTroopsOnMap() {
 
     map.getSource("src-troops")?.setData({ type: "FeatureCollection", features: troopFeatures });
     map.getSource("src-march-lines")?.setData({ type: "FeatureCollection", features: lineFeatures });
-    map.getSource("src-shots")?.setData({ type: "FeatureCollection", features: shotFeatures(npcs, own, now) });
+    shotPairs = findShotPairs(npcs, own);
+    renderShots();
 }
 
 // Hvor en patrulje er nu. Serverens ur bruges, så den står samme sted som på serveren.
@@ -1429,22 +1444,55 @@ function npcCurrentPos(n, now = serverNow()) {
     }, now);
 }
 
-// Skudlinjer mellem patruljer i kamp og dine soldater inden for skudafstand. Kampen afgøres
-// på serveren; det her er kun til at se, hvem der skyder på hvem. Linjerne blinker.
-function shotFeatures(npcs, own, now) {
+// Geværild mellem patruljer i kamp og dine soldater inden for skudafstand. Kampen afgøres
+// på serveren; det her er kun til at se, hvem der skyder på hvem. Begge sider skyder på én gang.
+let shotPairs = [];
+let shotTimer = null;
+
+function findShotPairs(npcs, own) {
     const out = [];
-    const flash = Math.floor(now / 1000) % 2;
     for (const { n, pos } of npcs) {
         for (const [lat, lon] of own) {
             if (Geo.distanceM(pos[0], pos[1], lat, lon) > GAME_CONFIG.FIRE_RANGE_M) continue;
-            const ours = { type: "Feature", properties: { from: "own" },
-                geometry: { type: "LineString", coordinates: [[lon, lat], [pos[1], pos[0]]] } };
-            const theirs = { type: "Feature", properties: { from: "npc" },
-                geometry: { type: "LineString", coordinates: [[pos[1], pos[0]], [lon, lat]] } };
-            out.push(flash === (n.id % 2) ? ours : theirs);
+            out.push({ own: [lon, lat], npc: [pos[1], pos[0]], seed: (Number(n.id) || 0) * 0.37 });
         }
     }
     return out;
+}
+
+function pointAlong(a, b, t) {
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+}
+
+// Tre lysspor pr. side flyver fra skytten mod målet; der blinker et glimt ved geværet, når et skud går af.
+function shotFeatures(now) {
+    const out = [];
+    for (const p of shotPairs) {
+        for (const [from, a, b, offset] of [["own", p.own, p.npc, 0], ["npc", p.npc, p.own, 0.5]]) {
+            for (let k = 0; k < 3; k++) {
+                const t = (now / 450 + p.seed + offset + k / 3 + Math.sin(k * 7.1 + p.seed) * 0.08) % 1;
+                const t0 = Math.max(0, t - 0.15);
+                out.push({ type: "Feature", properties: { from },
+                    geometry: { type: "LineString", coordinates: [pointAlong(a, b, t0), pointAlong(a, b, t)] } });
+                if (t < 0.12) {
+                    out.push({ type: "Feature", properties: { from, r: 5 - t * 25 },
+                        geometry: { type: "Point", coordinates: a } });
+                }
+            }
+        }
+    }
+    return out;
+}
+
+function renderShots() {
+    if (!mapReady) return;
+    map.getSource("src-shots")?.setData({ type: "FeatureCollection", features: shotFeatures(Date.now()) });
+    if (shotPairs.length && !shotTimer) {
+        shotTimer = setInterval(() => {
+            if (!shotPairs.length) { clearInterval(shotTimer); shotTimer = null; }
+            renderShots();
+        }, 50);
+    }
 }
 
 // ============================================================================
