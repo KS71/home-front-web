@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 46;
+const APP_VERSION = 47;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -798,7 +798,7 @@ const soldierImgPromise = new Promise((resolve) => {
     img.src = "assets/tropper.png";
 });
 
-// Computerstyrede patruljer tegnes som soldater i rød uniform.
+// Fjender (patruljer og andre spilleres soldater) tegnes i rød uniform.
 let npcSoldierImg = null;
 const npcImgPromise = new Promise((resolve) => {
     const img = new Image();
@@ -819,8 +819,10 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
     if (!mapReady || registeredTroopBadges.has(imgId)) return;
     registeredTroopBadges.add(imgId);
     await soldierImgPromise;
-    if (style === "npc") await npcImgPromise;
-    const soldierImg = style === "npc" && npcSoldierImg ? npcSoldierImg : baseSoldierImg;
+    // Fjender (andre spillere og patruljer) har rød uniform; kun dine egne er grønne.
+    const redUniform = style === "npc" || style === "enemy";
+    if (redUniform) await npcImgPromise;
+    const soldierImg = redUniform && npcSoldierImg ? npcSoldierImg : baseSoldierImg;
     if (!soldierImg) return;
 
     const scale = 3;
