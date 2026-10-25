@@ -3256,7 +3256,7 @@ function mortarLineHtml(kind, g) {
     const M = GAME_CONFIG.MORTAR;
     const name = g.mortars === 1 ? "morter" : "morterer";
     if (kind === "march") {
-        return `<p class="muted-hint">🧨 Bærer ${g.mortars} ${name}. Morteren kan kun skyde, når soldaterne står vagt.</p>`;
+        return `<p class="muted-hint">🧨 Bærer ${g.mortars} ${name} · 💣 ${g.shells || 0} granater med. Morteren kan kun skyde, når soldaterne står vagt.</p>`;
     }
     const usable = usableMortars(g);
     const wait = mortarReadyInS(g);
