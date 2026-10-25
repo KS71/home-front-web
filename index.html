@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>HOME FRONT — Command Center</title>
     <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
-    <link rel="stylesheet" href="style.css?v=49" />
+    <link rel="stylesheet" href="style.css?v=50" />
 </head>
 <body>
     <!-- Login / Titelskærm Overlay -->
@@ -77,6 +77,7 @@
                 <div class="hud-actions">
                     <button id="btn-jump-home" class="btn btn-small" title="Hop til din første barrak/base">🏠 Hop til Base</button>
                     <button id="btn-sync" class="btn btn-small" title="Opdatér data fra Supabase">🔄 Synkronisér</button>
+                    <button id="btn-codex" class="btn btn-small" title="Soldater, bygninger, våben og fjender">📖 Oversigt</button>
                     <button id="btn-admin" class="btn btn-small btn-gold hidden" title="Spillere og testkonti">🛠 Admin</button>
                     <button id="btn-logout" class="btn btn-small btn-muted" title="Log ud">Log ud</button>
                 </div>
@@ -193,8 +194,19 @@
         </div>
     </div>
 
+    <!-- Oversigt: soldater, bygninger, våben og fjender -->
+    <div id="codex-overlay" class="codex-overlay hidden">
+        <div class="codex-box">
+            <div class="codex-header">
+                <h2>📖 Oversigt</h2>
+                <button class="btn btn-small" onclick="closeCodex()">Luk ✕</button>
+            </div>
+            <div id="codex-body" class="codex-body"></div>
+        </div>
+    </div>
+
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="game.js?v=49"></script>
+    <script src="game.js?v=50"></script>
 </body>
 </html>

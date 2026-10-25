@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 49;
+const APP_VERSION = 50;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -1519,6 +1519,7 @@ async function syncAllFromSupabase() {
         for (const row of cfgRes.data) {
             if (row.key === "rules" && row.value) {
                 const r = row.value;
+                GAME_CONFIG.RULES = r;
                 if (r.instant_soldier_steps) GAME_CONFIG.INSTANT_SOLDIER_STEPS = Number(r.instant_soldier_steps);
                 if (r.reach_m) GAME_CONFIG.BUILD_RADIUS_M = Number(r.reach_m);
                 if (r.vision_m) GAME_CONFIG.VISION_RADIUS_M = Number(r.vision_m);
@@ -4257,6 +4258,188 @@ document.getElementById("btn-logout").onclick = async () => {
 
 document.getElementById("btn-sync").onclick = () => syncAllFromSupabase();
 document.getElementById("btn-admin").onclick = () => openAdminModal();
+
+// ============================================================================
+// Oversigt: soldaten, bygningerne, våbnene og fjenderne med de tal, der gælder lige nu.
+// Alle tal kommer fra config → rules (GAME_CONFIG.RULES), så de følger Admin → Regler.
+// ============================================================================
+function codexRule(key, fallback) {
+    const v = Number(GAME_CONFIG.RULES?.[key]);
+    return Number.isFinite(v) ? v : fallback;
+}
+
+function fmtNum(n) {
+    return Number(n).toLocaleString("da-DK", { maximumFractionDigits: 2 });
+}
+
+function fmtPct(x) {
+    return `${fmtNum(Math.round(x * 1000) / 10)} %`;
+}
+
+function fmtKmh(mps) {
+    return `${fmtNum(Math.round(mps * 3.6 * 10) / 10)} km/t`;
+}
+
+function codexStats(rows) {
+    return `<dl class="codex-stats">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>`;
+}
+
+function codexPrice(steps, steel) {
+    const parts = [];
+    if (steps > 0) parts.push(`<span class="codex-steps">${fmtNum(steps)} skridt</span>`);
+    if (steel > 0) parts.push(`<span class="codex-steel">${fmtNum(steel)} stål</span>`);
+    return parts.join(" + ") || "gratis";
+}
+
+// Hvad et bygningstrin giver (sengepladser, produktion, senge og heling).
+function codexStageEffect(b, i) {
+    const lines = [];
+    if (b.housing) lines.push(`🛏 ${fmtNum(b.housing[i])} sengepladser`);
+    if (b.production) {
+        const mat = MATERIAL_NAMES[b.production.material] || b.production.material;
+        lines.push(`⚙ ${fmtNum(b.production.per_hour[i])} ${mat}/time`);
+        lines.push(`📦 lager ${fmtNum(b.production.capacity[i])}`);
+    }
+    if (b.beds) lines.push(`🩹 ${fmtNum(b.beds[i])} senge`);
+    if (b.healPerHour) lines.push(`💚 ${fmtNum(b.healPerHour[i])} energi/time`);
+    return lines.map(l => `<div>${l}</div>`).join("");
+}
+
+function codexSoldierHtml() {
+    const C = GAME_CONFIG;
+    const dmgMin = codexRule("hit_damage_min", 15), dmgMax = codexRule("hit_damage_max", 40);
+    return `
+        <section class="codex-section codex-hero">
+            <img src="assets/figur.png" class="pixel-img codex-hero-img" alt="Soldat" />
+            <div class="codex-hero-text">
+                <h2>🪖 Soldaten</h2>
+                <p class="muted-hint">Din eneste enhedstype indtil videre. Soldater uddannes i militærskolen og bor i barrakkerne. De går i realistisk tempo, ser fjender omkring sig og skyder, når fjenden er inden for skudafstand. Sårede soldater heles kun i et felthospital.</p>
+                ${codexStats([
+                    ["Energi", `${fmtNum(C.SOLDIER_HP)}`],
+                    ["Gå-fart", `${fmtKmh(C.SOLDIER_SPEED_MPS)} (${fmtNum(C.SOLDIER_SPEED_MPS)} m/s)`],
+                    ["Udsyn", formatDistance(C.SOLDIER_VISION_M)],
+                    ["Uddannes straks for", codexPrice(C.INSTANT_SOLDIER_STEPS, 0)],
+                    ["Bliver én vagtstyrke inden for", formatDistance(C.GARRISON_MERGE_M)]
+                ])}
+                <p class="muted-hint">Hvert træffer koster ${fmtNum(dmgMin)}–${fmtNum(dmgMax)} energi, og ${fmtPct(codexRule("hit_kill_chance", 0.05))} af træfferne dræber med det samme.</p>
+            </div>
+        </section>`;
+}
+
+function codexBuildingsHtml() {
+    const cards = Object.values(GAME_CONFIG.BUILDINGS).map(b => `
+        <div class="codex-card">
+            <div class="codex-card-head">
+                <h3>${escapeHtml(b.name)}</h3>
+                <span class="badge">${fmtNum(b.size)} × ${fmtNum(b.size)} m</span>
+            </div>
+            <p class="muted-hint">${escapeHtml(b.desc)}</p>
+            <div class="codex-stages">
+                ${b.stages.map((stage, i) => `
+                    <div class="codex-stage">
+                        <div class="codex-stage-img"><img src="assets/${b.sprites[i]}.png" class="pixel-img" alt="" /></div>
+                        <div class="codex-stage-name">Trin ${i + 1}: ${escapeHtml(stage)}</div>
+                        <div class="codex-stage-price">${codexPrice(b.prices?.[i] || 0, b.materials?.[i]?.steel || 0)}</div>
+                        <div class="codex-stage-effect">${codexStageEffect(b, i)}</div>
+                    </div>`).join("")}
+            </div>
+        </div>`).join("");
+    return `
+        <section class="codex-section">
+            <h2>🏰 Bygninger</h2>
+            <p class="muted-hint">Priserne gælder for at bygge eller opgradere til trinnet. En ny bygning skal stå i et byggepladsbogmærke fra telefonen eller højst ${formatDistance(GAME_CONFIG.BUILD_CHAIN_M)} fra en af dine egne, og mindst ${formatDistance(GAME_CONFIG.BUILDING_GAP_M)} fra andre bygninger. Når fjenden angriber en bygning, forsvarer den sig som ${fmtNum(GAME_CONFIG.BUILDING_DEFENSE_PER_LEVEL)} ekstra soldater pr. trin.</p>
+            <div class="codex-grid">${cards}</div>
+        </section>`;
+}
+
+function codexWeaponsHtml() {
+    const C = GAME_CONFIG, M = C.MORTAR;
+    return `
+        <section class="codex-section">
+            <h2>🔫 Våben</h2>
+            <div class="codex-grid codex-grid-3">
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Gevær</h3><span class="badge">alle soldater</span></div>
+                    <div class="codex-weapon-img"><img src="assets/tropper.png" class="pixel-img" alt="" /></div>
+                    <p class="muted-hint">Hver soldat har et gevær. Skud udveksles automatisk, når fjenden er inden for skudafstand.</p>
+                    ${codexStats([
+                        ["Skudafstand", formatDistance(C.FIRE_RANGE_M)],
+                        ["Tid pr. skudrunde", `${fmtNum(codexRule("fire_round_s", 5))} s`],
+                        ["Chance for at ramme", `${fmtPct(codexRule("hit_chance_near", 0.3))} tæt på → ${fmtPct(codexRule("hit_chance_far", 0.1))} ved ${formatDistance(C.FIRE_RANGE_M)}`],
+                        ["Skade pr. træffer", `${fmtNum(codexRule("hit_damage_min", 15))}–${fmtNum(codexRule("hit_damage_max", 40))} energi`]
+                    ])}
+                </div>
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Let morter</h3><span class="badge">købes i barrakken</span></div>
+                    <div class="codex-weapon-img"><img src="assets/morter.png" class="pixel-img" alt="" /></div>
+                    <p class="muted-hint">Bæres af soldaterne og skyder, når de står vagt. Granaterne lander et sted inde i spredningscirklen.</p>
+                    ${codexStats([
+                        ["Pris", codexPrice(M.priceSteps, M.priceSteel)],
+                        ["Betjenes af", `${fmtNum(M.crew)} soldater`],
+                        ["Rækkevidde", `${formatDistance(M.minRangeM)} – ${formatDistance(M.rangeM)}`],
+                        ["Spredning", `${formatDistance(M.spreadBaseM)} + ${fmtPct(M.spreadPct)} af afstanden`],
+                        ["Granatsplinter", `op til ${formatDistance(M.blastM)} fra nedslaget`],
+                        ["Træffere midt i nedslaget", `${fmtNum(codexRule("mortar_hits", 4))} (færre længere ude)`],
+                        ["Ladetid", `${fmtNum(M.reloadS)} s`],
+                        ["Flest granater pr. ordre", fmtNum(M.salvoMax)],
+                        ["Flyvetid", `${fmtNum(M.flightBaseS)} s + afstand / ${fmtNum(M.flightMps)} m/s`]
+                    ])}
+                </div>
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Mortergranat</h3><span class="badge">købes i barrakken</span></div>
+                    <div class="codex-weapon-img"><img src="assets/granat.png" class="pixel-img" alt="" /></div>
+                    <p class="muted-hint">Ammunition til morteren. Soldaterne bærer granaterne med ud, og et krater kan ses i ${fmtNum(M.craterHours)} timer.</p>
+                    ${codexStats([
+                        ["Pris", codexPrice(M.shellSteps, M.shellSteel)]
+                    ])}
+                </div>
+            </div>
+        </section>`;
+}
+
+function codexEnemiesHtml() {
+    return `
+        <section class="codex-section">
+            <h2>☠ Fjender</h2>
+            <div class="codex-grid codex-grid-3">
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Fjendtlig patrulje</h3><span class="badge">computerstyret</span></div>
+                    <div class="codex-weapon-img"><img src="assets/fjende.png" class="pixel-img" alt="" /></div>
+                    <p class="muted-hint">Strejfer rundt omkring spillerne og angriber dine soldater, når de ser dem. Har gevær ligesom dine soldater.</p>
+                    ${codexStats([
+                        ["Soldater pr. patrulje", `${fmtNum(codexRule("npc_size_min", 3))}–${fmtNum(codexRule("npc_size_max", 12))}`],
+                        ["Gå-fart på patrulje", fmtKmh(codexRule("npc_speed_mps", 1.2))],
+                        ["Udsyn", formatDistance(codexRule("npc_vision_m", 250))],
+                        ["Forfølger op til", `${formatDistance(codexRule("npc_chase_leash_m", 1500))} fra hjemstedet`]
+                    ])}
+                </div>
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Andre spillere</h3><span class="badge">rød uniform</span></div>
+                    <div class="codex-weapon-img"><img src="assets/fjende.png" class="pixel-img" alt="" /></div>
+                    <p class="muted-hint">Andre spilleres soldater har samme tal som dine. Du ser dem kun inden for ${formatDistance(GAME_CONFIG.SOLDIER_VISION_M)} af dine soldater eller ${formatDistance(GAME_CONFIG.VISION_RADIUS_M)} af din telefon.</p>
+                </div>
+            </div>
+        </section>`;
+}
+
+window.openCodex = function() {
+    document.getElementById("codex-body").innerHTML =
+        codexSoldierHtml() + codexBuildingsHtml() + codexWeaponsHtml() + codexEnemiesHtml();
+    document.getElementById("codex-overlay").classList.remove("hidden");
+    document.getElementById("codex-body").scrollTop = 0;
+};
+
+window.closeCodex = function() {
+    document.getElementById("codex-overlay").classList.add("hidden");
+};
+
+document.getElementById("btn-codex").onclick = () => openCodex();
+document.getElementById("codex-overlay")?.addEventListener("click", (e) => {
+    if (e.target.id === "codex-overlay") closeCodex();
+});
+document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !document.getElementById("codex-overlay").classList.contains("hidden")) closeCodex();
+});
 document.getElementById("btn-cancel-march-mode").onclick = () => exitMarchTargetMode();
 document.getElementById("btn-cancel-mortar").onclick = () => exitMortarAim();
 document.getElementById("btn-route-undo").onclick = () => {
