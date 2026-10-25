@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 59;
+const APP_VERSION = 60;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -3999,6 +3999,7 @@ async function pollWorld() {
     pollingWorld = true;
     try {
         const { data, error } = await sb.rpc("visible_enemies");
+        if (error) console.warn("visible_enemies fejlede:", error.message || error);
         if (error || !data) return;
         state.enemies = {
             buildings: data.buildings || [],
