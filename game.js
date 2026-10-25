@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 52;
+const APP_VERSION = 53;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -3899,6 +3899,7 @@ const RULE_INFO = {
     instant_soldier_steps:      ["economy", "Pris for at straks-uddanne én soldat", "skridt"],
     remote_empty_steps:         ["economy", "Pris for at tømme en bygning på afstand", "skridt"],
     tile_price_steps:           ["economy", "(Fra den gamle udgave med felter – bruges ikke)", "skridt"],
+    online_window_s:            ["economy", "Spiller tæller som online så længe efter sidste livstegn", "s"],
     location_max_age_s:         ["gps", "Telefonens position gælder så længe", "s"],
     location_max_speed_mps:     ["gps", "Højeste tilladte fart mellem to positioner", "m/s"],
     location_jitter_m:          ["gps", "Tilladt GPS-uro", "m"],
@@ -4125,6 +4126,7 @@ async function checkAuthSession() {
 
 async function onSignedIn(user) {
     state.user = user;
+    updatePresence();
     document.getElementById("auth-overlay").classList.add("hidden");
     // Tropper lå tidligere kun i browseren; nu er serveren den eneste sandhed.
     try {
@@ -4525,3 +4527,19 @@ setInterval(async () => {
     await loadReports();
 }, GAME_CONFIG.WORLD_POLL_MS);
 setInterval(loadBattles, 60000);
+
+// Spillere online: meld dig hvert halve minut og hent antallet.
+async function updatePresence() {
+    if (!state.user) return;
+    await sb.rpc("touch_presence");
+    const { data, error } = await sb.rpc("online_players");
+    const pill = document.querySelector(".online-pill");
+    const el = document.getElementById("hud-online");
+    if (error || typeof data !== "number") {
+        pill?.classList.add("offline");
+        return;
+    }
+    pill?.classList.remove("offline");
+    el.textContent = data === 1 ? "1 spiller" : `${data} spillere`;
+}
+setInterval(updatePresence, 30000);

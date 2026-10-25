@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>HOME FRONT — Command Center</title>
     <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
-    <link rel="stylesheet" href="style.css?v=52" />
+    <link rel="stylesheet" href="style.css?v=53" />
 </head>
 <body>
     <!-- Login / Titelskærm Overlay -->
@@ -73,6 +73,11 @@
                         <span id="hud-soldiers" class="stat-val soldiers-color">0 / 0</span>
                         <span class="stat-label">SOLDATER</span>
                     </div>
+                </div>
+                <div class="stat-pill online-pill" title="Spillere, der er online lige nu">
+                    <span class="online-dot"></span>
+                    <span id="hud-online" class="stat-val online-color">–</span>
+                    <span class="stat-label">ONLINE</span>
                 </div>
                 <div class="hud-actions">
                     <button id="btn-jump-home" class="btn btn-small" title="Hop til din første barrak/base">🏠 Hop til Base</button>
@@ -207,6 +212,6 @@
 
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="game.js?v=52"></script>
+    <script src="game.js?v=53"></script>
 </body>
 </html>
