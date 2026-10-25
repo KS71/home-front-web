@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 56;
+const APP_VERSION = 57;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -4008,12 +4008,32 @@ async function nearestRoadPoint(lat, lon) {
 }
 
 // ============================================================================
-// Admin: spillerliste med flueben for testkonto
+// Admin: spillerliste, login-log og regler
 // ============================================================================
+function formatDateTime(iso) {
+    if (!iso) return "Aldrig";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "—";
+    const date = d.toLocaleDateString("da-DK", { day: "2-digit", month: "2-digit", year: "numeric" });
+    const time = d.toLocaleTimeString("da-DK", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    return `${date} kl. ${time}`;
+}
+
+function timeAgo(iso) {
+    if (!iso) return "";
+    const diff = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    if (diff < 60) return "lige nu";
+    if (diff < 3600) return `${Math.floor(diff / 60)} min. siden`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)} t. siden`;
+    const days = Math.floor(diff / 86400);
+    return `${days} dag${days === 1 ? "" : "e"} siden`;
+}
+
 function adminTabs(active) {
     return `<div class="admin-tabs">
         <button class="btn btn-small ${active === "players" ? "btn-gold" : ""}" onclick="openAdminModal()">Spillere</button>
         <button class="btn btn-small ${active === "rules" ? "btn-gold" : ""}" onclick="openRulesModal()">Regler</button>
+        <button class="btn btn-small ${active === "log" ? "btn-gold" : ""}" onclick="openAdminLogModal()">Login-log</button>
     </div>`;
 }
 
@@ -4034,7 +4054,7 @@ async function openAdminModal() {
         <tr>
             <td>
                 <div>${p.email ? escapeHtml(p.email) : `<span class="muted-hint">anonym telefon-konto</span>`}</div>
-                <div class="admin-sub">${escapeHtml(p.display_name)}${p.is_admin ? " · admin" : ""} · oprettet ${new Date(p.created_at).toLocaleDateString("da-DK")}</div>
+                <div class="admin-sub">${escapeHtml(p.display_name)}${p.is_admin ? " · admin" : ""} · oprettet ${new Date(p.created_at).toLocaleDateString("da-DK")}${p.last_sign_in_at ? ` · logget ind ${formatDateTime(p.last_sign_in_at)}` : ""}</div>
             </td>
             <td class="admin-res">
                 <label>Skridt <input type="number" min="0" step="1" id="adm-steps-${p.id}" value="${p.steps ?? 0}" /></label>
@@ -4089,6 +4109,95 @@ window.saveResources = async function(playerId, button) {
     }
     showToast(`Gemt: ${steps} skridt og ${steel} stål.`);
     if (playerId === state.user?.id) syncAllFromSupabase();
+};
+
+window.openAdminLogModal = async function() {
+    document.querySelector(".modal-box")?.classList.add("modal-wide");
+    document.getElementById("modal-title").innerHTML = `Admin: login-log ${adminTabs("log")}`;
+    document.getElementById("modal-body").innerHTML = `<p class="muted-hint">Henter login-log…</p>`;
+    document.getElementById("modal-actions").innerHTML = `<button class="btn" onclick="closeModal()">Luk</button>`;
+    document.getElementById("modal-overlay").classList.remove("hidden");
+
+    const [playersRes, histRes] = await Promise.all([
+        sb.rpc("admin_login_log"),
+        sb.rpc("admin_login_history", { p_limit: 50 })
+    ]);
+
+    if (playersRes.error) {
+        document.getElementById("modal-body").innerHTML = `
+            <p class="muted-hint">Kunne ikke hente login-log: ${escapeHtml(playersRes.error.message)}</p>
+            <p class="muted-hint">Kør SQL-migrationen <code>0029_admin_login_log.sql</code> i Supabase for at aktivere login-loggen.</p>
+        `;
+        return;
+    }
+
+    const players = playersRes.data || [];
+    const history = histRes.data || [];
+
+    const playerRows = players.map(p => {
+        const lastLogin = p.last_sign_in_at ? formatDateTime(p.last_sign_in_at) : `<span class="muted-hint">Ikke registreret endnu</span>`;
+        const lastSeen = p.last_seen_at ? formatDateTime(p.last_seen_at) : `<span class="muted-hint">—</span>`;
+        const statusBadge = p.is_online
+            ? `<span style="color: #81C784; font-weight: bold; font-size: 11px;">● Online</span>`
+            : `<span style="color: #78909C; font-size: 11px;">Offline</span>`;
+        return `
+            <tr>
+                <td>
+                    <div><strong>${escapeHtml(p.display_name)}</strong> ${statusBadge}</div>
+                    <div class="admin-sub">${escapeHtml(p.email || "anonym")}${p.is_admin ? " · admin" : ""}${p.is_tester ? " · testkonto" : ""} · oprettet ${new Date(p.created_at).toLocaleDateString("da-DK")}</div>
+                </td>
+                <td style="white-space: nowrap;">
+                    <div>${lastLogin}</div>
+                    ${p.last_sign_in_at ? `<div class="admin-sub">${timeAgo(p.last_sign_in_at)}</div>` : ""}
+                </td>
+                <td style="white-space: nowrap;">
+                    <div>${lastSeen}</div>
+                    ${p.last_seen_at ? `<div class="admin-sub">${timeAgo(p.last_seen_at)}</div>` : ""}
+                </td>
+            </tr>
+        `;
+    }).join("");
+
+    const histRows = history.map(h => `
+        <tr>
+            <td style="white-space: nowrap;">${formatDateTime(h.logged_in_at)} <span class="admin-sub">(${timeAgo(h.logged_in_at)})</span></td>
+            <td><strong>${escapeHtml(h.display_name)}</strong> <span class="admin-sub">${escapeHtml(h.email || "")}</span></td>
+        </tr>
+    `).join("");
+
+    document.getElementById("modal-body").innerHTML = `
+        <p class="muted-hint">Her kan du se, hvornår hver spiller sidst er logget ind med dato og klokkeslæt, samt hvornår de sidst har været aktive i spillet.</p>
+        <div class="admin-list">
+            <table class="admin-table">
+                <thead>
+                    <tr>
+                        <th>Spiller</th>
+                        <th>Sidst logget ind</th>
+                        <th>Sidst aktiv</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${playerRows.length > 0 ? playerRows : `<tr><td colspan="3" class="muted-hint">Ingen spillere fundet.</td></tr>`}
+                </tbody>
+            </table>
+        </div>
+        ${history.length > 0 ? `
+            <details class="rule-group" style="margin-top: 14px;">
+                <summary>Loginhistorik (seneste ${history.length} logins)</summary>
+                <div style="max-height: 250px; overflow-y: auto; margin-top: 6px;">
+                    <table class="admin-table">
+                        <thead>
+                            <tr>
+                                <th>Tidspunkt</th>
+                                <th>Spiller</th>
+                            </tr>
+                        </thead>
+                        <tbody>${histRows}</tbody>
+                    </table>
+                </div>
+            </details>
+        ` : ""}
+    `;
 };
 
 // ============================================================================
