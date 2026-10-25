@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 54;
+const APP_VERSION = 55;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -37,6 +37,15 @@ const GAME_CONFIG = {
         reloadS: 4, salvoMax: 10,
         flightBaseS: 8, flightMps: 150,        // flyvetid = base + afstand / fart
         craterHours: 24
+    },
+    // Lastbil (0028). Overskrives af config.rules (truck_*).
+    TRUCK: {
+        priceSteps: 100, priceSteel: 100,      // én lastbil
+        capacity: 22,                          // soldater pr. lastbil
+        roadMps: 22.22, fieldMps: 5.556,       // 80 km/t på vej, 20 km/t uden for vejene
+        hp: 300,                               // energi pr. lastbil
+        hitShare: 0.4,                         // andel af træfferne, der rammer en lastbil
+        wreckHours: 24                         // så længe et udbrændt vrag kan ses
     },
     BUILDINGS: {
         barracks: {
@@ -179,6 +188,8 @@ const state = {
     soldiers: 0,
     mortarsHome: 0,        // morterer på lager i barrakken
     shells: 0,             // mortergranater på lager
+    trucksHome: 0,         // lastbiler på lager i barrakken
+    wrecks: [],            // udbrændte køretøjer fra mortar_craters(): { id, kind, lat, lon, burned_at, mine }
     mortarAim: null,       // { garrisonId, lat, lon } mens man sigter med en morter
     craters: [],           // nedslag fra mortar_craters(): { id, lat, lon, lands_at, mine, from_lat, from_lon, fired_at }
     myBuildings: [],       // Alle spillerens egne bygninger { id, owner_id, kind, level, lat, lon, emptied_at }
@@ -218,6 +229,8 @@ function marchFromRow(row) {
         wounded: row.wounded || [],
         mortars: row.mortars || 0,
         shells: row.shells || 0,
+        trucks: row.trucks || [],
+        driving: !!row.driving,
         patrolPath: row.patrol_path || null,
         homeBuildingId: row.home_building_id,
         homeLat: row.home_lat,
@@ -444,6 +457,7 @@ async function installPixelLandscape() {
         ["img-b-staalvaerk_4", "assets/staalvaerk_4.png", 2],
         ["img-b-staalvaerk_5", "assets/staalvaerk_5.png", 2],
         ["img-crater", "assets/krater.png", 2],
+        ["img-wreck", "assets/lastbil_vrag.png", 2],
         ["img-shell", "assets/granat.png", 1]
     ];
 
@@ -527,6 +541,7 @@ function installGameLayers() {
     map.addSource("src-battles", { type: "geojson", data: empty });
     map.addSource("src-craters", { type: "geojson", data: empty });
     map.addSource("src-shells", { type: "geojson", data: empty });
+    map.addSource("src-wrecks", { type: "geojson", data: empty });
     map.addSource("src-mortar-aim", { type: "geojson", data: empty });
 
     // Kratere efter mortergranater: hullet i jorden blegner, jo ældre det er.
@@ -539,6 +554,20 @@ function installGameLayers() {
             "icon-size": ["interpolate", ["exponential", 2], ["zoom"], 12, 0.15, 16, 0.6, 19, 2.4],
             "icon-rotate": ["get", "rot"],
             "icon-rotation-alignment": "map",
+            "icon-allow-overlap": true,
+            "icon-ignore-placement": true
+        },
+        paint: { "icon-opacity": ["get", "op"] }
+    });
+
+    // Udbrændte lastbiler: blegner, jo ældre de er.
+    map.addLayer({
+        id: "lyr-wrecks",
+        type: "symbol",
+        source: "src-wrecks",
+        layout: {
+            "icon-image": "img-wreck",
+            "icon-size": ["interpolate", ["exponential", 2], ["zoom"], 12, 0.12, 16, 0.5, 19, 2.0],
             "icon-allow-overlap": true,
             "icon-ignore-placement": true
         },
@@ -812,6 +841,15 @@ const soldierImgPromise = new Promise((resolve) => {
     img.src = "assets/tropper.png";
 });
 
+// Grupper med lastbiler tegnes som en lastbil.
+let truckImg = null;
+const truckImgPromise = new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => { truckImg = img; resolve(img); };
+    img.onerror = () => resolve(null);
+    img.src = "assets/lastbil.png";
+});
+
 // Fjender (patruljer og andre spilleres soldater) tegnes i rød uniform.
 let npcSoldierImg = null;
 const npcImgPromise = new Promise((resolve) => {
@@ -823,23 +861,24 @@ const npcImgPromise = new Promise((resolve) => {
 
 // style: "own" (dine), "enemy" (andre spillere) eller "npc" (computerstyret patrulje).
 // status for egne: "guard" (grøn), "patrol" (blå), "march" (orange), "combat" (rød hvis i/har været i kamp).
-function troopBadgeId(count, style = "own", pct = 100, status = "guard") {
+function troopBadgeId(count, style = "own", pct = 100, status = "guard", truck = false) {
     const bucket = pct >= 100 ? "100" : pct < 40 ? `red-${Math.ceil(pct / 10)}` : `orange-${Math.ceil(pct / 10)}`;
-    return `img-${style}-${status}-${count}-${bucket}`;
+    return `img-${style}-${status}-${count}-${bucket}${truck ? "-truck" : ""}`;
 }
 
-async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard") {
-    const imgId = troopBadgeId(count, style, pct, status);
+async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard", truck = false) {
+    const imgId = troopBadgeId(count, style, pct, status, truck);
     if (!mapReady || registeredTroopBadges.has(imgId)) return;
     registeredTroopBadges.add(imgId);
     await soldierImgPromise;
     // Fjender (andre spillere og patruljer) har rød uniform; kun dine egne er grønne.
     const redUniform = style === "npc" || style === "enemy";
     if (redUniform) await npcImgPromise;
-    const soldierImg = redUniform && npcSoldierImg ? npcSoldierImg : baseSoldierImg;
+    if (truck) await truckImgPromise;
+    const soldierImg = truck && truckImg ? truckImg : redUniform && npcSoldierImg ? npcSoldierImg : baseSoldierImg;
     if (!soldierImg) return;
 
-    const scale = 3;
+    const scale = truck && truckImg ? 2 : 3;
     const sw = soldierImg.width * scale;
     const sh = soldierImg.height * scale;
     const text = String(count);
@@ -1273,6 +1312,71 @@ async function findLandPathAsync(startLat, startLon, endLat, endLon) {
     return await tightenPathAcrossLand(findLandPathLocal(startLat, startLon, endLat, endLon));
 }
 
+// ============================================================================
+// Lastbil (0028): kører ad vejene og langsommere over marken
+// ============================================================================
+// Kan count soldater køre trucks lastbiler? Plads til TRUCK.capacity i hver og mindst én soldat i
+// hver lastbil (samme regel som truck_can_drive på serveren).
+function truckCanDrive(count, trucks) {
+    return trucks > 0 && count >= trucks && count <= trucks * GAME_CONFIG.TRUCK.capacity;
+}
+
+// Antal lastbiler i en gruppe: egne grupper har energien for hver lastbil, fjender kun antallet.
+function truckCount(g) {
+    return Array.isArray(g?.trucks) ? g.trucks.length : (g?.trucks || 0);
+}
+
+// Rejsetid for en lastbil-rute: hvert punkt har et tredje tal for stykket hen til punktet,
+// 1 = vej, 0 = mark.
+function truckPathSeconds(path) {
+    const T = GAME_CONFIG.TRUCK;
+    let sec = 0;
+    for (let i = 0; i < path.length - 1; i++) {
+        const d = Geo.distanceM(path[i][0], path[i][1], path[i + 1][0], path[i + 1][1]);
+        sec += d / (path[i + 1][2] >= 1 ? T.roadMps : Math.min(T.fieldMps, T.roadMps));
+    }
+    return sec;
+}
+
+function pathSeconds(path, driving) {
+    return Math.max(2, driving ? truckPathSeconds(path) : pathDistanceM(path) / GAME_CONFIG.SOLDIER_SPEED_MPS);
+}
+
+// Lastbilens rute for ét ben: ad vejene (OSRM "driving"), med stykket hen til vejen og fra vejen
+// til målet over marken — eller lige over marken, hvis det går hurtigere.
+async function findTruckPathAsync(startLat, startLon, endLat, endLon) {
+    const field = (await findLandPathAsync(startLat, startLon, endLat, endLon))
+        .map((p, i) => i === 0 ? [p[0], p[1]] : [p[0], p[1], 0]);
+    let best = field;
+    try {
+        const url = `https://router.project-osrm.org/route/v1/driving/${startLon.toFixed(6)},${startLat.toFixed(6)};${endLon.toFixed(6)},${endLat.toFixed(6)}?overview=full&geometries=geojson`;
+        const resp = await fetch(url);
+        if (resp.ok) {
+            const json = await resp.json();
+            const coords = json?.routes?.[0]?.geometry?.coordinates;
+            if (Array.isArray(coords) && coords.length >= 2) {
+                const road = simplifyPolyline(coords.map(c => [c[1], c[0]]), 0.00012);
+                const viaRoad = [
+                    [startLat, startLon],
+                    ...road.map((p, i) => [p[0], p[1], i === 0 ? 0 : 1]),
+                    [endLat, endLon, 0]
+                ];
+                if (truckPathSeconds(viaRoad) < truckPathSeconds(best)) best = viaRoad;
+            }
+        }
+    } catch (_) {}
+    return best;
+}
+
+// Meter ad vej i en lastbil-rute.
+function roadDistanceM(path) {
+    let sum = 0;
+    for (let i = 0; i < path.length - 1; i++) {
+        if (path[i + 1][2] >= 1) sum += Geo.distanceM(path[i][0], path[i][1], path[i + 1][0], path[i + 1][1]);
+    }
+    return sum;
+}
+
 function pathDistanceM(path) {
     let sum = 0;
     for (let i = 0; i < path.length - 1; i++) {
@@ -1287,21 +1391,34 @@ function serverNow() {
     return Date.now() + state.serverOffsetMs;
 }
 
+// Rutens stykker målt i "rejsetid": meter × langsomhed. En lastbil-rute fra serveren har et tredje
+// tal pr. punkt for stykket hen til punktet (vej = 1, mark = vejfart / markfart, se 0028);
+// en gårute har kun [lat, lon], og så tæller alle meter ens.
+function pathTimeSegments(pts) {
+    const segs = [];
+    let total = 0;
+    for (let i = 0; i < pts.length - 1; i++) {
+        const w = pts[i + 1].length > 2 ? Number(pts[i + 1][2]) : 1;
+        const d = Geo.distanceM(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]) * w;
+        segs.push(d);
+        total += d;
+    }
+    return { segs, total };
+}
+
+function marchProgress(m, now) {
+    const totalMs = Math.max(1, m.arrivesAtMillis - m.startedAtMillis);
+    return Math.max(0, Math.min(1, (now - m.startedAtMillis) / totalMs));
+}
+
 function marchCurrentPos(m, now = serverNow()) {
     const pts = m.path && m.path.length >= 2 ? m.path : [[m.startLat, m.startLon], [m.toLat, m.toLon]];
-    const totalMs = Math.max(1, m.arrivesAtMillis - m.startedAtMillis);
-    const p = Math.max(0, Math.min(1, (now - m.startedAtMillis) / totalMs));
-    if (p <= 0) return pts[0];
-    if (p >= 1) return pts[pts.length - 1];
+    const p = marchProgress(m, now);
+    if (p <= 0) return [pts[0][0], pts[0][1]];
+    if (p >= 1) return [pts.at(-1)[0], pts.at(-1)[1]];
 
-    const segs = [];
-    let totalLen = 0;
-    for (let i = 0; i < pts.length - 1; i++) {
-        const d = Geo.distanceM(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]);
-        segs.push(d);
-        totalLen += d;
-    }
-    const target = totalLen * p;
+    const { segs, total } = pathTimeSegments(pts);
+    const target = total * p;
     let acc = 0;
     for (let i = 0; i < segs.length; i++) {
         if (acc + segs[i] >= target || i === segs.length - 1) {
@@ -1313,7 +1430,7 @@ function marchCurrentPos(m, now = serverNow()) {
         }
         acc += segs[i];
     }
-    return pts[pts.length - 1];
+    return [pts.at(-1)[0], pts.at(-1)[1]];
 }
 
 function marchRemainingPath(m, now = serverNow()) {
@@ -1321,16 +1438,8 @@ function marchRemainingPath(m, now = serverNow()) {
     const cur = marchCurrentPos(m, now);
     if (pts.length <= 2) return [cur, pts[pts.length - 1]];
 
-    const totalMs = Math.max(1, m.arrivesAtMillis - m.startedAtMillis);
-    const p = Math.max(0, Math.min(1, (now - m.startedAtMillis) / totalMs));
-    let totalLen = 0;
-    const segs = [];
-    for (let i = 0; i < pts.length - 1; i++) {
-        const d = Geo.distanceM(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]);
-        segs.push(d);
-        totalLen += d;
-    }
-    const target = totalLen * p;
+    const { segs, total } = pathTimeSegments(pts);
+    const target = total * marchProgress(m, now);
     let acc = 0;
     const out = [cur];
     for (let i = 0; i < segs.length; i++) {
@@ -1357,10 +1466,11 @@ async function renderTroopsOnMap() {
 
     const addTroop = async (group, lat, lon, style, status = "guard") => {
         const pct = energyPct(group);
-        await ensureTroopBadge(group.count, style, pct, status);
+        const truck = truckCount(group) > 0;
+        await ensureTroopBadge(group.count, style, pct, status, truck);
         troopFeatures.push({
             type: "Feature",
-            properties: { img: troopBadgeId(group.count, style, pct, status) },
+            properties: { img: troopBadgeId(group.count, style, pct, status, truck) },
             geometry: { type: "Point", coordinates: [lon, lat] }
         });
     };
@@ -1551,6 +1661,15 @@ async function syncAllFromSupabase() {
                 for (const [k, key] of Object.entries(mortarRules)) {
                     if (r[key] != null) GAME_CONFIG.MORTAR[k] = Number(r[key]);
                 }
+                const truckRules = {
+                    priceSteps: "truck_price_steps", priceSteel: "truck_price_steel",
+                    capacity: "truck_capacity", roadMps: "truck_road_speed_mps",
+                    fieldMps: "truck_field_speed_mps", hp: "truck_hp",
+                    hitShare: "truck_hit_share", wreckHours: "truck_wreck_hours"
+                };
+                for (const [k, key] of Object.entries(truckRules)) {
+                    if (r[key] != null) GAME_CONFIG.TRUCK[k] = Number(r[key]);
+                }
                 if (r.hospital_beds) GAME_CONFIG.BUILDINGS.hospital.beds = r.hospital_beds;
                 if (r.hospital_heal_per_hour) GAME_CONFIG.BUILDINGS.hospital.healPerHour = r.hospital_heal_per_hour;
             }
@@ -1567,6 +1686,7 @@ async function syncAllFromSupabase() {
         state.soldiers = mapMat.soldiers || 0;
         state.mortarsHome = mapMat.mortars || 0;
         state.shells = mapMat.mortar_shells || 0;
+        state.trucksHome = mapMat.trucks || 0;
     }
     if (myBldRes.data) {
         state.myBuildings = myBldRes.data;
@@ -1804,7 +1924,7 @@ function renderBuildingBox(bld, box, badge) {
                         <div class="item-sub">${cfg ? cfg.desc : ""}</div>
                         <div class="item-sub">${size}×${size} m · ${formatPos(bld.lat, bld.lon)}</div>
                         ${housing ? `<div class="item-sub" style="color:#76FF03">Plads her: ${housing} · Ledige i barrak: ${avail}</div>` : ""}
-                        ${bld.kind === "barracks" ? `<div class="item-sub" style="color:#FFB74D">🧨 Morterer på lager: ${state.mortarsHome} · 💣 Granater: ${state.shells}</div>` : ""}
+                        ${bld.kind === "barracks" ? `<div class="item-sub" style="color:#FFB74D">🧨 Morterer på lager: ${state.mortarsHome} · 💣 Granater: ${state.shells} · 🚚 Lastbiler: ${state.trucksHome}</div>` : ""}
                         ${prod ? `<div class="item-sub" style="color:#FFD54F">${prod.material === "steel" ? "Klar til afhentning" : "Klar til indkaldelse"}: ${prod.amount} / ${prod.capacity} ${prod.unit} (${prod.perHour}/t)</div>` : ""}
                         ${hospitalLineHtml(bld)}
                     </div>
@@ -1813,7 +1933,8 @@ function renderBuildingBox(bld, box, badge) {
                     ${bld.kind === "hospital" ? `<button class="btn btn-small btn-primary" onclick="openHospitalModal(${bld.id})">🏥 Patienter</button>` : ""}
                     ${bld.kind === "barracks" ? `<button class="btn btn-small btn-primary" ${avail <= 0 ? "disabled" : ""} onclick="sendFromBuilding(${bld.id})">🪖 Send soldater (${avail} klar)</button>` : ""}
                     ${bld.kind === "barracks" ? `<button class="btn btn-small btn-gold" onclick="openBuyEquipmentModal('mortars')">🧨 Køb morter</button>
-                    <button class="btn btn-small btn-gold" onclick="openBuyEquipmentModal('mortar_shells')">💣 Køb granater</button>` : ""}
+                    <button class="btn btn-small btn-gold" onclick="openBuyEquipmentModal('mortar_shells')">💣 Køb granater</button>
+                    <button class="btn btn-small btn-gold" onclick="openBuyEquipmentModal('trucks')">🚚 Køb lastbil</button>` : ""}
                     ${prod && prod.amount > 0 ? `<button class="btn btn-small btn-primary" onclick="collectFromBuilding(${bld.id})">📥 ${prod.material === "steel" ? "Hent" : "Indkald"} ${prod.amount} ${prod.unit}</button>` : ""}
                     ${bld.kind === "academy" ? `<button class="btn btn-small btn-gold" onclick="recruitSoldierInstant()">⚡ Uddan 1 straks (${GAME_CONFIG.INSTANT_SOLDIER_STEPS} skridt)</button>` : ""}
                     ${nextPrice ? `<button class="btn btn-small" onclick="upgradeBuilding(${bld.id})">⬆️ Opgradér til trin ${bld.level + 1} (${nextPrice} skridt${nextSteel ? ` + ${nextSteel} stål` : ""})</button>` : `<span class="badge">Fuldt udbygget</span>`}
@@ -1870,7 +1991,7 @@ function garrisonRowsHtml(list) {
             <div class="item-row-top">
                 <img src="assets/tropper.png" class="pixel-img item-sprite" />
                 <div class="item-info">
-                    <div class="item-title item-title-green">Vagtstyrke: ${g.count} soldater${mortarTag(g)}</div>
+                    <div class="item-title item-title-green">Vagtstyrke: ${g.count} soldater${mortarTag(g)}${truckTag(g)}</div>
                     <div class="item-sub">Står vagt her · ${energyText(g)}</div>
                 </div>
             </div>
@@ -1914,7 +2035,7 @@ function renderPointBox(lat, lon, box, badge) {
                 <div class="item-row-top">
                     <img src="assets/tropper.png" class="pixel-img item-sprite" />
                     <div class="item-info">
-                        <div class="item-title ${m.patrolPath ? 'item-title-blue' : 'item-title-orange'}">${m.count} soldater ${m.patrolPath ? 'på patrulje' : 'på march'}${mortarTag(m)}</div>
+                        <div class="item-title ${m.patrolPath ? 'item-title-blue' : 'item-title-orange'}">${m.count} soldater ${m.patrolPath ? 'på patrulje' : 'på march'}${mortarTag(m)}${truckTag(m)}</div>
                         <div class="item-sub">${marchEtaText(m)}</div>
                         <div class="item-sub">${energyText(m)}</div>
                     </div>
@@ -2344,7 +2465,7 @@ function renderTroopsSidebar() {
                 <div class="item-row-top">
                     <img src="assets/tropper.png" class="pixel-img item-sprite" />
                     <div class="item-info">
-                        <div class="item-title ${isPatrol ? "item-title-blue" : "item-title-orange"}">${m.count} soldater ${isPatrol ? "på patrulje" : "på march"}${mortarTag(m)}</div>
+                        <div class="item-title ${isPatrol ? "item-title-blue" : "item-title-orange"}">${m.count} soldater ${isPatrol ? "på patrulje" : "på march"}${mortarTag(m)}${truckTag(m)}</div>
                         <div class="item-sub march-eta-text">${marchEtaText(m, now)}</div>
                         <div class="item-sub">${energyText(m)}</div>
                     </div>
@@ -2371,7 +2492,7 @@ function renderTroopsSidebar() {
                 <div class="item-row-top">
                     <img src="assets/tropper.png" class="pixel-img item-sprite" />
                     <div class="item-info">
-                        <div class="item-title item-title-green">${g.count} soldater på vagt${mortarTag(g)}</div>
+                        <div class="item-title item-title-green">${g.count} soldater på vagt${mortarTag(g)}${truckTag(g)}</div>
                         <div class="item-sub">${where}</div>
                         <div class="item-sub">${energyText(g)}</div>
                     </div>
@@ -2444,6 +2565,11 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
             <div id="shell-val-label" class="mortar-pick-label"></div>
             <input type="range" min="0" max="0" value="0" class="range-slider" id="shell-range-input" />
         </div>
+        <div id="truck-pick" class="mortar-pick hidden">
+            <div id="truck-val-label" class="mortar-pick-label"></div>
+            <input type="range" min="0" max="0" value="0" class="range-slider" id="truck-range-input" />
+            <p id="truck-pick-hint" class="muted-hint"></p>
+        </div>
     `;
     const slider = document.getElementById("soldier-range-input");
     const label = document.getElementById("slider-val-label");
@@ -2485,12 +2611,45 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
             : `💣 Granater kan kun gå med en morter (${shellsHere} ${garrison ? "hos vagten" : "på lager"})`;
     };
     sSlider.oninput = () => { shellsTouched = true; updateMortars(); };
+
+    // Lastbiler: fra barrakkens lager eller vagtstyrkens egne. Som udgangspunkt så mange, at alle
+    // kan køre. Går hele vagtstyrken, kører alle dens lastbiler med.
+    const T = GAME_CONFIG.TRUCK;
+    const trucksHere = garrison ? truckCount(garrison) : state.trucksHome;
+    const tSlider = document.getElementById("truck-range-input");
+    const tLabel = document.getElementById("truck-val-label");
+    const tHint = document.getElementById("truck-pick-hint");
+    let trucksTouched = false;
+    document.getElementById("truck-pick").classList.toggle("hidden", trucksHere <= 0);
+    const updateTrucks = () => {
+        const n = parseInt(slider.value, 10) || 1;
+        const all = garrison && n >= garrison.count;
+        const max = all ? trucksHere : Math.min(trucksHere, n);
+        tSlider.max = String(max);
+        tSlider.disabled = all;
+        if (all) tSlider.value = String(trucksHere);
+        else if (!trucksTouched) tSlider.value = String(Math.min(max, Math.ceil(n / T.capacity)));
+        else if (Number(tSlider.value) > max) tSlider.value = String(max);
+        const k = Number(tSlider.value);
+        tLabel.textContent = `🚚 ${k} / ${trucksHere} ${trucksHere === 1 ? "lastbil" : "lastbiler"} med`;
+        tHint.textContent = k === 0
+            ? `Soldaterne går (${fmtKmh(GAME_CONFIG.SOLDIER_SPEED_MPS)}).`
+            : truckCanDrive(n, k)
+                ? `Kører ${fmtKmh(T.roadMps)} på vej og ${fmtKmh(T.fieldMps)} uden for vejene. Plads til ${k * T.capacity} soldater.${all ? " Hele vagtstyrken går, så alle lastbilerne kører med." : ""}`
+                : n < k
+                    ? "⚠️ Der skal mindst 1 soldat i hver lastbil, så alle går i gåtempo."
+                    : `⚠️ Der er kun plads til ${k * T.capacity} soldater i ${k} ${k === 1 ? "lastbil" : "lastbiler"}, så alle går i gåtempo, og lastbilerne følger med.`;
+    };
+    tSlider.oninput = () => { trucksTouched = true; updateTrucks(); };
+
     slider.oninput = () => {
         label.textContent = `${slider.value} / ${maxAvail} soldater`;
         updateMortars();
+        updateTrucks();
     };
     mSlider.oninput = updateMortars;
     updateMortars();
+    updateTrucks();
 
     document.getElementById("modal-actions").innerHTML = `
         <button class="btn" onclick="closeModal()">Luk</button>
@@ -2500,8 +2659,9 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
         const chosen = parseInt(slider.value, 10) || 1;
         const mortars = parseInt(mSlider.value, 10) || 0;
         const shells = mortars > 0 ? (parseInt(sSlider.value, 10) || 0) : 0;
+        const trucks = parseInt(tSlider.value, 10) || 0;
         closeModal();
-        const order = { from, count: chosen, mortars, shells };
+        const order = { from, count: chosen, mortars, shells, trucks };
         if (target) openConfirmMarchModal(order, target);
         else enterMarchTargetMode(order);
     };
@@ -2596,13 +2756,29 @@ function showRouteCalculating(target) {
 }
 
 // Ruten over land gennem flere punkter: ét ben ad gangen, lagt sammen.
-async function landPathThrough(points) {
+async function landPathThrough(points, driving = false) {
     let out = [points[0]];
     for (let i = 1; i < points.length; i++) {
-        const leg = await findLandPathAsync(points[i - 1][0], points[i - 1][1], points[i][0], points[i][1]);
+        const find = driving ? findTruckPathAsync : findLandPathAsync;
+        const leg = await find(points[i - 1][0], points[i - 1][1], points[i][0], points[i][1]);
         out = out.concat(leg.slice(1));
     }
     return out;
+}
+
+// Lastbiler, der kører med ordren. Går hele gruppen (eller får en deling nyt mål), går alle dens
+// lastbiler med; ellers dem, man har valgt (order.trucks).
+function orderTrucks(order) {
+    if (order.redirectMarchId) return truckCount(findMarch(order.redirectMarchId));
+    if (order.from.type === "march") {
+        const m = findMarch(order.from.id);
+        return m && order.count >= m.count ? truckCount(m) : 0;
+    }
+    if (order.from.type === "garrison") {
+        const g = state.garrisons.find(x => String(x.id) === String(order.from.id));
+        if (g && order.count >= g.count) return truckCount(g);
+    }
+    return order.trucks || 0;
 }
 
 // order.waypoints (fra rute-tilstand) eller kun target. order.patrol = gå ringen igen og igen.
@@ -2613,6 +2789,12 @@ async function openConfirmMarchModal(order, target) {
         showToast("Vælg et mål et andet sted end der, hvor soldaterne står!");
         return;
     }
+    const trucks = orderTrucks(order);
+    const driving = truckCanDrive(order.count, trucks);
+    if (order.patrol && trucks > 0) {
+        showToast("Lastbiler kan ikke gå patrulje endnu. Send soldaterne uden lastbilerne.");
+        return;
+    }
     showRouteCalculating(target);
 
     let landPath, loopPath = null;
@@ -2621,16 +2803,22 @@ async function openConfirmMarchModal(order, target) {
         landPath = await landPathThrough([startPos, wps[0]]);
         loopPath = await landPathThrough([...wps, wps[0]]);
     } else {
-        landPath = await landPathThrough([startPos, ...wps]);
+        landPath = await landPathThrough([startPos, ...wps], driving);
     }
     const distM = Math.round(pathDistanceM(landPath));
-    const durationSec = Math.max(2, Math.round(distM / GAME_CONFIG.SOLDIER_SPEED_MPS));
+    const durationSec = Math.round(pathSeconds(landPath, driving));
+    const T = GAME_CONFIG.TRUCK;
+    const truckWord = n => n === 1 ? "lastbil" : "lastbiler";
+    const truckInfo = trucks === 0 ? "" : driving
+        ? `<p>🚚 <strong>Kører i ${trucks} ${truckWord(trucks)}:</strong> ${fmtKmh(T.roadMps)} på vej (ca. ${formatDistance(Math.round(roadDistanceM(landPath)))}), ${fmtKmh(T.fieldMps)} uden for vejene.</p>`
+        : `<p style="color:#FFB74D">🚚 ${trucks} ${truckWord(trucks)} følger med, men ${order.count < trucks ? "der skal mindst 1 soldat i hver lastbil" : `der er kun plads til ${trucks * T.capacity} soldater`}, så alle går i gåtempo.</p>`;
     const loopM = loopPath ? Math.round(pathDistanceM(loopPath)) : 0;
     const loopSec = Math.max(2, Math.round(loopM / GAME_CONFIG.SOLDIER_SPEED_MPS));
     const via = wps.length > 1 ? ` via ${wps.length - 1} punkt${wps.length > 2 ? "er" : ""}` : "";
 
     const overlay = document.getElementById("modal-overlay");
-    const withMortars = order.mortars > 0 ? ` med ${order.mortars} ${order.mortars === 1 ? "morter" : "morterer"}${order.shells > 0 ? ` og ${order.shells} granater` : ""}` : "";
+    const withMortars = (order.mortars > 0 ? ` med ${order.mortars} ${order.mortars === 1 ? "morter" : "morterer"}${order.shells > 0 ? ` og ${order.shells} granater` : ""}` : "")
+        + (trucks > 0 ? `${order.mortars > 0 ? " og" : " med"} ${trucks} ${truckWord(trucks)}` : "");
     document.getElementById("modal-title").textContent = order.patrol
         ? `Send ${order.count} soldater${withMortars} på patrulje?`
         : `Send ${order.count} soldater${withMortars} af sted?`;
@@ -2643,6 +2831,7 @@ async function openConfirmMarchModal(order, target) {
         <p><strong>Mål:</strong> ${escapeHtml(target.label)}${via}</p>
         <p><strong>Afstand langs land/kyst:</strong> ca. ${formatDistance(distM)}</p>
         <p><strong>Rejsetid:</strong> ${formatSeconds(durationSec)}</p>
+        ${truckInfo}
         <p style="color:#90A4AE;font-size:13px;">Er du sikker på, at du vil sende soldaterne hertil?</p>
     `;
     document.getElementById("modal-actions").innerHTML = `
@@ -2696,7 +2885,8 @@ async function executeMarchOrder(order, target, landPath, loopPath = null) {
             p_to_lat: target.lat, p_to_lon: target.lon,
             p_count: order.count, p_path: landPath,
             ...(order.mortars > 0 ? { p_mortars: order.mortars } : {}),
-            ...(order.shells > 0 ? { p_shells: order.shells } : {})
+            ...(order.shells > 0 ? { p_shells: order.shells } : {}),
+            ...(order.trucks > 0 ? { p_trucks: order.trucks } : {})
         }));
     }
     if (error) {
@@ -2704,7 +2894,7 @@ async function executeMarchOrder(order, target, landPath, loopPath = null) {
         return;
     }
     await loadArmy();
-    if (order.mortars > 0 && order.from.type === "building") await syncAllFromSupabase();
+    if ((order.mortars > 0 || order.trucks > 0) && order.from.type === "building") await syncAllFromSupabase();
     showToast(order.patrol
         ? `🔁 ${order.count} soldater går nu patrulje mellem ${order.waypoints.length} punkter!`
         : order.redirectMarchId
@@ -2734,7 +2924,8 @@ window.recallMarch = async function(marchId) {
     if (!m) return;
     const cur = marchCurrentPos(m, serverNow());
     showToast("Beregner ruten hjem…");
-    const homePath = await findLandPathAsync(cur[0], cur[1], m.homeLat, m.homeLon);
+    const find = truckCanDrive(m.count, truckCount(m)) ? findTruckPathAsync : findLandPathAsync;
+    const homePath = await find(cur[0], cur[1], m.homeLat, m.homeLon);
     const path = [marchCurrentPos(m, serverNow()), ...homePath.slice(1)];
     const { error } = await sb.rpc("redirect_march", {
         p_march: m.id, p_to_lat: m.homeLat, p_to_lon: m.homeLon, p_path: path
@@ -2883,12 +3074,13 @@ function renderGroupModal() {
         body.innerHTML = `
             <p class="muted-hint">${where} · ${g.count - hurt} raske, ${hurt} ${hurt === 1 ? "såret" : "sårede"}. Sårede heles kun på et felthospital.</p>
             ${mortarLineHtml(gm.kind, g)}
+            ${truckLineHtml(gm.kind, g)}
             ${bar}
             ${soldierTilesHtml(g)}`;
         actions.innerHTML = gm.kind === "march" ? `
             <button class="btn" onclick="closeModal(); jumpToMarch('${g.id}')">🎯 Hop til</button>
             <button class="btn btn-primary" onclick="closeModal(); startRedirectMarch('${g.id}')">🧭 Nyt mål</button>
-            ${hurt ? `<button class="btn btn-primary" onclick="closeModal(); sendWoundedFromMarch('${g.id}')">🏥 Send ${hurt} ${hurt === 1 ? "såret" : "sårede"} til hospitalet</button>` : ""}
+            ${hurt && (!g.driving || hurt >= g.count) ? `<button class="btn btn-primary" onclick="closeModal(); sendWoundedFromMarch('${g.id}')">🏥 Send ${hurt} ${hurt === 1 ? "såret" : "sårede"} til hospitalet</button>` : ""}
             <button class="btn btn-danger" onclick="closeModal(); recallMarch('${g.id}')">🏠 Kald hjem</button>
             <button class="btn" onclick="closeModal()">Luk</button>` : `
             <button class="btn" onclick="closeModal(); jumpToPoint(${lat}, ${lon})">🎯 Hop til</button>
@@ -2900,13 +3092,13 @@ function renderGroupModal() {
         return;
     }
 
-    // Fjender: kun det, man kan se på afstand — antal og samlet energi.
+    // Fjender: kun det, man kan se på afstand — antal, lastbiler og samlet energi.
     title.textContent = gm.kind === "npc" ? (g.is_invasion ? `Fjendtlig invasionshær: ${g.count} soldater` : `Fjendtlig patrulje: ${g.count} soldater`)
         : gm.kind === "enemy-march" ? `Fjendtlige soldater på march: ${g.count}` : `Fjendtlige vagter: ${g.count}`;
     body.innerHTML = `
         <p class="muted-hint">${gm.kind === "npc"
             ? (g.fighting ? "💥 I kamp med dine soldater lige nu." : "Computerstyret. Går rundt i området og angriber soldater, den får øje på.")
-            : "En anden spillers soldater."} Du kan ikke se den enkelte fjendes energi, kun gruppens samlede.</p>
+            : `En anden spillers soldater.${truckCount(g) ? ` 🚚 ${truckCount(g)} ${truckCount(g) === 1 ? "lastbil" : "lastbiler"}${g.driving ? ", kører" : ""}.` : ""}`} Du kan ikke se den enkelte fjendes energi, kun gruppens samlede.</p>
         ${bar}`;
     actions.innerHTML = `
         <button class="btn" onclick="closeModal(); jumpToPoint(${lat}, ${lon})">🎯 Hop til</button>
@@ -2983,6 +3175,11 @@ window.sendWoundedFromMarch = function(marchId) {
 // ============================================================================
 // Morterne følger soldaterne, men kun en vagtstyrke (soldater, der står stille) kan skyde.
 // Serveren vælger, hvor hver granat lander inde i spredningscirklen, og afgør nedslaget.
+function truckTag(g) {
+    const n = truckCount(g);
+    return n > 0 ? ` · 🚚 ${n}` : "";
+}
+
 function mortarTag(g) {
     return g.mortars > 0 ? ` · 🧨 ${g.mortars} · 💣 ${g.shells || 0}` : "";
 }
@@ -3021,6 +3218,27 @@ function mortarLineHtml(kind, g) {
         wait ? ` · lades, klar om ${wait} s` : ""}</p>`;
 }
 
+// "🚚 Kører i 2 lastbiler" og hver lastbils energi.
+function truckLineHtml(kind, g) {
+    const t = g.trucks || [];
+    if (!t.length) return "";
+    const T = GAME_CONFIG.TRUCK;
+    const word = t.length === 1 ? "lastbil" : "lastbiler";
+    const how = kind === "march"
+        ? (g.driving ? `Kører i ${t.length} ${word}: ${fmtKmh(T.roadMps)} på vej, ${fmtKmh(T.fieldMps)} uden for vejene.`
+                     : `${t.length} ${word} følger med, men alle kan ikke køre, så de går i gåtempo.`)
+        : `${t.length} ${word} holder hos vagten (plads til ${t.length * T.capacity} soldater).`;
+    const cards = [...t].sort((a, b) => a - b).map(hp => {
+        const pct = Math.max(0, Math.min(100, Math.round(hp / T.hp * 100)));
+        return `<div class="truck-card" title="${hp} / ${T.hp} energi">
+            <img src="assets/lastbil.png" class="pixel-img" alt="" />
+            <div class="progress-track"><div class="progress-fill" style="width:${pct}%;background:${energyColor(pct)}"></div></div>
+            <span>${pct} %</span>
+        </div>`;
+    }).join("");
+    return `<p class="muted-hint">🚚 ${how}</p><div class="truck-list">${cards}</div>`;
+}
+
 // En cirkel med radius r meter som GeoJSON-ring [lon, lat].
 function circleRing(lat, lon, r, n = 72) {
     const dLat = r / EARTH_RADIUS_M * DEG_PER_RAD;
@@ -3034,32 +3252,49 @@ function circleRing(lat, lon, r, n = 72) {
 }
 
 // ---------------------------------------------------------------- køb
+// Udstyr, der købes i barrakken: navn, billede, pris og forklaring.
+function equipmentInfo(item) {
+    const M = GAME_CONFIG.MORTAR, T = GAME_CONFIG.TRUCK;
+    if (item === "mortars") return {
+        title: "🧨 Køb let morter", img: "morter", steps: M.priceSteps, steel: M.priceSteel, max: 10,
+        one: "morter", many: "morterer", done: n => `🧨 ${n} ${n === 1 ? "morter" : "morterer"} står nu i barrakken.`,
+        desc: `En let morter, som soldaterne bærer med. Den kan skyde op til <strong>${formatDistance(M.rangeM)}</strong>, når soldaterne står vagt, og kræver ${M.crew} soldater. Den står på lager i barrakken, til du sender den ud med soldater.`
+    };
+    if (item === "trucks") return {
+        title: "🚚 Køb lastbil", img: "lastbil", steps: T.priceSteps, steel: T.priceSteel, max: 20,
+        one: "lastbil", many: "lastbiler", done: n => `🚚 ${n} ${n === 1 ? "lastbil" : "lastbiler"} holder nu ved barrakken.`,
+        desc: `En militærlastbil med presenning til <strong>${fmtNum(T.capacity)} soldater</strong>. Den kører ${fmtKmh(T.roadMps)} på vej og ${fmtKmh(T.fieldMps)} uden for vejene, og der skal mindst 1 soldat med for at køre den. Den er ikke skudsikker: træffere skader både lastbilen og soldaterne, og ved 0 energi bryder den i brand.`
+    };
+    return {
+        title: "💣 Køb mortergranater", img: "granat", steps: M.shellSteps, steel: M.shellSteel, max: 100,
+        one: "granat", many: "granater", done: n => `💣 +${n} granater på lager.`,
+        desc: "Granater til dine morterer. Soldaterne bærer dem med ud fra barrakken."
+    };
+}
+
 window.openBuyEquipmentModal = function(item) {
-    const M = GAME_CONFIG.MORTAR;
-    const isMortar = item === "mortars";
-    const steps = isMortar ? M.priceSteps : M.shellSteps;
-    const steel = isMortar ? M.priceSteel : M.shellSteel;
+    const E = equipmentInfo(item);
+    const steps = E.steps;
+    const steel = E.steel;
     const afford = Math.floor(Math.min(state.balance / Math.max(steps, 1), steel > 0 ? state.steel / steel : Infinity));
-    const max = Math.max(1, Math.min(isMortar ? 10 : 100, afford));
+    const max = Math.max(1, Math.min(E.max, afford));
     state.groupModal = null;
-    document.getElementById("modal-title").textContent = isMortar ? "🧨 Køb let morter" : "💣 Køb mortergranater";
+    document.getElementById("modal-title").textContent = E.title;
     document.getElementById("modal-body").innerHTML = `
         <div class="item-row-top" style="margin-bottom:8px;">
-            <img src="assets/${isMortar ? "morter" : "granat"}.png" class="pixel-img item-sprite" />
-            <p class="muted-hint" style="margin:0;">${isMortar
-                ? `En let morter, som soldaterne bærer med. Den kan skyde op til <strong>${formatDistance(M.rangeM)}</strong>, når soldaterne står vagt, og kræver ${M.crew} soldater. Den står på lager i barrakken, til du sender den ud med soldater.`
-                : `Granater til dine morterer. Alle dine morterer skyder fra det samme lager.`}</p>
+            <img src="assets/${E.img}.png" class="pixel-img item-sprite" />
+            <p class="muted-hint" style="margin:0;">${E.desc}</p>
         </div>
         <p>Pris pr. stk.: <strong>${steps} skridt + ${steel} stål</strong>. Du har ${state.balance.toLocaleString("da-DK")} skridt og ${state.steel.toLocaleString("da-DK")} stål.</p>
         <div style="text-align:center;font-size:20px;font-weight:800;color:#FFD54F;" id="buy-val-label"></div>
         <input type="range" min="1" max="${max}" value="1" class="range-slider" id="buy-range-input" ${afford < 1 ? "disabled" : ""} />
-        ${afford < 1 ? `<p class="muted-hint" style="color:#FF8A80">Du har ikke skridt og stål nok til at købe ${isMortar ? "en morter" : "en granat"}.</p>` : ""}
+        ${afford < 1 ? `<p class="muted-hint" style="color:#FF8A80">Du har ikke skridt og stål nok til at købe en ${E.one}.</p>` : ""}
     `;
     const slider = document.getElementById("buy-range-input");
     const label = document.getElementById("buy-val-label");
     const update = () => {
         const n = parseInt(slider.value, 10) || 1;
-        label.textContent = `${n} ${isMortar ? (n === 1 ? "morter" : "morterer") : (n === 1 ? "granat" : "granater")} · ${n * steps} skridt + ${n * steel} stål`;
+        label.textContent = `${n} ${n === 1 ? E.one : E.many} · ${n * steps} skridt + ${n * steel} stål`;
     };
     slider.oninput = update;
     update();
@@ -3074,7 +3309,7 @@ window.openBuyEquipmentModal = function(item) {
             return;
         }
         closeModal();
-        showToast(isMortar ? `🧨 ${n} ${n === 1 ? "morter" : "morterer"} står nu i barrakken.` : `💣 +${n} granater på lager.`);
+        showToast(E.done(n));
         await syncAllFromSupabase();
     };
     document.getElementById("modal-overlay").classList.remove("hidden");
@@ -3254,6 +3489,7 @@ async function loadCraters() {
         const { data, error } = await sb.rpc("mortar_craters", { p_lat: c.lat, p_lon: c.lng, p_r: r });
         if (error || !data) return; // før 0022 er kørt, findes funktionen ikke
         state.craters = data.craters || [];
+        state.wrecks = data.wrecks || [];
         startShellAnimation();
     } finally {
         loadingCraters = false;
@@ -3339,6 +3575,12 @@ function renderCratersAndShells() {
         shells.push(point(lat, lon, { kind: "shell", size: 1.6, rot, op: 1 }));
     }
 
+    const T = GAME_CONFIG.TRUCK;
+    const wrecks = state.wrecks.map(w => {
+        const ageH = (now - Date.parse(w.burned_at)) / 3600000;
+        return point(w.lat, w.lon, { op: Math.max(0.35, 1 - ageH / T.wreckHours * 0.65) });
+    });
+    map.getSource("src-wrecks")?.setData({ type: "FeatureCollection", features: wrecks });
     map.getSource("src-craters")?.setData({ type: "FeatureCollection", features: craters });
     map.getSource("src-shells")?.setData({ type: "FeatureCollection", features: shells });
     return busy;
@@ -3378,7 +3620,9 @@ const REPORT_TEXT = {
     shelled: r => r.survivors <= 0
         ? `💥 En mortergranat ramte dine ${r.count} soldater — ingen overlevede.`
         : `💥 En mortergranat ramte dine soldater: ${r.enemy_losses} træffere${r.losses ? `, ${r.losses} faldt` : ""}.`,
-    mortar_hit: r => `💣 Din granat ramte fjenden: ${r.count} træffere${r.enemy_losses ? `, ${r.enemy_losses} faldt` : ""}.`
+    mortar_hit: r => `💣 Din granat ramte fjenden: ${r.count} træffere${r.enemy_losses ? `, ${r.enemy_losses} faldt` : ""}.`,
+    truck_burned: r => `🔥 ${r.count === 1 ? "En af dine lastbiler er" : `${r.count} af dine lastbiler er`} skudt i brand og kan ikke køre mere${r.survivors > 0 ? "" : " — ingen af soldaterne overlevede"}.`,
+    truck_stopped: r => `🚚 Delingen kan ikke køre videre: ${r.survivors} soldater er steget af og står nu vagt.`
 };
 
 // ---------------------------------------------------------------- kamprapporter
@@ -3545,7 +3789,7 @@ async function loadReports() {
     await sb.from("march_reports").update({ seen: true }).in("id", data.map(r => r.id));
     // Kamp mod patruljer ændrer antallet af soldater; hjemkomne sårede lægges på hospitalet.
     if (data.some(r => r.kind !== "returned" && r.kind !== "arrived")) loadBattles();
-    if (data.some(r => r.kind.startsWith("patrol_") || r.kind === "returned" || r.kind === "shelled")) {
+    if (data.some(r => r.kind.startsWith("patrol_") || r.kind.startsWith("truck_") || r.kind === "returned" || r.kind === "shelled")) {
         await loadArmy();
         await syncAllFromSupabase();
     }
@@ -3855,6 +4099,7 @@ const RULE_GROUPS = [
     ["vision", "Udsyn og bevægelse"],
     ["fire", "Kamp: geværild og energi"],
     ["mortar", "Let morter"],
+    ["truck", "Lastbil"],
     ["npc", "Fjendtlige patruljer"],
     ["build", "Bygninger og byggeri"],
     ["economy", "Skridt og økonomi"],
@@ -3898,6 +4143,14 @@ const RULE_INFO = {
     mortar_flight_base_s:       ["mortar", "Flyvetid: grundværdi", "s"],
     mortar_flight_mps:          ["mortar", "Flyvetid: granatens fart", "m/s"],
     mortar_crater_hours:        ["mortar", "Så længe et krater kan ses", "timer"],
+    truck_price_steps:          ["truck", "Pris for én lastbil", "skridt"],
+    truck_price_steel:          ["truck", "Pris for én lastbil", "stål"],
+    truck_capacity:             ["truck", "Soldater pr. lastbil", "soldater"],
+    truck_road_speed_mps:       ["truck", "Fart på vej (22,22 m/s = 80 km/t)", "m/s"],
+    truck_field_speed_mps:      ["truck", "Fart uden for vejene (5,556 m/s = 20 km/t)", "m/s"],
+    truck_hp:                   ["truck", "Energi pr. lastbil", "energi"],
+    truck_hit_share:            ["truck", "Andel af træfferne, der rammer en lastbil (0,4 = 40 %)", "0–1"],
+    truck_wreck_hours:          ["truck", "Så længe et udbrændt vrag kan ses", "timer"],
     npc_per_player:             ["npc", "Patruljer omkring hver spiller", "stk."],
     npc_spawn_radius_m:         ["npc", "Så langt fra spillerens første bygning de opstår", "m"],
     npc_spawn_clear_m:          ["npc", "Opstår ikke tættere på en bygning end", "m"],
@@ -4425,6 +4678,35 @@ function codexWeaponsHtml() {
         </details>`;
 }
 
+function codexVehiclesHtml() {
+    const T = GAME_CONFIG.TRUCK;
+    return `
+        <details class="codex-section">
+            <summary><span class="codex-sum-title">🚚 Køretøjer</span><span class="codex-sum-sub">lastbil til troppetransport</span></summary>
+            <div class="codex-grid codex-grid-3">
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Lastbil</h3><span class="badge">købes i barrakken</span></div>
+                    <div class="codex-weapon-img"><img src="assets/lastbil.png" class="pixel-img" alt="Lastbil" /></div>
+                    <p class="muted-hint">Grøn militærlastbil med presenning over ladet, hvor soldaterne sidder. Vælg lastbiler, når du sender soldater. Der skal mindst 1 soldat i hver lastbil for at køre den, og er der flere soldater, end der er plads til, går alle. Kommer den hjem til barrakken, bliver den repareret.</p>
+                    ${codexStats([
+                        ["Pris", codexPrice(T.priceSteps, T.priceSteel)],
+                        ["Plads til", `${fmtNum(T.capacity)} soldater`],
+                        ["Fart på vej", fmtKmh(T.roadMps)],
+                        ["Fart uden for vejene", fmtKmh(T.fieldMps)],
+                        ["Energi", fmtNum(T.hp)],
+                        ["Træffere, der rammer lastbilen", fmtPct(T.hitShare)]
+                    ])}
+                    <p class="muted-hint">Ikke skudsikker: bliver den beskudt, kan både lastbilen og soldaterne på ladet blive ramt. Ved 0 energi bryder den i brand og kan ikke køre mere. Kan delingen ikke længere køre, stiger soldaterne af og står vagt, hvor de er. Lastbiler kan ikke gå patrulje endnu.</p>
+                </div>
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Udbrændt lastbil</h3><span class="badge">vrag</span></div>
+                    <div class="codex-weapon-img"><img src="assets/lastbil_vrag.png" class="pixel-img" alt="" /></div>
+                    <p class="muted-hint">Sådan ser en lastbil ud, når den er skudt i brand. Vraget kan ses af alle i ${fmtNum(T.wreckHours)} timer.</p>
+                </div>
+            </div>
+        </details>`;
+}
+
 function codexEnemiesHtml() {
     return `
         <details class="codex-section">
@@ -4452,7 +4734,7 @@ function codexEnemiesHtml() {
 
 window.openCodex = function() {
     document.getElementById("codex-body").innerHTML =
-        codexSoldierHtml() + codexBuildingsHtml() + codexWeaponsHtml() + codexEnemiesHtml();
+        codexSoldierHtml() + codexBuildingsHtml() + codexWeaponsHtml() + codexVehiclesHtml() + codexEnemiesHtml();
     document.getElementById("codex-overlay").classList.remove("hidden");
     document.getElementById("codex-body").scrollTop = 0;
 };
