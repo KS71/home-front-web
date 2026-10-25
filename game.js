@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 62;
+const APP_VERSION = 63;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -3571,15 +3571,19 @@ async function checkCraterFires() {
             const hit = map.queryRenderedFeatures(map.project([c.lon, c.lat]), { layers: ["building"] })
                 .find(f => f.id != null);
             if (!hit) { console.info(`Brand: granat ${c.id} ramte ingen bygning på kortet.`); continue; }
-            if (state.fires.some(f => String(f.osm_id) === String(hit.id))) { console.info(`Brand: bygning ${hit.id} brænder allerede.`); continue; }
-            const geom = mapBuildingPolygons(hit);
-            if (!geom.length) { console.info(`Brand: bygning ${hit.id} har intet omrids.`); continue; }
-            const { data, error } = await sb.rpc("ignite_map_building", { p_impact: c.id, p_osm_id: hit.id, p_geom: geom });
+            if (state.fires.some(f => (f.geom || []).some(poly => pointInRings(c.lon, c.lat, poly)))) {
+                console.info(`Brand: bygningen ved granat ${c.id} brænder allerede.`);
+                continue;
+            }
+            const geom = mapBuildingPolygons(hit, c.lon, c.lat);
+            if (!geom.length) { console.info(`Brand: granat ${c.id} ligger ikke inde i en bygning.`); continue; }
+            const key = buildingKey(geom);
+            const { data, error } = await sb.rpc("ignite_map_building", { p_impact: c.id, p_osm_id: key, p_geom: geom });
             if (error) {
                 console.warn("Brand i bygning:", error.message);
                 continue;
             }
-            console.info(`Brand: granat ${c.id} i bygning ${hit.id}, svar fra serveren:`, data);
+            console.info(`Brand: granat ${c.id} i bygning ${key}, svar fra serveren:`, data);
             if (data?.burning) lit = true;
         }
     } finally {
@@ -3591,32 +3595,34 @@ async function checkCraterFires() {
     }
 }
 
-// Alle stykker af kortets bygning med samme nummer (en stor bygning er delt over flere
-// kortstykker). Returnerer [[ring, …], …] med ringe af [lon, lat].
-function mapBuildingPolygons(hit) {
+// Kortets bygning, granaten ligger i, som [[ring, …]] med ringe af [lon, lat]. På de fleste
+// zoomniveauer slår kortet mange bygninger sammen til én figur med ét nummer, så kun den
+// polygon, der indeholder nedslaget, sendes med.
+function mapBuildingPolygons(hit, lon, lat) {
     const parts = [hit, ...map.querySourceFeatures(hit.source, {
         sourceLayer: hit.sourceLayer || "building",
         filter: ["==", ["id"], hit.id]
     })];
-    const seen = new Set();
-    const polys = [];
-    let points = 0;
-    const round = ring => ring.map(([lon, lat]) => [Math.round(lon * 1e7) / 1e7, Math.round(lat * 1e7) / 1e7]);
+    const round = ring => ring.map(([x, y]) => [Math.round(x * 1e7) / 1e7, Math.round(y * 1e7) / 1e7]);
     for (const f of parts) {
         const g = f.geometry;
         const list = g.type === "Polygon" ? [g.coordinates] : g.type === "MultiPolygon" ? g.coordinates : [];
         for (const poly of list) {
             const rings = poly.map(round);
-            const key = JSON.stringify(rings);
-            if (seen.has(key)) continue;
-            seen.add(key);
-            points += rings.reduce((n, r) => n + r.length, 0);
-            polys.push(rings);
+            const points = rings.reduce((n, r) => n + r.length, 0);
+            if (points <= 5000 && pointInRings(lon, lat, rings)) return [rings];
         }
     }
-    // Serveren tager højst 50 stykker og 5000 punkter; ellers nøjes vi med det ramte stykke.
-    if (polys.length > 50 || points > 5000) return polys.slice(0, 1);
-    return polys;
+    return [];
+}
+
+// Bygningens eget nummer ud fra midten af dens omrids (kortets nummer deles af mange bygninger).
+function buildingKey(geom) {
+    const ring = geom[0][0];
+    let lon = 0, lat = 0;
+    for (const [x, y] of ring) { lon += x; lat += y; }
+    lon /= ring.length; lat /= ring.length;
+    return Math.round((lat + 90) * 1e4) * 1e7 + Math.round((lon + 180) * 1e4);
 }
 
 // Lige-ulige-reglen over alle ringe, så gårde i bygningen ikke tæller med.
