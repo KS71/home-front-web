@@ -4374,8 +4374,8 @@ window.openRulesModal = async function() {
             </div>`);
     }
 
-    const sections = RULE_GROUPS.filter(([g]) => groups[g]).map(([g, title], i) => `
-        <details class="rule-group" ${i === 0 ? "open" : ""}>
+    const sections = RULE_GROUPS.filter(([g]) => groups[g]).map(([g, title]) => `
+        <details class="rule-group">
             <summary>${escapeHtml(title)}</summary>
             ${groups[g].join("")}
         </details>`).join("");
