@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 45;
+const APP_VERSION = 46;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -32,7 +32,7 @@ const GAME_CONFIG = {
         shellSteps: 10, shellSteel: 5,         // én granat
         rangeM: 5000, minRangeM: 75,
         spreadBaseM: 20, spreadPct: 0.02,      // spredningscirklens radius = base + procent af afstanden
-        blastM: 25,                            // soldater inden for denne afstand af nedslaget rammes
+        blastM: 50,                            // soldater inden for denne afstand af nedslaget rammes af splinter
         crew: 2,                               // soldater pr. morter
         reloadS: 4, salvoMax: 10,
         flightBaseS: 8, flightMps: 150,        // flyvetid = base + afstand / fart
@@ -3134,7 +3134,7 @@ function openFireMortarModal(lat, lon) {
     document.getElementById("modal-title").textContent = "💣 Affyr morteren?";
     document.getElementById("modal-body").innerHTML = `
         <p><strong>Mål:</strong> ${formatPos(lat, lon)} · ${formatDistance(d)} væk</p>
-        <p><strong>Usikkerhed:</strong> hver granat lander et tilfældigt sted inden for <strong>${Math.round(r)} m</strong> af målet (den orange cirkel). Soldater inden for ${M.blastM} m af et nedslag kan blive ramt.</p>
+        <p><strong>Usikkerhed:</strong> hver granat lander et tilfældigt sted inden for <strong>${Math.round(r)} m</strong> af målet (den orange cirkel). Granatsplinter inden for ${M.blastM} m af et nedslag kan ramme soldater.</p>
         <p><strong>Flyvetid:</strong> ca. ${Math.round(mortarFlightS(d))} s · ${usable} ${usable === 1 ? "morter" : "morterer"} skyder</p>
         ${ownNear > 0 ? `<p style="color:#FF8A80"><strong>⚠️ ${ownNear} af dine egne soldater</strong> står inden for ${Math.round(danger)} m af målet og kan blive ramt!</p>` : ""}
         ${wait ? `<p style="color:#FFB74D">Morteren lades stadig — klar om ${wait} s.</p>` : ""}
