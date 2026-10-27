@@ -4958,7 +4958,7 @@ function codexSoldierHtml() {
                         <span class="badge badge-pending">Kommer senere</span>
                     </div>
                     <div class="codex-soldier-img"><img src="assets/snigskytte.png" class="pixel-img" alt="Snigskytte" /></div>
-                    <p class="muted-hint">Præcisionsskytte iført ghillie-sløring og lyddæmpet riffel. Rækker dobbelt så langt som almindeligt infanteri og ses først på klos hold. Ideel til at udtynde fjendtlige patruljer uden selv at blive opdaget.</p>
+                    <p class="muted-hint">Holder en langtrækkende præcisionsriffel i hænderne med et stort optisk kikkertsigte og lyddæmper. Rækker dobbelt så langt som almindeligt infanteri og ses først på klos hold. Ideel til at udtynde fjendtlige patruljer fra skjul.</p>
                     ${codexStats([
                         ["Rolle", "Langtrækkende snigmorder"],
                         ["Energi", "80"],
@@ -4977,7 +4977,7 @@ function codexSoldierHtml() {
                         <span class="badge badge-pending">Kommer senere</span>
                     </div>
                     <div class="codex-soldier-img"><img src="assets/panservaern.png" class="pixel-img" alt="Panserværnssoldat" /></div>
-                    <p class="muted-hint">Tungt udrustet soldat med skudsikker hjelm og panserværnsraketstyr (Bazooka/AT4). Knuser lastbiler og pansrede køretøjer og skader bygninger, men taber i nærkamp mod hurtigt infanteri.</p>
+                    <p class="muted-hint">Holder en kraftig bazooka i hænderne klar til skud, iført beskyttelsesbriller og pansret udrustning. Knuser lastbiler, pansrede mål og bygninger, men taber i nærkamp mod hurtigt infanteri.</p>
                     ${codexStats([
                         ["Rolle", "Køretøjs- & bygningsknuser"],
                         ["Energi", "110 (pansret vest & hjelm)"],
