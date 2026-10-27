@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 88;
+const APP_VERSION = 89;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -672,14 +672,13 @@ function installGameLayers() {
         paint: { "icon-opacity": ["get", "op"] }
     });
 
-    // Udbrændte lastbiler: blegner, jo ældre de er.
+    // Udbrændte lastbiler: blegner, jo ældre de er. Samme faste størrelse som lastbilerne.
     map.addLayer({
         id: "lyr-wrecks",
         type: "symbol",
         source: "src-wrecks",
         layout: {
             "icon-image": "img-wreck",
-            "icon-size": ["interpolate", ["exponential", 2], ["zoom"], 12, 0.12, 16, 0.5, 19, 2.0],
             "icon-allow-overlap": true,
             "icon-ignore-placement": true
         },
