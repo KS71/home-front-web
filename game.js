@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 85;
+const APP_VERSION = 86;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -242,6 +242,7 @@ const state = {
     marches: [],           // Egne marcher fra serveren (se marchFromRow)
     garrisons: [],         // Egne vagtstyrker fra serveren { id, owner_id, lat, lon, count }
     enemies: { buildings: [], garrisons: [], marches: [], npcs: [] }, // fra visible_enemies()
+    allies: { players: [], buildings: [], garrisons: [], marches: [] }, // allierede (0040), altid synlige
     serverOffsetMs: 0,     // serverens ur minus browserens ur (til patruljernes gang)
     inCombat: new Set(),   // patruljer, dine soldater er i kamp med lige nu
     seenBySoldiers: new Set(), // nøgler på fjender, dine soldater allerede har meldt om
@@ -262,6 +263,26 @@ const registeredTroopBadges = new Set();
 // Tropper fra serveren (Marcher & Vagtstyrker)
 // ============================================================================
 // Serveren gemmer en march som rute + starttid + ankomsttid; positionen regnes ud her og dér.
+// Allierede (0040): hver ven har sin egen farve. Dine egne er altid grønne, fjender røde.
+const ALLY_COLORS = ["#B388FF", "#FFD54F", "#18FFFF", "#FF80AB", "#FFFFFF", "#FFAB40"];
+
+function allyInfo(ownerId) {
+    return state.allies.players.find(p => p.id === ownerId) || null;
+}
+
+function allyColor(ownerId) {
+    const p = allyInfo(ownerId);
+    return ALLY_COLORS[(p ? p.idx : 0) % ALLY_COLORS.length];
+}
+
+function allyName(ownerId) {
+    return allyInfo(ownerId)?.name || "en allieret";
+}
+
+function isAlly(ownerId) {
+    return !!ownerId && ownerId !== state.user?.id && !!allyInfo(ownerId);
+}
+
 function marchFromRow(row) {
     return {
         id: row.id,
@@ -705,7 +726,7 @@ function installGameLayers() {
         type: "line",
         source: "src-footprints",
         paint: {
-            "line-color": ["case", ["get", "mine"], "#39FF14", "#FF2E88"],
+            "line-color": ["get", "c"],
             "line-width": 1.5,
             "line-opacity": 0.75
         }
@@ -921,7 +942,7 @@ async function refreshViewportData() {
 function renderWorld() {
     if (!mapReady || !state.user) return;
     const uid = state.user.id;
-    state.visibleBuildings = [...state.myBuildings, ...state.enemies.buildings];
+    state.visibleBuildings = [...state.myBuildings, ...state.allies.buildings, ...state.enemies.buildings];
 
     map.getSource("src-buildings")?.setData({
         type: "FeatureCollection",
@@ -930,7 +951,9 @@ function renderWorld() {
     map.getSource("src-footprints")?.setData({
         type: "FeatureCollection",
         features: state.visibleBuildings.map(b =>
-            squareFeature(b.lat, b.lon, buildingSize(b.kind), { mine: b.owner_id === uid }))
+            squareFeature(b.lat, b.lon, buildingSize(b.kind), {
+                c: b.owner_id === uid ? "#39FF14" : isAlly(b.owner_id) ? allyColor(b.owner_id) : "#FF2E88"
+            }))
     });
 
     if (state.selected) renderSelectedBox();
@@ -997,12 +1020,15 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
     await soldierImgPromise;
     // Fjender (andre spillere og patruljer) har rød uniform; kun dine egne er grønne.
     const redUniform = style === "npc" || style === "enemy";
+    // Allierede: "ally-<farve uden #>"; uniformen og ringen får vennens farve.
+    const allyHex = style.startsWith("ally-") ? "#" + style.slice(5) : null;
     if (redUniform) await npcImgPromise;
     if (truck && hasHowitzer) await truckHowitzerImgPromise;
     if (truck) await truckImgPromise;
     if (!truck && hasHowitzer) await howitzerImgPromise;
     const gunImg = !truck && hasHowitzer ? howitzerImg : null;
-    const soldierImg = truck && hasHowitzer && truckHowitzerImg ? truckHowitzerImg : (truck && truckImg ? truckImg : (redUniform && npcSoldierImg ? npcSoldierImg : baseSoldierImg));
+    let soldierImg = truck && hasHowitzer && truckHowitzerImg ? truckHowitzerImg : (truck && truckImg ? truckImg : (redUniform && npcSoldierImg ? npcSoldierImg : baseSoldierImg));
+    if (allyHex && !truck && soldierImg) soldierImg = tintedUniform(soldierImg, allyHex);
     if (!soldierImg) return;
 
     const scale = truck ? 2 : 3;
@@ -1031,7 +1057,9 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
     // og rød hvis den har været i kamp (eller fjende).
     let strokeColor = "#39FF14"; // grøn standard (står vagt)
     if (style === "npc") {
-        strokeColor = status === "combat" ? "#FF5252" : "#FF9800";
+        strokeColor = "#FF5252"; // Sverige og andre computerstyrede fjender er altid røde
+    } else if (allyHex) {
+        strokeColor = allyHex;
     } else if (style === "enemy") {
         strokeColor = "#FF5252";
     } else {
@@ -1079,6 +1107,31 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
     if (!map.hasImage(imgId)) {
         map.addImage(imgId, { width: canvas.width, height: canvas.height, data: imageData.data });
     }
+}
+
+// Soldaten med uniformen (de grønne pixels) farvet i en allieret vens farve.
+const tintCache = new Map();
+function tintedUniform(img, hex) {
+    const key = img.src + hex;
+    if (tintCache.has(key)) return tintCache.get(key);
+    const c = document.createElement("canvas");
+    c.width = img.width;
+    c.height = img.height;
+    const ctx = c.getContext("2d");
+    ctx.drawImage(img, 0, 0);
+    const d = ctx.getImageData(0, 0, c.width, c.height);
+    const tr = parseInt(hex.slice(1, 3), 16), tg = parseInt(hex.slice(3, 5), 16), tb = parseInt(hex.slice(5, 7), 16);
+    for (let i = 0; i < d.data.length; i += 4) {
+        const r = d.data[i], g = d.data[i + 1], b = d.data[i + 2];
+        if (d.data[i + 3] === 0 || !(g > r + 10 && g > b + 10)) continue;
+        const light = Math.min(1.3, (r + g + b) / 3 / 110);
+        d.data[i] = Math.min(255, tr * light);
+        d.data[i + 1] = Math.min(255, tg * light);
+        d.data[i + 2] = Math.min(255, tb * light);
+    }
+    ctx.putImageData(d, 0, 0);
+    tintCache.set(key, c);
+    return c;
 }
 
 function isPointOnScreen(lat, lon) {
@@ -1660,6 +1713,18 @@ async function renderTroopsOnMap() {
         await addTroop(n, pos[0], pos[1], "npc", status, facingLeft);
     }
 
+    // Allierede: altid synlige, i deres egen farve.
+    for (const g of state.allies.garrisons) {
+        if (g.count <= 0) continue;
+        await addTroop(g, g.lat, g.lon, "ally-" + allyColor(g.owner_id).slice(1), "guard");
+    }
+    for (const m of state.allies.marches) {
+        if (m.count <= 0) continue;
+        const [lat, lon] = marchCurrentPos(m, now);
+        const facingLeft = truckCount(m) > 0 && marchFacingLeft(m, now);
+        await addTroop(m, lat, lon, "ally-" + allyColor(m.owner_id).slice(1), "march", facingLeft);
+    }
+
     const own = [];
     for (const g of state.garrisons) {
         if (g.count <= 0) continue;
@@ -2084,11 +2149,11 @@ function selectPoint(lat, lon) {
 }
 
 // Egne delinger på march, man har klikket på (deres ikon står oven over positionen).
-function marchesNear(lat, lon) {
+function marchesNear(lat, lon, list = state.marches) {
     if (!mapReady) return [];
     const pt = map.project([lon, lat]);
     const now = serverNow();
-    return state.marches.filter(m => {
+    return list.filter(m => {
         if (m.count <= 0) return false;
         const [mLat, mLon] = marchCurrentPos(m, now);
         const mp = map.project([mLon, mLat]);
@@ -2158,7 +2223,8 @@ function renderBuildingBox(bld, box, badge) {
     const isMine = bld.owner_id === uid;
     const cfg = GAME_CONFIG.BUILDINGS[bld.kind];
     const size = buildingSize(bld.kind);
-    badge.textContent = isMine ? "Din bygning" : "Fjendtlig bygning";
+    const ally = !isMine && isAlly(bld.owner_id);
+    badge.textContent = isMine ? "Din bygning" : ally ? "Allieret bygning" : "Fjendtlig bygning";
     setSelectedShape(squareFeature(bld.lat, bld.lon, size, { state: "building" }));
 
     const stageName = cfg ? cfg.stages[bld.level - 1] : bld.kind;
@@ -2201,6 +2267,21 @@ function renderBuildingBox(bld, box, badge) {
             </div>
         `;
         html += garrisonRowsHtml(garrisonsNear(state.garrisons, bld.lat, bld.lon));
+    } else if (ally) {
+        html += `
+            <div class="item-row">
+                <div class="item-row-top">
+                    <img src="assets/${sprite}.png" class="pixel-img item-sprite" />
+                    <div class="item-info">
+                        <div class="item-title" style="color:${allyColor(bld.owner_id)}">${escapeHtml(allyName(bld.owner_id))}s ${cfg?.shortName || bld.kind}: ${stageName} (trin ${bld.level})</div>
+                        <div class="item-sub">🤝 Allieret. I kæmper ikke mod hinanden. Sender du soldater hertil, stiller de sig som vagt ved bygningen.</div>
+                    </div>
+                </div>
+                <div class="item-actions">
+                    <button class="btn btn-small btn-primary" onclick="sendSoldiersTo(${bld.lat}, ${bld.lon})">🪖 Send soldater hertil</button>
+                </div>
+            </div>
+        `;
     } else {
         const radius = size / 2 + GAME_CONFIG.GARRISON_MERGE_M;
         const guards = state.enemies.garrisons
@@ -3328,6 +3409,8 @@ function openGroupModalAt(lat, lon) {
     const hits = [
         ...garrisonsNear(state.garrisons, lat, lon).map(g => ({ kind: "garrison", id: g.id })),
         ...marchesNear(lat, lon).map(m => ({ kind: "march", id: m.id })),
+        ...garrisonsNear(state.allies.garrisons, lat, lon).map(g => ({ kind: "ally-garrison", id: g.id })),
+        ...marchesNear(lat, lon, state.allies.marches).map(m => ({ kind: "ally-march", id: m.id })),
         ...garrisonsNear(state.enemies.garrisons, lat, lon).map(g => ({ kind: "enemy-garrison", id: g.id })),
         ...npcsNear(lat, lon).map(({ n }) => ({ kind: "npc", id: n.id }))
     ];
@@ -3346,12 +3429,14 @@ function findGroup(kind, id) {
         case "enemy-march": return state.enemies.marches.find(same);
         case "npc": return state.enemies.npcs.find(same);
         case "parked": return state.parkedTrucks.find(same);
+        case "ally-garrison": return state.allies.garrisons.find(same);
+        case "ally-march": return state.allies.marches.find(same);
     }
     return null;
 }
 
 function groupPos(kind, g) {
-    if (kind === "march") return marchCurrentPos(g, serverNow());
+    if (kind === "march" || kind === "ally-march") return marchCurrentPos(g, serverNow());
     if (kind === "npc") return npcCurrentPos(g);
     return [g.lat, g.lon];
 }
@@ -3451,6 +3536,19 @@ function renderGroupModal() {
             ${state.parkedTrucks.filter(p => garrisonsByParked(p).some(x => x.id === g.id)).map(p => `<button class="btn btn-primary" onclick="closeModal(); boardTrucks(${p.id}, ${g.id})">🚚 Stig på ${p.trucks.length === 1 ? "lastbilen" : `${p.trucks.length} lastbiler`}</button>`).join("")}
             ${hurt ? `<button class="btn btn-primary" onclick="closeModal(); sendWoundedToHospital(${g.id})">🏥 Send ${hurt} ${hurt === 1 ? "såret" : "sårede"} til hospitalet</button>` : ""}
             <button class="btn btn-danger" onclick="closeModal(); sendGarrisonHome(${g.id})">🏠 Send hjem</button>
+            <button class="btn" onclick="closeModal()">Luk</button>`;
+        return;
+    }
+
+    if (gm.kind === "ally-garrison" || gm.kind === "ally-march") {
+        const color = allyColor(g.owner_id);
+        const gear = npcGear(g);
+        title.innerHTML = `<span style="color:${color}">🤝 ${escapeHtml(allyName(g.owner_id))}</span>: ${g.count} soldater ${gm.kind === "ally-march" ? (g.driving ? "kører" : "på march") : "på vagt"}`;
+        body.innerHTML = `
+            <p class="muted-hint">Allieret. I kæmper ikke mod hinanden og deler udsyn.${g.hurt ? ` ${g.hurt} ${g.hurt === 1 ? "såret" : "sårede"}.` : ""}${gear ? ` ${gear}.` : ""}</p>
+            ${bar}`;
+        actions.innerHTML = `
+            <button class="btn" onclick="closeModal(); jumpToPoint(${lat}, ${lon})">🎯 Hop til</button>
             <button class="btn" onclick="closeModal()">Luk</button>`;
         return;
     }
@@ -4636,6 +4734,17 @@ async function pollWorld() {
             marches: data.marches || [],
             npcs: data.npcs || []
         };
+        const al = data.allies || {};
+        state.allies = {
+            players: al.players || [],
+            buildings: al.buildings || [],
+            garrisons: al.garrisons || [],
+            marches: (al.marches || []).map(m => ({
+                ...m,
+                startedAtMillis: Date.parse(m.started_at),
+                arrivesAtMillis: Date.parse(m.arrives_at)
+            }))
+        };
         if (data.now) state.serverOffsetMs = Date.parse(data.now) - Date.now();
         lastWorldPoll = Date.now();
         announceSightings();
@@ -4930,6 +5039,10 @@ async function openAdminModal() {
                 <label>Stål <input type="number" min="0" step="1" id="adm-steel-${p.id}" value="${p.steel ?? 0}" /></label>
                 <button class="btn btn-small" onclick="saveResources('${p.id}', this)">Gem</button>
             </td>
+            <td class="admin-res">
+                <label>Alliance <input type="text" id="adm-alliance-${p.id}" value="${escapeHtml(p.alliance || "")}" placeholder="ingen" style="width:90px" /></label>
+                <button class="btn btn-small" onclick="saveAlliance('${p.id}', this)">Gem</button>
+            </td>
             <td class="admin-check">
                 <label>
                     <input type="checkbox" ${p.is_tester ? "checked" : ""} onchange="setTester('${p.id}', this)" />
@@ -4942,6 +5055,7 @@ async function openAdminModal() {
     document.getElementById("modal-body").innerHTML = `
         <p class="muted-hint">En testkonto må bygge hvor som helst uden bogmærke fra telefonen (dog stadig med ${GAME_CONFIG.BUILDING_GAP_M} m til andre bygninger). Spilleren skal genindlæse siden, før det slår igennem.</p>
         <p class="muted-hint">Skridt og stål: skriv de nye tal ud for spilleren, og tryk Gem. Tallene viser, hvad spilleren har lige nu.</p>
+        <p class="muted-hint">Alliance: spillere med samme navn (fx Danmark) er allierede. De kæmper ikke mod hinanden, ser altid hinandens soldater og bygninger og deler udsyn. Tomt felt = spilleren er alene.</p>
         <div class="admin-list"><table class="admin-table">${rows}</table></div>
     `;
 }
@@ -4960,6 +5074,19 @@ window.setTester = async function(playerId, checkbox) {
         state.isTester = checkbox.checked;
         if (state.selected) renderSelectedBox();
     }
+};
+
+window.saveAlliance = async function(playerId, button) {
+    const name = document.getElementById(`adm-alliance-${playerId}`).value.trim();
+    button.disabled = true;
+    const { error } = await sb.rpc("admin_set_alliance", { p_player: playerId, p_alliance: name });
+    button.disabled = false;
+    if (error) {
+        showToast("Kunne ikke gemme: " + error.message);
+        return;
+    }
+    showToast(name ? `Gemt: alliance ${name}.` : "Gemt: spilleren er nu alene.");
+    pollWorld();
 };
 
 window.saveResources = async function(playerId, button) {
