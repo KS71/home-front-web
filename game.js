@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 73;
+const APP_VERSION = 74;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -269,6 +269,8 @@ function marchFromRow(row) {
         mortars: row.mortars || 0,
         shells: row.shells || 0,
         trucks: row.trucks || [],
+        howitzers: row.howitzers || 0,
+        howitzerShells: row.howitzer_shells || 0,
         driving: !!row.driving,
         patrolPath: row.patrol_path || null,
         homeBuildingId: row.home_building_id,
@@ -2099,7 +2101,7 @@ function garrisonRowsHtml(list) {
             <div class="item-row-top">
                 <img src="assets/tropper.png" class="pixel-img item-sprite" />
                 <div class="item-info">
-                    <div class="item-title item-title-green">Vagtstyrke: ${g.count} soldater${mortarTag(g)}${truckTag(g)}</div>
+                    <div class="item-title item-title-green">Vagtstyrke: ${g.count} soldater${mortarTag(g)}${howitzerTag(g)}${truckTag(g)}</div>
                     <div class="item-sub">Står vagt her · ${energyText(g)}</div>
                 </div>
             </div>
@@ -2107,6 +2109,7 @@ function garrisonRowsHtml(list) {
                 <button class="btn btn-small" onclick="openGroupModal('garrison', '${g.id}')">📋 Soldater</button>
                 <button class="btn btn-small btn-primary" onclick="sendFromGarrison(${g.id})">🪖 Send videre</button>
                 ${g.mortars > 0 ? `<button class="btn btn-small btn-gold" onclick="startMortarAim(${g.id})">💣 Affyr morter</button>` : ""}
+                ${g.howitzers > 0 ? `<button class="btn btn-small btn-danger" onclick="startHowitzerAimGarrison(${g.id})">💥 Affyr haubits</button>` : ""}
             </div>
         </div>
     `).join("");
@@ -2574,7 +2577,7 @@ function renderTroopsSidebar() {
                 <div class="item-row-top">
                     <img src="assets/tropper.png" class="pixel-img item-sprite" />
                     <div class="item-info">
-                        <div class="item-title ${isPatrol ? "item-title-blue" : "item-title-orange"}">${m.count} soldater ${isPatrol ? "på patrulje" : "på march"}${mortarTag(m)}${truckTag(m)}</div>
+                        <div class="item-title ${isPatrol ? "item-title-blue" : "item-title-orange"}">${m.count} soldater ${isPatrol ? "på patrulje" : "på march"}${mortarTag(m)}${howitzerTag(m)}${truckTag(m)}</div>
                         <div class="item-sub march-eta-text">${marchEtaText(m, now)}</div>
                         <div class="item-sub">${energyText(m)}</div>
                     </div>
@@ -2601,7 +2604,7 @@ function renderTroopsSidebar() {
                 <div class="item-row-top">
                     <img src="assets/tropper.png" class="pixel-img item-sprite" />
                     <div class="item-info">
-                        <div class="item-title item-title-green">${g.count} soldater på vagt${mortarTag(g)}${truckTag(g)}</div>
+                        <div class="item-title item-title-green">${g.count} soldater på vagt${mortarTag(g)}${howitzerTag(g)}${truckTag(g)}</div>
                         <div class="item-sub">${where}</div>
                         <div class="item-sub">${energyText(g)}</div>
                     </div>
@@ -2611,6 +2614,7 @@ function renderTroopsSidebar() {
                     <button class="btn btn-small" onclick="event.stopPropagation(); jumpToPoint(${g.lat}, ${g.lon})">🎯 Hop til</button>
                     <button class="btn btn-small btn-primary" onclick="event.stopPropagation(); sendFromGarrison(${g.id})">🪖 Send videre</button>
                     ${g.mortars > 0 ? `<button class="btn btn-small btn-gold" onclick="event.stopPropagation(); startMortarAim(${g.id})">💣 Affyr</button>` : ""}
+                    ${g.howitzers > 0 ? `<button class="btn btn-small btn-danger" onclick="event.stopPropagation(); startHowitzerAimGarrison(${g.id})">💥 Affyr haubits</button>` : ""}
                 </div>
             </div>
         `;
@@ -2678,6 +2682,13 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
             <div id="truck-val-label" class="mortar-pick-label"></div>
             <input type="range" min="0" max="0" value="0" class="range-slider" id="truck-range-input" />
             <p id="truck-pick-hint" class="muted-hint"></p>
+        </div>
+        <div id="howitzer-pick" class="mortar-pick hidden">
+            <div id="howitzer-val-label" class="mortar-pick-label"></div>
+            <input type="range" min="0" max="0" value="0" class="range-slider" id="howitzer-range-input" />
+            <p id="howitzer-pick-hint" class="muted-hint"></p>
+            <div id="howitzer-shell-val-label" class="mortar-pick-label"></div>
+            <input type="range" min="0" max="0" value="0" class="range-slider" id="howitzer-shell-range-input" />
         </div>
     `;
     const slider = document.getElementById("soldier-range-input");
@@ -2749,16 +2760,58 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
                     ? "⚠️ Der skal mindst 1 soldat i hver lastbil, så alle går i gåtempo."
                     : `⚠️ Der er kun plads til ${k * T.capacity} soldater i ${k} ${k === 1 ? "lastbil" : "lastbiler"}, så alle går i gåtempo, og lastbilerne følger med.`;
     };
-    tSlider.oninput = () => { trucksTouched = true; updateTrucks(); };
+    // Haubitser: skal trækkes af lastbil (1 lastbil pr. haubits) og kræver HOWITZER.crew soldater.
+    const hCrew = GAME_CONFIG.HOWITZER.crew;
+    const howitzersHere = garrison ? (garrison.howitzers || 0) : state.howitzersHome;
+    const howitzerShellsHere = garrison ? (garrison.howitzer_shells || 0) : state.howitzerShells;
+    const hSlider = document.getElementById("howitzer-range-input");
+    const hLabel = document.getElementById("howitzer-val-label");
+    const hHint = document.getElementById("howitzer-pick-hint");
+    const hsSlider = document.getElementById("howitzer-shell-range-input");
+    const hsLabel = document.getElementById("howitzer-shell-val-label");
+    let howitzerShellsTouched = false;
+    document.getElementById("howitzer-pick").classList.toggle("hidden", howitzersHere <= 0);
+
+    const updateHowitzers = () => {
+        const n = parseInt(slider.value, 10) || 1;
+        const trucks = parseInt(tSlider.value, 10) || 0;
+        const all = garrison && n >= garrison.count;
+        const max = all ? howitzersHere : Math.min(howitzersHere, Math.floor(n / hCrew), trucks);
+        hSlider.max = String(max);
+        hSlider.disabled = all;
+        if (all || Number(hSlider.value) > max) hSlider.value = String(all ? howitzersHere : max);
+        hLabel.textContent = `💥 ${hSlider.value} / ${howitzersHere} haubitser med`;
+        hHint.textContent = all
+            ? "Hele vagtstyrken går, så alle dens haubitser og granater går med."
+            : trucks < howitzersHere && Math.floor(n / hCrew) >= howitzersHere
+                ? `Hver haubits kræver 1 lastbil til bugsering (${trucks} lastbiler valgt).`
+                : `Hver haubits trækkes af 1 lastbil og kræver ${hCrew} soldater. ${garrison ? "Resten bliver hos vagten." : "Resten bliver på lager i barrakken."}`;
+
+        const withHowitzer = Number(hSlider.value) > 0;
+        const sMax = withHowitzer ? howitzerShellsHere : 0;
+        hsSlider.max = String(sMax);
+        hsSlider.disabled = all || !withHowitzer;
+        if (all) hsSlider.value = String(howitzerShellsHere);
+        else if (!howitzerShellsTouched || Number(hsSlider.value) > sMax) hsSlider.value = String(sMax);
+        hsLabel.textContent = withHowitzer
+            ? `🎯 ${hsSlider.value} / ${howitzerShellsHere} haubitsgranater med`
+            : `🎯 Haubitsgranater kan kun gå med en haubits (${howitzerShellsHere} ${garrison ? "hos vagten" : "på lager"})`;
+    };
+    hsSlider.oninput = () => { howitzerShellsTouched = true; updateHowitzers(); };
+    hSlider.oninput = updateHowitzers;
+
+    tSlider.oninput = () => { trucksTouched = true; updateTrucks(); updateHowitzers(); };
 
     slider.oninput = () => {
         label.textContent = `${slider.value} / ${maxAvail} soldater`;
         updateMortars();
         updateTrucks();
+        updateHowitzers();
     };
     mSlider.oninput = updateMortars;
     updateMortars();
     updateTrucks();
+    updateHowitzers();
 
     document.getElementById("modal-actions").innerHTML = `
         <button class="btn" onclick="closeModal()">Luk</button>
@@ -2769,8 +2822,10 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
         const mortars = parseInt(mSlider.value, 10) || 0;
         const shells = mortars > 0 ? (parseInt(sSlider.value, 10) || 0) : 0;
         const trucks = parseInt(tSlider.value, 10) || 0;
+        const howitzers = parseInt(hSlider.value, 10) || 0;
+        const howitzer_shells = howitzers > 0 ? (parseInt(hsSlider.value, 10) || 0) : 0;
         closeModal();
-        const order = { from, count: chosen, mortars, shells, trucks };
+        const order = { from, count: chosen, mortars, shells, trucks, howitzers, howitzer_shells };
         if (target) openConfirmMarchModal(order, target);
         else enterMarchTargetMode(order);
     };
@@ -2927,7 +2982,8 @@ async function openConfirmMarchModal(order, target) {
 
     const overlay = document.getElementById("modal-overlay");
     const withMortars = (order.mortars > 0 ? ` med ${order.mortars} ${order.mortars === 1 ? "morter" : "morterer"}${order.shells > 0 ? ` og ${order.shells} granater` : ""}` : "")
-        + (trucks > 0 ? `${order.mortars > 0 ? " og" : " med"} ${trucks} ${truckWord(trucks)}` : "");
+        + (trucks > 0 ? `${order.mortars > 0 ? " og" : " med"} ${trucks} ${truckWord(trucks)}` : "")
+        + (order.howitzers > 0 ? ` samt ${order.howitzers} ${order.howitzers === 1 ? "haubits" : "haubitser"}${order.howitzer_shells > 0 ? ` og ${order.howitzer_shells} haubitsgranater` : ""}` : "");
     document.getElementById("modal-title").textContent = order.patrol
         ? `Send ${order.count} soldater${withMortars} på patrulje?`
         : `Send ${order.count} soldater${withMortars} af sted?`;
@@ -2995,7 +3051,9 @@ async function executeMarchOrder(order, target, landPath, loopPath = null) {
             p_count: order.count, p_path: landPath,
             ...(order.mortars > 0 ? { p_mortars: order.mortars } : {}),
             ...(order.shells > 0 ? { p_shells: order.shells } : {}),
-            ...(order.trucks > 0 ? { p_trucks: order.trucks } : {})
+            ...(order.trucks > 0 ? { p_trucks: order.trucks } : {}),
+            ...(order.howitzers > 0 ? { p_howitzers: order.howitzers } : {}),
+            ...(order.howitzer_shells > 0 ? { p_howitzer_shells: order.howitzer_shells } : {})
         }));
     }
     if (error) {
@@ -3003,7 +3061,7 @@ async function executeMarchOrder(order, target, landPath, loopPath = null) {
         return;
     }
     await loadArmy();
-    if ((order.mortars > 0 || order.trucks > 0) && order.from.type === "building") await syncAllFromSupabase();
+    if ((order.mortars > 0 || order.trucks > 0 || order.howitzers > 0) && order.from.type === "building") await syncAllFromSupabase();
     showToast(order.patrol
         ? `🔁 ${order.count} soldater går nu patrulje mellem ${order.waypoints.length} punkter!`
         : order.redirectMarchId
@@ -3183,6 +3241,7 @@ function renderGroupModal() {
         body.innerHTML = `
             <p class="muted-hint">${where} · ${g.count - hurt} raske, ${hurt} ${hurt === 1 ? "såret" : "sårede"}. Sårede heles kun på et felthospital.</p>
             ${mortarLineHtml(gm.kind, g)}
+            ${howitzerLineHtml(gm.kind, g)}
             ${truckLineHtml(gm.kind, g)}
             ${bar}
             ${soldierTilesHtml(g)}`;
@@ -3195,6 +3254,7 @@ function renderGroupModal() {
             <button class="btn" onclick="closeModal(); jumpToPoint(${lat}, ${lon})">🎯 Hop til</button>
             <button class="btn btn-primary" onclick="closeModal(); sendFromGarrison(${g.id})">🪖 Send soldater</button>
             ${g.mortars > 0 ? `<button class="btn btn-gold" onclick="closeModal(); startMortarAim(${g.id})">💣 Affyr morter</button>` : ""}
+            ${g.howitzers > 0 ? `<button class="btn btn-danger" onclick="closeModal(); startHowitzerAimGarrison(${g.id})">💥 Affyr haubits</button>` : ""}
             ${hurt ? `<button class="btn btn-primary" onclick="closeModal(); sendWoundedToHospital(${g.id})">🏥 Send ${hurt} ${hurt === 1 ? "såret" : "sårede"} til hospitalet</button>` : ""}
             <button class="btn btn-danger" onclick="closeModal(); sendGarrisonHome(${g.id})">🏠 Send hjem</button>
             <button class="btn" onclick="closeModal()">Luk</button>`;
@@ -3293,6 +3353,12 @@ function mortarTag(g) {
     return g.mortars > 0 ? ` · 🧨 ${g.mortars} · 💣 ${g.shells || 0}` : "";
 }
 
+function howitzerTag(g) {
+    const h = g.howitzers || 0;
+    const s = g.howitzer_shells ?? g.howitzerShells ?? 0;
+    return h > 0 ? ` · 💥 ${h} · 🎯 ${s}` : "";
+}
+
 // Morteren og haubitsen skyder på samme måde, men med hver sine tal.
 function weaponCfg(weapon) {
     return weapon === "howitzer" ? GAME_CONFIG.HOWITZER : GAME_CONFIG.MORTAR;
@@ -3318,13 +3384,21 @@ function howitzerReadyInS() {
     return Math.max(0, Math.ceil((Date.parse(state.howitzerReadyAt) - serverNow()) / 1000));
 }
 
-// Hvorfra der sigtes: vagtstyrken med morteren eller barrakken med haubitserne.
+// Hvorfra der sigtes: vagtstyrken med morteren, barrakken med haubitserne eller vagtstyrken med fremskudt haubits.
 function aimSource(aim) {
     if (!aim) return null;
     if (aim.weapon === "howitzer") {
+        if (aim.garrisonId) {
+            const g = state.garrisons.find(x => String(x.id) === String(aim.garrisonId));
+            if (!g) return null;
+            const usable = Math.min(g.howitzers || 0, Math.floor(g.count / GAME_CONFIG.HOWITZER.crew));
+            return { weapon: "howitzer", fromType: "garrison", id: g.id, lat: g.lat, lon: g.lon, shells: g.howitzer_shells || 0,
+                     usable, wait: howitzerReadyInS(),
+                     one: "haubits", many: "haubitser", where: "Vagten har" };
+        }
         const b = state.myBuildings.find(x => String(x.id) === String(aim.buildingId));
         if (!b) return null;
-        return { weapon: "howitzer", id: b.id, lat: b.lat, lon: b.lon, shells: state.howitzerShells,
+        return { weapon: "howitzer", fromType: "building", id: b.id, lat: b.lat, lon: b.lon, shells: state.howitzerShells,
                  usable: usableHowitzers(), wait: howitzerReadyInS(),
                  one: "haubits", many: "haubitser", where: "Du har" };
     }
@@ -3343,6 +3417,22 @@ function usableMortars(g) {
 function mortarReadyInS(g) {
     if (!g.mortar_ready_at) return 0;
     return Math.max(0, Math.ceil((Date.parse(g.mortar_ready_at) - serverNow()) / 1000));
+}
+
+function howitzerLineHtml(kind, g) {
+    const h = g.howitzers || 0;
+    if (h <= 0) return "";
+    const H = GAME_CONFIG.HOWITZER;
+    const word = h === 1 ? "haubits" : "haubitser";
+    const shells = kind === "march" ? (g.howitzerShells || 0) : (g.howitzer_shells || 0);
+    if (kind === "march") {
+        return `<p class="muted-hint">💥 Bugserer ${h} ${word} · 🎯 ${shells} granater. Kan skyde, når soldaterne står vagt.</p>`;
+    }
+    const usable = Math.min(h, Math.floor(g.count / H.crew));
+    const wait = howitzerReadyInS();
+    return `<p class="muted-hint">💥 ${h} ${word} i stilling · 🎯 ${shells} granater · rækkevidde ${formatDistance(H.rangeM)}${
+        usable < h ? ` · kun ${usable} kan betjenes (${H.crew} soldater pr. haubits)` : ""}${
+        wait ? ` · lades, klar om ${wait} s` : ""}</p>`;
 }
 
 function mortarLineHtml(kind, g) {
@@ -3705,7 +3795,7 @@ function openFireMortarModal(lat, lon) {
     document.getElementById("btn-fire-mortar").onclick = () => {
         const n = parseInt(slider.value, 10) || 1;
         closeModal();
-        if (g.weapon === "howitzer") fireHowitzer(g.id, lat, lon, n);
+        if (g.weapon === "howitzer") fireHowitzer(g, lat, lon, n);
         else fireMortar(g.id, lat, lon, n);
     };
     document.getElementById("modal-overlay").classList.remove("hidden");
@@ -3739,19 +3829,64 @@ async function fireMortar(garrisonId, lat, lon, n) {
     }, Math.max(0, last - serverNow()) + 1500);
 }
 
-async function fireHowitzer(buildingId, lat, lon, n) {
-    const { data, error } = await sb.rpc("fire_howitzer", { p_building: buildingId, p_lat: lat, p_lon: lon, p_shells: n });
+window.startHowitzerAimGarrison = async function(garrisonId) {
+    const g = state.garrisons.find(x => String(x.id) === String(garrisonId));
+    if (!g || !(g.howitzers > 0)) return;
+    const H = GAME_CONFIG.HOWITZER;
+    const usable = Math.min(g.howitzers, Math.floor(g.count / H.crew));
+    if (usable < 1) {
+        showToast(`Der skal være mindst ${H.crew} soldater i vagtstyrken til at betjene haubitsen.`);
+        return;
+    }
+    if (!(g.howitzer_shells > 0)) {
+        showToast("Vagtstyrken har ingen haubitsgranater med.");
+        return;
+    }
+    closeModal();
+    if (state.pendingMarchOrder) exitMarchTargetMode();
+    state.mortarAim = { weapon: "howitzer", garrisonId: g.id };
+    const { data } = await sb.rpc("howitzer_ready_at");
+    if (data !== undefined) state.howitzerReadyAt = data;
+    document.getElementById("mortar-banner-title").textContent = "VÆLG MÅL FOR HAUBITSEN:";
+    document.getElementById("mortar-banner").classList.remove("hidden");
+    map.getCanvas().style.cursor = "crosshair";
+    renderMortarAim(null, null);
+    const ring = circleRing(g.lat, g.lon, H.rangeM, 8);
+    const lons = ring.map(p => p[0]), lats = ring.map(p => p[1]);
+    if (!map.getBounds().contains([Math.min(...lons), Math.min(...lats)])) {
+        map.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]], { padding: 60, duration: 700 });
+    }
+};
+
+async function fireHowitzer(source, lat, lon, n) {
+    const isGarrison = typeof source === "object" && source.fromType === "garrison";
+    const garrisonId = isGarrison ? source.id : null;
+    const buildingId = isGarrison ? null : (typeof source === "object" ? source.id : source);
+    const { data, error } = await sb.rpc("fire_howitzer", {
+        p_building: buildingId,
+        p_garrison: garrisonId,
+        p_lat: lat,
+        p_lon: lon,
+        p_shells: n
+    });
     if (error) {
         showToast("Haubitsen kunne ikke skyde: " + error.message);
         return;
     }
     exitMortarAim();
-    const b = state.myBuildings.find(x => String(x.id) === String(buildingId));
     state.howitzerReadyAt = data.ready_at;
-    state.howitzerShells = data.left;
+    if (isGarrison) {
+        const g = state.garrisons.find(x => String(x.id) === String(garrisonId));
+        if (g) g.howitzer_shells = data.left;
+    } else {
+        state.howitzerShells = data.left;
+    }
+    const fromPoint = isGarrison
+        ? state.garrisons.find(x => String(x.id) === String(garrisonId))
+        : state.myBuildings.find(x => String(x.id) === String(buildingId));
     data.impacts.forEach((imp, i) => state.craters.push({
         id: `ny-${Date.now()}-${i}`, lat: imp.lat, lon: imp.lon, lands_at: imp.lands_at, weapon: "howitzer",
-        mine: true, from_lat: b?.lat, from_lon: b?.lon, fired_at: data.fired_at
+        mine: true, from_lat: fromPoint?.lat, from_lon: fromPoint?.lon, fired_at: data.fired_at
     }));
     startShellAnimation();
     showToast(`💥 ${n} ${n === 1 ? "haubitsgranat er" : "haubitsgranater er"} affyret! ${n === 1 ? "Den lander" : "De lander"} om ca. ${data.flight_s} s inden for ${data.spread_m} m af målet.`);
