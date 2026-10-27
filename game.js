@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 87;
+const APP_VERSION = 88;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -21,6 +21,7 @@ const GAME_CONFIG = {
     SOLDIER_HP: 100,         // energi pr. soldat
     NPC_SPAWN_CHECK_MS: 5 * 60 * 1000, // så tit browseren ser efter, om der mangler patruljer
     WORLD_POLL_MS: 15000,
+    CRATER_POLL_MS: 5000,      // granater i luften: så allierede når at se skuddet
     INSTANT_SOLDIER_STEPS: 100,
     BUILDING_DEFENSE_PER_LEVEL: 2,
     BUILD_RADIUS_M: 100,
@@ -4252,6 +4253,7 @@ async function loadCraters() {
         // Serverens ur også herfra, så granaterne flyver rigtigt, selvom visible_enemies fejler.
         if (data.now) state.serverOffsetMs = Date.parse(data.now) - Date.now();
         state.craters = data.craters || [];
+        announceAllyShells();
         state.wrecks = data.wrecks || [];
         state.fires = data.fires || [];
         startShellAnimation();
@@ -4416,6 +4418,25 @@ function renderMapFires() {
     }
 }
 
+// "Din allierede Lars skyder 4 mortergranater": én besked pr. salve, når en allieret skyder.
+const announcedSalvos = new Set();
+function announceAllyShells() {
+    const now = serverNow();
+    const salvos = new Map();
+    for (const c of state.craters) {
+        if (!c.ally || !c.fired_at || Date.parse(c.lands_at) <= now) continue;
+        const key = `${c.ally_name || ""}|${c.fired_at}|${c.weapon}`;
+        salvos.set(key, (salvos.get(key) || 0) + 1);
+    }
+    for (const [key, n] of salvos) {
+        if (announcedSalvos.has(key)) continue;
+        announcedSalvos.add(key);
+        const [name, , weapon] = key.split("|");
+        const what = weapon === "howitzer" ? (n === 1 ? "haubitsgranat" : "haubitsgranater") : (n === 1 ? "mortergranat" : "mortergranater");
+        queueToast(`💣 Din allierede${name ? " " + name : ""} skyder ${n} ${what}. Se nedslagene på kortet.`);
+    }
+}
+
 let cratersTimer = null;
 function loadCratersSoon() {
     clearTimeout(cratersTimer);
@@ -4443,7 +4464,7 @@ function craterRotation(id) {
 
 const BLAST_MS = 2500;
 
-// Tegner kratere, eksplosioner og egne granater i luften. Returnerer true, så længe noget bevæger sig.
+// Tegner kratere, eksplosioner og egne og allieredes granater i luften. Returnerer true, så længe noget bevæger sig.
 function renderCratersAndShells() {
     if (!mapReady) return false;
     const now = serverNow();
@@ -4467,7 +4488,7 @@ function renderCratersAndShells() {
             }
             continue;
         }
-        if (!c.mine || c.from_lat == null) continue;
+        if (!(c.mine || c.ally) || c.from_lat == null) continue;
         busy = true;
 
         // Granaten flyver i en bue: positionen langs jorden + en højde, der løfter den op på skærmen.
@@ -6163,6 +6184,7 @@ setInterval(async () => {
     await loadReports();
 }, GAME_CONFIG.WORLD_POLL_MS);
 setInterval(loadBattles, 60000);
+setInterval(() => { if (state.user) loadCraters(); }, GAME_CONFIG.CRATER_POLL_MS);
 
 // Spillere online: meld dig hvert halve minut og hent antallet.
 async function updatePresence() {
