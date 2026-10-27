@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 79;
+const APP_VERSION = 80;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -1614,7 +1614,12 @@ async function renderTroopsOnMap() {
     }
     for (const { n, pos } of npcs) {
         const status = n.fighting ? "combat" : "npc";
-        await addTroop(n, pos[0], pos[1], "npc", status);
+        const facingLeft = truckCount(n) > 0 && marchFacingLeft({
+            path: n.path,
+            startedAtMillis: Date.parse(n.started_at),
+            arrivesAtMillis: Date.parse(n.arrives_at)
+        }, now);
+        await addTroop(n, pos[0], pos[1], "npc", status, facingLeft);
     }
 
     const own = [];
@@ -1683,6 +1688,31 @@ function npcCurrentPos(n, now = serverNow()) {
         startedAtMillis: Date.parse(n.started_at),
         arrivesAtMillis: Date.parse(n.arrives_at)
     }, now);
+}
+
+// Navn på en computerstyret gruppe: en enhed i den svenske hær, en invasionshær eller en patrulje.
+function npcLabel(n) {
+    if (n.unit_name) return `Svensk ${n.unit_name.charAt(0).toLowerCase()}${n.unit_name.slice(1)}`;
+    return n.is_invasion ? "Invasionshær" : "Fjendtlig patrulje";
+}
+
+// Hærens udstyr, fx "🚚 3 lastbiler · 💣 4 morterer". Tom, hvis gruppen kun har geværer.
+function npcGear(n) {
+    const parts = [];
+    const t = truckCount(n), m = n.mortars || 0, h = n.howitzers || 0;
+    if (t) parts.push(`🚚 ${t} ${t === 1 ? "lastbil" : "lastbiler"}`);
+    if (m) parts.push(`💣 ${m} ${m === 1 ? "morter" : "morterer"}`);
+    if (h) parts.push(`💥 ${h} ${h === 1 ? "haubits" : "haubitser"}`);
+    return parts.join(" · ");
+}
+
+function npcAbout(n) {
+    if (n.fighting) return "💥 i kamp med dine soldater";
+    if (n.unit_kind) {
+        const gear = npcGear(n);
+        return `Den svenske hær, angreb over Øresundsbroen.${gear ? ` ${gear}.` : ""}`;
+    }
+    return n.is_invasion ? "Invasionsstyrke fra Malmø." : "Computerstyret. Går rundt i området og angriber soldater, den får øje på.";
 }
 
 // Geværild mellem patruljer i kamp og dine soldater inden for skudafstand. Kampen afgøres
@@ -2221,8 +2251,8 @@ function renderPointBox(lat, lon, box, badge) {
                     <div class="item-row-top">
                         <img src="assets/fjende.png" class="pixel-img item-sprite" />
                         <div class="item-info">
-                            <div class="item-title enemy-title">${n.is_invasion ? "Invasionshær" : "Fjendtlig patrulje"}: ${n.count} soldater</div>
-                            <div class="item-sub">${n.fighting ? "💥 i kamp med dine soldater" : (n.is_invasion ? "Invasionsstyrke fra Malmø." : "Computerstyret. Går rundt i området og angriber soldater, den får øje på.")}</div>
+                            <div class="item-title enemy-title">${npcLabel(n)}: ${n.count} soldater</div>
+                            <div class="item-sub">${npcAbout(n)}</div>
                             <div class="item-sub">${energyText(n)}</div>
                         </div>
                     </div>
@@ -3339,11 +3369,11 @@ function renderGroupModal() {
     }
 
     // Fjender: kun det, man kan se på afstand — antal, lastbiler og samlet energi.
-    title.textContent = gm.kind === "npc" ? (g.is_invasion ? `Fjendtlig invasionshær: ${g.count} soldater` : `Fjendtlig patrulje: ${g.count} soldater`)
+    title.textContent = gm.kind === "npc" ? `${g.unit_name ? npcLabel(g) : (g.is_invasion ? "Fjendtlig invasionshær" : "Fjendtlig patrulje")}: ${g.count} soldater`
         : gm.kind === "enemy-march" ? `Fjendtlige soldater på march: ${g.count}` : `Fjendtlige vagter: ${g.count}`;
     body.innerHTML = `
         <p class="muted-hint">${gm.kind === "npc"
-            ? (g.fighting ? "💥 I kamp med dine soldater lige nu." : "Computerstyret. Går rundt i området og angriber soldater, den får øje på.")
+            ? (g.fighting ? `💥 I kamp med dine soldater lige nu.${npcGear(g) ? ` ${npcGear(g)}.` : ""}` : npcAbout(g))
             : `En anden spillers soldater.${truckCount(g) ? ` 🚚 ${truckCount(g)} ${truckCount(g) === 1 ? "lastbil" : "lastbiler"}${g.driving ? ", kører" : ""}.` : ""}`} Du kan ikke se den enkelte fjendes energi, kun gruppens samlede.</p>
         ${bar}`;
     actions.innerHTML = `
@@ -4517,7 +4547,9 @@ function announceSightings() {
     for (const n of state.enemies.npcs.filter(n => n.by_soldiers)) {
         const k = enemyKey("npc", n);
         now.add(k);
-        if (!state.seenBySoldiers.has(k)) fresh.push(`👁️ Dine soldater har fået øje på en ${n.is_invasion ? "fjendtlig invasionshær" : "fjendtlig patrulje"} på ${n.count} soldater.`);
+        if (!state.seenBySoldiers.has(k)) fresh.push(n.unit_name
+            ? `👁️ Dine soldater har fået øje på et ${npcLabel(n).toLowerCase()} på ${n.count} soldater${npcGear(n) ? ` (${npcGear(n)})` : ""}.`
+            : `👁️ Dine soldater har fået øje på en ${n.is_invasion ? "fjendtlig invasionshær" : "fjendtlig patrulje"} på ${n.count} soldater.`);
     }
     state.seenBySoldiers = now;
     fresh.forEach(queueToast);
@@ -4529,7 +4561,9 @@ function announceCombat() {
     for (const id of fighting) {
         if (!state.inCombat.has(id)) {
             const n = state.enemies.npcs.find(x => x.id === id);
-            queueToast(`💥 Dine soldater er i kamp med en ${n.is_invasion ? "fjendtlig invasionshær" : "fjendtlig patrulje"} på ${n.count} soldater!`);
+            queueToast(n.unit_name
+                ? `💥 Dine soldater er i kamp med et ${npcLabel(n).toLowerCase()} på ${n.count} soldater!`
+                : `💥 Dine soldater er i kamp med en ${n.is_invasion ? "fjendtlig invasionshær" : "fjendtlig patrulje"} på ${n.count} soldater!`);
         }
     }
     state.inCombat = fighting;
@@ -4600,8 +4634,8 @@ function renderContactsSidebar() {
                 <div class="item-row-top">
                     <img src="assets/fjende.png" class="pixel-img item-sprite" />
                     <div class="item-info">
-                        <div class="item-title enemy-title">${n.is_invasion ? "Invasionshær" : "Fjendtlig patrulje"}: ${n.count} soldater</div>
-                        <div class="item-sub">${n.fighting ? "💥 i kamp med dine soldater" : (n.is_invasion && !n.by_soldiers ? "Radar / efterretning" : who(n))} · ${energyText(n)}</div>
+                        <div class="item-title enemy-title">${npcLabel(n)}: ${n.count} soldater</div>
+                        <div class="item-sub">${n.fighting ? "💥 i kamp med dine soldater" : (n.is_invasion && !n.by_soldiers ? "Radar / efterretning" : who(n))} · ${energyText(n)}${npcGear(n) ? ` · ${npcGear(n)}` : ""}</div>
                     </div>
                 </div>
                 <div class="item-actions">
@@ -4697,8 +4731,47 @@ function adminTabs(active) {
         <button class="btn btn-small ${active === "players" ? "btn-gold" : ""}" onclick="openAdminModal()">Spillere</button>
         <button class="btn btn-small ${active === "rules" ? "btn-gold" : ""}" onclick="openRulesModal()">Regler</button>
         <button class="btn btn-small ${active === "log" ? "btn-gold" : ""}" onclick="openAdminLogModal()">Login-log</button>
+        <button class="btn btn-small ${active === "invasion" ? "btn-gold" : ""}" onclick="openInvasionModal()">Invasion</button>
     </div>`;
 }
+
+// Admin: den svenske hær. Viser hvad der er tilbage og kan starte invasionen forfra.
+window.openInvasionModal = async function() {
+    document.querySelector(".modal-box")?.classList.add("modal-wide");
+    document.getElementById("modal-title").innerHTML = `Admin: invasion ${adminTabs("invasion")}`;
+    document.getElementById("modal-body").innerHTML = `<p class="muted-hint">Henter hæren…</p>`;
+    document.getElementById("modal-actions").innerHTML = `
+        <button class="btn btn-danger" onclick="startInvasion()">🇸🇪 Start den svenske invasion</button>
+        <button class="btn" onclick="closeModal()">Luk</button>`;
+    document.getElementById("modal-overlay").classList.remove("hidden");
+
+    const { data, error } = await sb.rpc("invasion_status");
+    if (error || !data) {
+        document.getElementById("modal-body").innerHTML = `<p class="muted-hint">Kunne ikke hente hæren: ${escapeHtml(error?.message || "intet svar")}. Er 0036_svensk_invasion.sql kørt i Supabase?</p>`;
+        return;
+    }
+    const d = data;
+    document.getElementById("modal-body").innerHTML = `
+        <p>Den svenske hær har <strong>${fmtNum(d.soldiers)}</strong> af ${fmtNum(d.started)} soldater tilbage i <strong>${fmtNum(d.units)}</strong> enheder. ${fmtNum(d.arrived)} enheder er nået frem.</p>
+        ${codexStats([
+            ["Lastbiler", fmtNum(d.trucks)],
+            ["Morterer", `${fmtNum(d.mortars)} (${fmtNum(d.shells)} granater)`],
+            ["Haubitser", `${fmtNum(d.howitzers)} (${fmtNum(d.howitzer_shells)} granater)`]
+        ])}
+        <p class="muted-hint">Knappen fjerner den nuværende invasion og stiller en ny hær op ved Lernacken på den svenske side efter tallene under Regler → Den svenske hær.</p>`;
+};
+
+window.startInvasion = async function() {
+    if (!confirm("Fjerne den nuværende invasion og starte en ny svensk hær ved Lernacken?")) return;
+    const { data, error } = await sb.rpc("start_invasion");
+    if (error) {
+        showToast(`Kunne ikke starte invasionen: ${error.message}`);
+        return;
+    }
+    showToast(data || "Invasionen er startet.");
+    await pollWorld();
+    openInvasionModal();
+};
 
 async function openAdminModal() {
     document.querySelector(".modal-box")?.classList.add("modal-wide");
@@ -4875,6 +4948,7 @@ const RULE_GROUPS = [
     ["truck", "Lastbil"],
     ["mapfire", "Brændende bygninger på kortet"],
     ["npc", "Fjendtlige patruljer"],
+    ["sweden", "Den svenske hær (invasion)"],
     ["build", "Bygninger og byggeri"],
     ["economy", "Skridt og økonomi"],
     ["gps", "Telefon og GPS"],
@@ -4952,6 +5026,23 @@ const RULE_INFO = {
     npc_speed_mps:              ["npc", "Gå-fart på patrulje", "km/t"],
     npc_vision_m:               ["npc", "Så langt de ser dine soldater", "m"],
     npc_chase_leash_m:          ["npc", "Længst væk fra hjemstedet de forfølger", "m"],
+    sweden_hq_size:             ["sweden", "Stab: soldater (kører i lastbil)", "soldater"],
+    sweden_motor_groups:        ["sweden", "Motoriserede kompagnier", "stk."],
+    sweden_motor_size:          ["sweden", "Motoriseret kompagni: soldater", "soldater"],
+    sweden_motor_trucks:        ["sweden", "Motoriseret kompagni: lastbiler", "stk."],
+    sweden_infantry_groups:     ["sweden", "Infanterikompagnier til fods", "stk."],
+    sweden_infantry_size:       ["sweden", "Infanterikompagni: soldater", "soldater"],
+    sweden_mortar_groups:       ["sweden", "Morterdelinger", "stk."],
+    sweden_mortar_size:         ["sweden", "Morterdeling: soldater", "soldater"],
+    sweden_mortar_mortars:      ["sweden", "Morterdeling: morterer", "stk."],
+    sweden_mortar_shells:       ["sweden", "Morterdeling: mortergranater", "stk."],
+    sweden_artillery_groups:    ["sweden", "Haubitsbatterier", "stk."],
+    sweden_artillery_size:      ["sweden", "Haubitsbatteri: soldater", "soldater"],
+    sweden_artillery_howitzers: ["sweden", "Haubitsbatteri: haubitser (1 lastbil pr. haubits)", "stk."],
+    sweden_artillery_shells:    ["sweden", "Haubitsbatteri: haubitsgranater", "stk."],
+    sweden_column_gap_s:        ["sweden", "Tid mellem to enheder, der kører ud fra Lernacken", "s"],
+    sweden_salvo_per_gun:       ["sweden", "Granater pr. kanon pr. salve", "stk."],
+    sweden_fire_pause_s:        ["sweden", "Mindst så lang tid mellem to salver fra samme enhed", "s"],
     building_gap_m:             ["build", "Mindste afstand mellem to bygningers kanter", "m"],
     build_bookmark_size_m:      ["build", "Et byggepladsbogmærke er en firkant på", "m"],
     build_chain_m:              ["build", "Ny bygning højst så langt fra en af dine egne", "m"],
@@ -5652,10 +5743,42 @@ function codexVehiclesHtml() {
         </details>`;
 }
 
+// Den svenske hær: sammensætningen efter reglerne (sweden_*).
+function codexSwedenCardHtml() {
+    const r = k => codexRule(k, 0);
+    const cap = Math.max(codexRule("truck_capacity", 22), 1);
+    const hq = r("sweden_hq_size");
+    // [antal enheder, soldater, lastbiler, morterer, haubitser] pr. enhed
+    const units = [
+        hq > 0 ? [1, hq, Math.ceil(hq / cap), 0, 0] : null,
+        [r("sweden_motor_groups"), r("sweden_motor_size"), r("sweden_motor_trucks"), 0, 0],
+        [r("sweden_infantry_groups"), r("sweden_infantry_size"), 0, 0, 0],
+        [r("sweden_mortar_groups"), r("sweden_mortar_size"), 0, r("sweden_mortar_mortars"), 0],
+        [r("sweden_artillery_groups"), r("sweden_artillery_size"), r("sweden_artillery_howitzers"), 0, r("sweden_artillery_howitzers")]
+    ].filter(Boolean);
+    const sum = i => units.reduce((a, u) => a + u[0] * u[i], 0);
+    const groups = units.reduce((a, u) => a + u[0], 0);
+    return `
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Den svenske hær</h3><span class="badge">invasion</span></div>
+                    <div class="codex-weapon-img"><img src="assets/lastbil_haubits.png" class="pixel-img" alt="" /></div>
+                    <p class="muted-hint">Angriber over Øresundsbroen fra Lernacken på den svenske side med samme våben og køretøjer som dig. Fodfolket går, køretøjerne kører med lastbilens fart. Ved målet patruljerer infanteriet, mens stab, morterer og haubitser går i stilling og skyder på de af dine soldater, som hæren kan se (${formatDistance(codexRule("npc_vision_m", 250))}). De skyder ikke, hvis deres egne står i farezonen, og granaterne slipper op.</p>
+                    ${codexStats([
+                        ["Soldater i alt", `${fmtNum(sum(1))} i ${fmtNum(groups)} enheder`],
+                        ["Stab", hq > 0 ? `${fmtNum(hq)} soldater i lastbil` : "ingen"],
+                        ["Motoriserede kompagnier", `${fmtNum(r("sweden_motor_groups"))} × ${fmtNum(r("sweden_motor_size"))} soldater, ${fmtNum(r("sweden_motor_trucks"))} lastbiler`],
+                        ["Infanterikompagnier", `${fmtNum(r("sweden_infantry_groups"))} × ${fmtNum(r("sweden_infantry_size"))} soldater til fods`],
+                        ["Morterdelinger", `${fmtNum(r("sweden_mortar_groups"))} × ${fmtNum(r("sweden_mortar_size"))} soldater, ${fmtNum(r("sweden_mortar_mortars"))} morterer, ${fmtNum(r("sweden_mortar_shells"))} granater`],
+                        ["Haubitsbatterier", `${fmtNum(r("sweden_artillery_groups"))} × ${fmtNum(r("sweden_artillery_size"))} soldater, ${fmtNum(r("sweden_artillery_howitzers"))} haubitser på slæb, ${fmtNum(r("sweden_artillery_shells"))} granater`],
+                        ["Udstyr i alt", `${fmtNum(sum(2))} lastbiler, ${fmtNum(sum(3))} morterer, ${fmtNum(sum(4))} haubitser`]
+                    ])}
+                </div>`;
+}
+
 function codexEnemiesHtml() {
     return `
         <details class="codex-section">
-            <summary><span class="codex-sum-title">☠ Fjender</span><span class="codex-sum-sub">patruljer og andre spillere</span></summary>
+            <summary><span class="codex-sum-title">☠ Fjender</span><span class="codex-sum-sub">patruljer, den svenske hær og andre spillere</span></summary>
             <div class="codex-grid codex-grid-3">
                 <div class="codex-card">
                     <div class="codex-card-head"><h3>Fjendtlig patrulje</h3><span class="badge">computerstyret</span></div>
@@ -5668,6 +5791,7 @@ function codexEnemiesHtml() {
                         ["Forfølger op til", `${formatDistance(codexRule("npc_chase_leash_m", 1500))} fra hjemstedet`]
                     ])}
                 </div>
+                ${codexSwedenCardHtml()}
                 <div class="codex-card">
                     <div class="codex-card-head"><h3>Andre spillere</h3><span class="badge">rød uniform</span></div>
                     <div class="codex-weapon-img"><img src="assets/fjende.png" class="pixel-img" alt="" /></div>
