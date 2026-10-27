@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 89;
+const APP_VERSION = 90;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -1822,6 +1822,7 @@ function npcGear(n) {
 
 function npcAbout(n) {
     if (n.fighting) return "💥 i kamp med dine soldater";
+    if (n.unit_kind === "trucks") return `Den svenske hær: lastbiler, der har sat soldaterne af. ${npcGear(n)}.`;
     if (n.unit_kind) {
         const gear = npcGear(n);
         return `Den svenske hær, angreb over Øresundsbroen.${gear ? ` ${gear}.` : ""}`;
@@ -4810,7 +4811,7 @@ function announceSightings() {
         const k = enemyKey("npc", n);
         now.add(k);
         if (!state.seenBySoldiers.has(k)) fresh.push(n.unit_name
-            ? `👁️ Dine soldater har fået øje på et ${npcLabel(n).toLowerCase()} på ${n.count} soldater${npcGear(n) ? ` (${npcGear(n)})` : ""}.`
+            ? `👁️ Dine soldater har fået øje på fjenden: ${npcLabel(n)} med ${n.count} soldater${npcGear(n) ? ` (${npcGear(n)})` : ""}.`
             : `👁️ Dine soldater har fået øje på en ${n.is_invasion ? "fjendtlig invasionshær" : "fjendtlig patrulje"} på ${n.count} soldater.`);
     }
     state.seenBySoldiers = now;
@@ -4824,7 +4825,7 @@ function announceCombat() {
         if (!state.inCombat.has(id)) {
             const n = state.enemies.npcs.find(x => x.id === id);
             queueToast(n.unit_name
-                ? `💥 Dine soldater er i kamp med et ${npcLabel(n).toLowerCase()} på ${n.count} soldater!`
+                ? `💥 Dine soldater er i kamp med fjenden: ${npcLabel(n)} med ${n.count} soldater!`
                 : `💥 Dine soldater er i kamp med en ${n.is_invasion ? "fjendtlig invasionshær" : "fjendtlig patrulje"} på ${n.count} soldater!`);
         }
     }
@@ -5324,6 +5325,12 @@ const RULE_INFO = {
     sweden_column_gap_s:        ["sweden", "Tid mellem to enheder, der kører ud fra Lernacken", "s"],
     sweden_salvo_per_gun:       ["sweden", "Granater pr. kanon pr. salve", "stk."],
     sweden_fire_pause_s:        ["sweden", "Mindst så lang tid mellem to salver fra samme enhed", "s"],
+    sweden_vision_m:            ["sweden", "Så langt hærens enheder ser (hele hæren deler det)", "m"],
+    sweden_dismount_m:          ["sweden", "Lastbiler stopper og sætter soldaterne af, når fjenden er så tæt på", "m"],
+    sweden_attack_range_m:      ["sweden", "Så langt infanteriet går for at angribe", "m"],
+    sweden_attack_ratio:        ["sweden", "Angriber kun, hvis de selv og naboerne er så mange gange flere (1 = lige mange)", "gange"],
+    sweden_support_m:           ["sweden", "Naboenheder så tæt på tæller med i styrken", "m"],
+    sweden_retreat_share:       ["sweden", "Kompagniet trækker sig tilbage under denne andel af sine soldater (0,3 = 30 %)", "0–1"],
     building_gap_m:             ["build", "Mindste afstand mellem to bygningers kanter", "m"],
     build_bookmark_size_m:      ["build", "Et byggepladsbogmærke er en firkant på", "m"],
     build_chain_m:              ["build", "Ny bygning højst så langt fra en af dine egne", "m"],
@@ -6043,7 +6050,13 @@ function codexSwedenCardHtml() {
                 <div class="codex-card">
                     <div class="codex-card-head"><h3>Den svenske hær</h3><span class="badge">invasion</span></div>
                     <div class="codex-weapon-img"><img src="assets/lastbil_haubits.png" class="pixel-img" alt="" /></div>
-                    <p class="muted-hint">Angriber over Øresundsbroen fra Lernacken på den svenske side med samme våben og køretøjer som dig. Fodfolket går, køretøjerne kører med lastbilens fart. Ved målet patruljerer infanteriet, mens stab, morterer og haubitser går i stilling og skyder på de af dine soldater, som hæren kan se (${formatDistance(codexRule("npc_vision_m", 250))}). De skyder ikke, hvis deres egne står i farezonen, og granaterne slipper op.</p>
+                    <p class="muted-hint">Angriber over Øresundsbroen fra Lernacken på den svenske side med samme våben og køretøjer som dig. Fodfolket går, køretøjerne kører med lastbilens fart. Hele hæren deler, hvad dens enheder ser (${formatDistance(codexRule("sweden_vision_m", 500))}).</p>
+                    <ul class="muted-hint">
+                        <li>Morterer og haubitser går i stilling, så snart de kan nå dine soldater, og skyder. De skyder ikke, hvis deres egne står i farezonen, og granaterne slipper op.</li>
+                        <li>Motoriserede kompagnier sætter soldaterne af ${formatDistance(codexRule("sweden_dismount_m", 800))} fra dine soldater eller når de bliver beskudt. Lastbilerne bliver stående med en chauffør i hver.</li>
+                        <li>Infanteriet angriber dine soldater inden for ${formatDistance(codexRule("sweden_attack_range_m", 1500))}, men kun når de selv og naboerne er mindst lige så mange. Ellers venter de og lader artilleriet skyde.</li>
+                        <li>Et kompagni med under ${fmtPct(codexRule("sweden_retreat_share", 0.3))} af sine soldater trækker sig tilbage til staben eller artilleriet.</li>
+                    </ul>
                     ${codexStats([
                         ["Soldater i alt", `${fmtNum(sum(1))} i ${fmtNum(groups)} enheder`],
                         ["Stab", hq > 0 ? `${fmtNum(hq)} soldater i lastbil` : "ingen"],
