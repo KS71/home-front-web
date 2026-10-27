@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 76;
+const APP_VERSION = 77;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -944,13 +944,14 @@ const npcImgPromise = new Promise((resolve) => {
 
 // style: "own" (dine), "enemy" (andre spillere) eller "npc" (computerstyret patrulje).
 // status for egne: "guard" (grøn), "patrol" (blå), "march" (orange), "combat" (rød hvis i/har været i kamp).
-function troopBadgeId(count, style = "own", pct = 100, status = "guard", truck = false) {
+function troopBadgeId(count, style = "own", pct = 100, status = "guard", truck = false, facingLeft = false) {
     const bucket = pct >= 100 ? "100" : pct < 40 ? `red-${Math.ceil(pct / 10)}` : `orange-${Math.ceil(pct / 10)}`;
-    return `img-${style}-${status}-${count}-${bucket}${truck ? "-truck" : ""}`;
+    const truckSuffix = truck ? (facingLeft ? "-truck-left" : "-truck") : "";
+    return `img-${style}-${status}-${count}-${bucket}${truckSuffix}`;
 }
 
-async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard", truck = false) {
-    const imgId = troopBadgeId(count, style, pct, status, truck);
+async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard", truck = false, facingLeft = false) {
+    const imgId = troopBadgeId(count, style, pct, status, truck, facingLeft);
     if (!mapReady || registeredTroopBadges.has(imgId)) return;
     registeredTroopBadges.add(imgId);
     await soldierImgPromise;
@@ -1016,7 +1017,15 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
     ctx.fillRect(bx + 1, by + 1, Math.max(1, (badgeW - 2) * step), barH - 2);
 
     const sx = (canvas.width - sw) / 2;
-    ctx.drawImage(soldierImg, sx, badgeH + barH + 6, sw, sh);
+    if (truck && facingLeft) {
+        ctx.save();
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(soldierImg, sx, badgeH + barH + 6, sw, sh);
+        ctx.restore();
+    } else {
+        ctx.drawImage(soldierImg, sx, badgeH + barH + 6, sw, sh);
+    }
 
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     if (!map.hasImage(imgId)) {
@@ -1533,6 +1542,31 @@ function marchRemainingPath(m, now = serverNow()) {
     return out;
 }
 
+// Retning for en march: vender mod venstre hvis delingen bevæger sig mod vest (lavere længdegrad)
+function marchFacingLeft(m, now = serverNow()) {
+    const rem = marchRemainingPath(m, now);
+    if (rem && rem.length >= 2) {
+        // 1. Se på det umiddelbare næste stykke vej
+        const dLon = Number(rem[1][1]) - Number(rem[0][1]);
+        if (Math.abs(dLon) > 0.000001) return dLon < 0;
+
+        // 2. Hvis vejen lige nu går stik nord/syd, se fremad på resten af ruten
+        for (let i = 2; i < rem.length; i++) {
+            const d = Number(rem[i][1]) - Number(rem[i - 1][1]);
+            if (Math.abs(d) > 0.000001) return d < 0;
+        }
+    }
+    // 3. Hvis intet fremad, se på start -> mål
+    const pts = m.path && m.path.length >= 2 ? m.path : [[m.startLat, m.startLon], [m.toLat, m.toLon]];
+    if (pts && pts.length >= 2) {
+        for (let i = pts.length - 1; i >= 1; i--) {
+            const d = Number(pts[i][1]) - Number(pts[i - 1][1]);
+            if (Math.abs(d) > 0.000001) return d < 0;
+        }
+    }
+    return false;
+}
+
 async function renderTroopsOnMap() {
     if (!mapReady) return;
     const now = serverNow();
@@ -1548,13 +1582,13 @@ async function renderTroopsOnMap() {
         return false;
     };
 
-    const addTroop = async (group, lat, lon, style, status = "guard") => {
+    const addTroop = async (group, lat, lon, style, status = "guard", facingLeft = false) => {
         const pct = energyPct(group);
         const truck = truckCount(group) > 0;
-        await ensureTroopBadge(group.count, style, pct, status, truck);
+        await ensureTroopBadge(group.count, style, pct, status, truck, facingLeft);
         troopFeatures.push({
             type: "Feature",
-            properties: { img: troopBadgeId(group.count, style, pct, status, truck) },
+            properties: { img: troopBadgeId(group.count, style, pct, status, truck, facingLeft) },
             geometry: { type: "Point", coordinates: [lon, lat] }
         });
     };
@@ -1564,7 +1598,8 @@ async function renderTroopsOnMap() {
         await addTroop(g, g.lat, g.lon, "enemy", "enemy");
     }
     for (const m of state.enemies.marches) {
-        await addTroop(m, m.lat, m.lon, "enemy", "enemy");
+        const facingLeft = truckCount(m) > 0 && m.to_lon != null && m.lon != null && m.to_lon < m.lon;
+        await addTroop(m, m.lat, m.lon, "enemy", "enemy", facingLeft);
     }
     for (const { n, pos } of npcs) {
         const status = n.fighting ? "combat" : "npc";
@@ -1587,7 +1622,8 @@ async function renderTroopsOnMap() {
         const inCombat = (m.wounded && m.wounded.length > 0) || energyPct(m) < 100 || isFightingNear(lat, lon);
         const isPatrol = !!m.patrolPath;
         const status = inCombat ? "combat" : (isPatrol ? "patrol" : "march");
-        await addTroop(m, lat, lon, "own", status);
+        const facingLeft = truckCount(m) > 0 && marchFacingLeft(m, now);
+        await addTroop(m, lat, lon, "own", status, facingLeft);
 
         const rem = marchRemainingPath(m, now);
         const isSelected = state.highlight?.marches?.has(String(m.id))
