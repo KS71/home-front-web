@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 63;
+const APP_VERSION = 66;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -4958,7 +4958,7 @@ function codexSoldierHtml() {
                         <span class="badge badge-pending">Kommer senere</span>
                     </div>
                     <div class="codex-soldier-img"><img src="assets/snigskytte.png" class="pixel-img" alt="Snigskytte" /></div>
-                    <p class="muted-hint">Holder en langtrækkende præcisionsriffel i hænderne med et stort optisk kikkertsigte og lyddæmper. Rækker dobbelt så langt som almindeligt infanteri og ses først på klos hold. Ideel til at udtynde fjendtlige patruljer fra skjul.</p>
+                    <p class="muted-hint">Holder en lang præcisionsriffel i hænderne med et stort optisk kikkertsigte og tofod. Rækker dobbelt så langt som almindeligt infanteri og ses først på klos hold. Ideel til at udtynde fjendtlige patruljer fra skjul.</p>
                     ${codexStats([
                         ["Rolle", "Langtrækkende snigmorder"],
                         ["Energi", "80"],
