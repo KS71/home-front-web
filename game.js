@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 77;
+const APP_VERSION = 78;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -933,6 +933,15 @@ const truckImgPromise = new Promise((resolve) => {
     img.src = "assets/lastbil.png";
 });
 
+// Lastbiler, der bugserer en haubits.
+let truckHowitzerImg = null;
+const truckHowitzerImgPromise = new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => { truckHowitzerImg = img; resolve(img); };
+    img.onerror = () => resolve(null);
+    img.src = "assets/lastbil_haubits.png";
+});
+
 // Fjender (patruljer og andre spilleres soldater) tegnes i rød uniform.
 let npcSoldierImg = null;
 const npcImgPromise = new Promise((resolve) => {
@@ -944,25 +953,26 @@ const npcImgPromise = new Promise((resolve) => {
 
 // style: "own" (dine), "enemy" (andre spillere) eller "npc" (computerstyret patrulje).
 // status for egne: "guard" (grøn), "patrol" (blå), "march" (orange), "combat" (rød hvis i/har været i kamp).
-function troopBadgeId(count, style = "own", pct = 100, status = "guard", truck = false, facingLeft = false) {
+function troopBadgeId(count, style = "own", pct = 100, status = "guard", truck = false, facingLeft = false, hasHowitzer = false) {
     const bucket = pct >= 100 ? "100" : pct < 40 ? `red-${Math.ceil(pct / 10)}` : `orange-${Math.ceil(pct / 10)}`;
-    const truckSuffix = truck ? (facingLeft ? "-truck-left" : "-truck") : "";
+    const truckSuffix = truck ? (hasHowitzer ? (facingLeft ? "-truck-h-left" : "-truck-h") : (facingLeft ? "-truck-left" : "-truck")) : "";
     return `img-${style}-${status}-${count}-${bucket}${truckSuffix}`;
 }
 
-async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard", truck = false, facingLeft = false) {
-    const imgId = troopBadgeId(count, style, pct, status, truck, facingLeft);
+async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard", truck = false, facingLeft = false, hasHowitzer = false) {
+    const imgId = troopBadgeId(count, style, pct, status, truck, facingLeft, hasHowitzer);
     if (!mapReady || registeredTroopBadges.has(imgId)) return;
     registeredTroopBadges.add(imgId);
     await soldierImgPromise;
     // Fjender (andre spillere og patruljer) har rød uniform; kun dine egne er grønne.
     const redUniform = style === "npc" || style === "enemy";
     if (redUniform) await npcImgPromise;
+    if (truck && hasHowitzer) await truckHowitzerImgPromise;
     if (truck) await truckImgPromise;
-    const soldierImg = truck && truckImg ? truckImg : redUniform && npcSoldierImg ? npcSoldierImg : baseSoldierImg;
+    const soldierImg = truck && hasHowitzer && truckHowitzerImg ? truckHowitzerImg : (truck && truckImg ? truckImg : (redUniform && npcSoldierImg ? npcSoldierImg : baseSoldierImg));
     if (!soldierImg) return;
 
-    const scale = truck && truckImg ? 2 : 3;
+    const scale = truck ? 2 : 3;
     const sw = soldierImg.width * scale;
     const sh = soldierImg.height * scale;
     const text = String(count);
@@ -1585,10 +1595,11 @@ async function renderTroopsOnMap() {
     const addTroop = async (group, lat, lon, style, status = "guard", facingLeft = false) => {
         const pct = energyPct(group);
         const truck = truckCount(group) > 0;
-        await ensureTroopBadge(group.count, style, pct, status, truck, facingLeft);
+        const hasHowitzer = (group.howitzers || 0) > 0;
+        await ensureTroopBadge(group.count, style, pct, status, truck, facingLeft, hasHowitzer);
         troopFeatures.push({
             type: "Feature",
-            properties: { img: troopBadgeId(group.count, style, pct, status, truck, facingLeft) },
+            properties: { img: troopBadgeId(group.count, style, pct, status, truck, facingLeft, hasHowitzer) },
             geometry: { type: "Point", coordinates: [lon, lat] }
         });
     };
