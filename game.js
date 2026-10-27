@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 68;
+const APP_VERSION = 69;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -4977,7 +4977,7 @@ function codexSoldierHtml() {
                         <span class="badge badge-pending">Kommer senere</span>
                     </div>
                     <div class="codex-soldier-img"><img src="assets/panservaern.png" class="pixel-img" alt="Panserværnssoldat" /></div>
-                    <p class="muted-hint">Sidder på knæ med en stor bazooka på skulderen klar til skud, iført beskyttelsesbriller og pansret udrustning. Knuser lastbiler, pansrede mål og bygninger, men taber i nærkamp mod hurtigt infanteri.</p>
+                    <p class="muted-hint">Står med en stor bazooka på skulderen klar til skud, iført beskyttelsesbriller og pansret udrustning. Knuser lastbiler, pansrede mål og bygninger, men taber i nærkamp mod hurtigt infanteri.</p>
                     ${codexStats([
                         ["Rolle", "Køretøjs- & bygningsknuser"],
                         ["Energi", "110 (pansret vest & hjelm)"],
