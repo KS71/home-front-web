@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 69;
+const APP_VERSION = 70;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -46,6 +46,19 @@ const GAME_CONFIG = {
         hp: 300,                               // energi pr. lastbil
         hitShare: 0.4,                         // andel af træfferne, der rammer en lastbil
         wreckHours: 24                         // så længe et udbrændt vrag kan ses
+    },
+    // Haubits (0032), står ved barrakken og skyder derfra. Overskrives af config.rules (howitzer_*).
+    HOWITZER: {
+        priceSteps: 1500, priceSteel: 400,     // én haubits
+        shellSteps: 30, shellSteel: 15,        // én haubitsgranat
+        rangeM: 15000, minRangeM: 500,
+        spreadBaseM: 30, spreadPct: 0.01,      // spredningscirklens radius = base + procent af afstanden
+        blastM: 100,                           // soldater inden for denne afstand af nedslaget rammes af splinter
+        hits: 8,                               // træffere midt i nedslaget
+        crew: 4,                               // ledige soldater i barrakken pr. haubits
+        reloadS: 10, salvoMax: 10,
+        flightBaseS: 10, flightMps: 300,       // flyvetid = base + afstand / fart
+        enabled: false                         // sand, når 0032 er kørt (reglerne kender haubitsen)
     },
     // Kortets bygninger brænder, når en mortergranat lander i dem (0030). Overskrives af config.rules (map_*).
     MAP_FIRE: {
@@ -195,8 +208,11 @@ const state = {
     mortarsHome: 0,        // morterer på lager i barrakken
     shells: 0,             // mortergranater på lager
     trucksHome: 0,         // lastbiler på lager i barrakken
+    howitzersHome: 0,      // haubitser, der står ved barrakken
+    howitzerShells: 0,     // haubitsgranater på lager
+    howitzerReadyAt: null, // haubitserne er ladt igen herfra (ISO-tid fra serveren)
     wrecks: [],            // udbrændte køretøjer fra mortar_craters(): { id, kind, lat, lon, burned_at, mine }
-    mortarAim: null,       // { garrisonId, lat, lon } mens man sigter med en morter
+    mortarAim: null,       // { weapon: "mortar", garrisonId } eller { weapon: "howitzer", buildingId } mens man sigter
     craters: [],           // nedslag fra mortar_craters(): { id, lat, lon, lands_at, fire_checked, mine, from_lat, from_lon, fired_at }
     fires: [],             // kortets brændende/udbrændte bygninger fra mortar_craters(): { id, osm_id, geom, started_at }
     myBuildings: [],       // Alle spillerens egne bygninger { id, owner_id, kind, level, lat, lon, emptied_at }
@@ -594,7 +610,8 @@ function installGameLayers() {
         source: "src-craters",
         layout: {
             "icon-image": "img-crater",
-            "icon-size": ["interpolate", ["exponential", 2], ["zoom"], 12, 0.15, 16, 0.6, 19, 2.4],
+            "icon-size": ["interpolate", ["exponential", 2], ["zoom"],
+                12, ["*", ["get", "sz"], 0.15], 16, ["*", ["get", "sz"], 0.6], 19, ["*", ["get", "sz"], 2.4]],
             "icon-rotate": ["get", "rot"],
             "icon-rotation-alignment": "map",
             "icon-allow-overlap": true,
@@ -1713,6 +1730,20 @@ async function syncAllFromSupabase() {
                 for (const [k, key] of Object.entries(truckRules)) {
                     if (r[key] != null) GAME_CONFIG.TRUCK[k] = Number(r[key]);
                 }
+                const howitzerRules = {
+                    priceSteps: "howitzer_price_steps", priceSteel: "howitzer_price_steel",
+                    shellSteps: "howitzer_shell_price_steps", shellSteel: "howitzer_shell_price_steel",
+                    rangeM: "howitzer_range_m", minRangeM: "howitzer_min_range_m",
+                    spreadBaseM: "howitzer_spread_base_m", spreadPct: "howitzer_spread_pct",
+                    blastM: "howitzer_blast_m", hits: "howitzer_hits", crew: "howitzer_crew",
+                    reloadS: "howitzer_reload_s", salvoMax: "howitzer_salvo_max",
+                    flightBaseS: "howitzer_flight_base_s", flightMps: "howitzer_flight_mps"
+                };
+                for (const [k, key] of Object.entries(howitzerRules)) {
+                    if (r[key] != null) GAME_CONFIG.HOWITZER[k] = Number(r[key]);
+                }
+                // Knapperne vises først, når 0032 er kørt i databasen.
+                GAME_CONFIG.HOWITZER.enabled = r.howitzer_price_steps != null;
                 const fireRules = { chance: "map_fire_chance", fireHours: "map_fire_hours", ruinHours: "map_ruin_hours" };
                 for (const [k, key] of Object.entries(fireRules)) {
                     if (r[key] != null) GAME_CONFIG.MAP_FIRE[k] = Number(r[key]);
@@ -1734,6 +1765,8 @@ async function syncAllFromSupabase() {
         state.mortarsHome = mapMat.mortars || 0;
         state.shells = mapMat.mortar_shells || 0;
         state.trucksHome = mapMat.trucks || 0;
+        state.howitzersHome = mapMat.howitzers || 0;
+        state.howitzerShells = mapMat.howitzer_shells || 0;
     }
     if (myBldRes.data) {
         state.myBuildings = myBldRes.data;
@@ -1971,7 +2004,8 @@ function renderBuildingBox(bld, box, badge) {
                         <div class="item-sub">${cfg ? cfg.desc : ""}</div>
                         <div class="item-sub">${size}×${size} m · ${formatPos(bld.lat, bld.lon)}</div>
                         ${housing ? `<div class="item-sub" style="color:#76FF03">Plads her: ${housing} · Ledige i barrak: ${avail}</div>` : ""}
-                        ${bld.kind === "barracks" ? `<div class="item-sub" style="color:#FFB74D">🧨 Morterer på lager: ${state.mortarsHome} · 💣 Granater: ${state.shells} · 🚚 Lastbiler: ${state.trucksHome}</div>` : ""}
+                        ${bld.kind === "barracks" ? `<div class="item-sub" style="color:#FFB74D">🧨 Morterer på lager: ${state.mortarsHome} · 💣 Granater: ${state.shells} · 🚚 Lastbiler: ${state.trucksHome}</div>
+                        ${GAME_CONFIG.HOWITZER.enabled ? `<div class="item-sub" style="color:#FFB74D">💥 Haubitser: ${state.howitzersHome} · 🎯 Haubitsgranater: ${state.howitzerShells}</div>` : ""}` : ""}
                         ${prod ? `<div class="item-sub" style="color:#FFD54F">${prod.material === "steel" ? "Klar til afhentning" : "Klar til indkaldelse"}: ${prod.amount} / ${prod.capacity} ${prod.unit} (${prod.perHour}/t)</div>` : ""}
                         ${hospitalLineHtml(bld)}
                     </div>
@@ -1981,7 +2015,10 @@ function renderBuildingBox(bld, box, badge) {
                     ${bld.kind === "barracks" ? `<button class="btn btn-small btn-primary" ${avail <= 0 ? "disabled" : ""} onclick="sendFromBuilding(${bld.id})">🪖 Send soldater (${avail} klar)</button>` : ""}
                     ${bld.kind === "barracks" ? `<button class="btn btn-small btn-gold" onclick="openBuyEquipmentModal('mortars')">🧨 Køb morter</button>
                     <button class="btn btn-small btn-gold" onclick="openBuyEquipmentModal('mortar_shells')">💣 Køb granater</button>
-                    <button class="btn btn-small btn-gold" onclick="openBuyEquipmentModal('trucks')">🚚 Køb lastbil</button>` : ""}
+                    <button class="btn btn-small btn-gold" onclick="openBuyEquipmentModal('trucks')">🚚 Køb lastbil</button>
+                    ${GAME_CONFIG.HOWITZER.enabled ? `<button class="btn btn-small btn-gold" onclick="openBuyEquipmentModal('howitzers')">💥 Køb haubits</button>
+                    <button class="btn btn-small btn-gold" onclick="openBuyEquipmentModal('howitzer_shells')">🎯 Køb haubitsgranater</button>` : ""}
+                    ${state.howitzersHome > 0 ? `<button class="btn btn-small btn-danger" onclick="startHowitzerAim(${bld.id})">💥 Skyd med haubits</button>` : ""}` : ""}
                     ${prod && prod.amount > 0 ? `<button class="btn btn-small btn-primary" onclick="collectFromBuilding(${bld.id})">📥 ${prod.material === "steel" ? "Hent" : "Indkald"} ${prod.amount} ${prod.unit}</button>` : ""}
                     ${bld.kind === "academy" ? `<button class="btn btn-small btn-gold" onclick="recruitSoldierInstant()">⚡ Uddan 1 straks (${GAME_CONFIG.INSTANT_SOLDIER_STEPS} skridt)</button>` : ""}
                     ${nextPrice ? `<button class="btn btn-small" onclick="upgradeBuilding(${bld.id})">⬆️ Opgradér til trin ${bld.level + 1} (${nextPrice} skridt${nextSteel ? ` + ${nextSteel} stål` : ""})</button>` : `<span class="badge">Fuldt udbygget</span>`}
@@ -3231,14 +3268,46 @@ function mortarTag(g) {
     return g.mortars > 0 ? ` · 🧨 ${g.mortars} · 💣 ${g.shells || 0}` : "";
 }
 
-function mortarSpreadM(dist) {
-    const M = GAME_CONFIG.MORTAR;
+// Morteren og haubitsen skyder på samme måde, men med hver sine tal.
+function weaponCfg(weapon) {
+    return weapon === "howitzer" ? GAME_CONFIG.HOWITZER : GAME_CONFIG.MORTAR;
+}
+
+function mortarSpreadM(dist, weapon) {
+    const M = weaponCfg(weapon);
     return M.spreadBaseM + M.spreadPct * dist;
 }
 
-function mortarFlightS(dist) {
-    const M = GAME_CONFIG.MORTAR;
+function mortarFlightS(dist, weapon) {
+    const M = weaponCfg(weapon);
     return M.flightBaseS + dist / Math.max(M.flightMps, 1);
+}
+
+// Haubitser, der kan betjenes lige nu (HOWITZER.crew ledige soldater i barrakken pr. haubits).
+function usableHowitzers() {
+    return Math.min(state.howitzersHome, Math.floor(availableInBarracks() / GAME_CONFIG.HOWITZER.crew));
+}
+
+function howitzerReadyInS() {
+    if (!state.howitzerReadyAt) return 0;
+    return Math.max(0, Math.ceil((Date.parse(state.howitzerReadyAt) - serverNow()) / 1000));
+}
+
+// Hvorfra der sigtes: vagtstyrken med morteren eller barrakken med haubitserne.
+function aimSource(aim) {
+    if (!aim) return null;
+    if (aim.weapon === "howitzer") {
+        const b = state.myBuildings.find(x => String(x.id) === String(aim.buildingId));
+        if (!b) return null;
+        return { weapon: "howitzer", id: b.id, lat: b.lat, lon: b.lon, shells: state.howitzerShells,
+                 usable: usableHowitzers(), wait: howitzerReadyInS(),
+                 one: "haubits", many: "haubitser", where: "Du har" };
+    }
+    const g = state.garrisons.find(x => String(x.id) === String(aim.garrisonId));
+    if (!g) return null;
+    return { weapon: "mortar", id: g.id, lat: g.lat, lon: g.lon, shells: g.shells || 0,
+             usable: usableMortars(g), wait: mortarReadyInS(g),
+             one: "morter", many: "morterer", where: "Vagten har" };
 }
 
 // Morterer, vagten kan betjene lige nu (MORTAR.crew soldater pr. morter).
@@ -3306,6 +3375,17 @@ function equipmentInfo(item) {
         title: "🧨 Køb let morter", img: "morter", steps: M.priceSteps, steel: M.priceSteel, max: 10,
         one: "morter", many: "morterer", done: n => `🧨 ${n} ${n === 1 ? "morter" : "morterer"} står nu i barrakken.`,
         desc: `En let morter, som soldaterne bærer med. Den kan skyde op til <strong>${formatDistance(M.rangeM)}</strong>, når soldaterne står vagt, og kræver ${M.crew} soldater. Den står på lager i barrakken, til du sender den ud med soldater.`
+    };
+    const H = GAME_CONFIG.HOWITZER;
+    if (item === "howitzers") return {
+        title: "💥 Køb haubits", img: "haubits", steps: H.priceSteps, steel: H.priceSteel, max: 10,
+        one: "haubits", many: "haubitser", done: n => `💥 ${n} ${n === 1 ? "haubits står" : "haubitser står"} nu ved barrakken.`,
+        desc: `Et tungt feltartilleri, der står ved barrakken og skyder derfra op til <strong>${formatDistance(H.rangeM)}</strong>. Hver haubits kræver ${H.crew} ledige soldater i barrakken. Splinterne rækker ${formatDistance(H.blastM)} fra nedslaget.`
+    };
+    if (item === "howitzer_shells") return {
+        title: "🎯 Køb haubitsgranater", img: "haubitsgranat", steps: H.shellSteps, steel: H.shellSteel, max: 100,
+        one: "haubitsgranat", many: "haubitsgranater", done: n => `🎯 +${n} haubitsgranater på lager.`,
+        desc: "Granater til dine haubitser. De ligger på lager ved barrakken, hvor haubitserne står."
     };
     if (item === "trucks") return {
         title: "🚚 Køb lastbil", img: "lastbil", steps: T.priceSteps, steel: T.priceSteel, max: 20,
@@ -3375,12 +3455,41 @@ window.startMortarAim = function(garrisonId) {
         return;
     }
     if (state.pendingMarchOrder) exitMarchTargetMode();
-    state.mortarAim = { garrisonId: g.id };
+    state.mortarAim = { weapon: "mortar", garrisonId: g.id };
+    document.getElementById("mortar-banner-title").textContent = "VÆLG MÅL FOR MORTEREN:";
     document.getElementById("mortar-banner").classList.remove("hidden");
     map.getCanvas().style.cursor = "crosshair";
     renderMortarAim(null, null);
     // Vis hele rækkevidden, hvis man er zoomet tættere ind.
     const ring = circleRing(g.lat, g.lon, GAME_CONFIG.MORTAR.rangeM, 8);
+    const lons = ring.map(p => p[0]), lats = ring.map(p => p[1]);
+    if (!map.getBounds().contains([Math.min(...lons), Math.min(...lats)])) {
+        map.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]], { padding: 60, duration: 700 });
+    }
+};
+
+window.startHowitzerAim = async function(buildingId) {
+    const b = state.myBuildings.find(x => String(x.id) === String(buildingId));
+    if (!b || !(state.howitzersHome > 0)) return;
+    const H = GAME_CONFIG.HOWITZER;
+    if (usableHowitzers() < 1) {
+        showToast(`Der skal være mindst ${H.crew} ledige soldater i barrakken til at betjene haubitsen.`);
+        return;
+    }
+    if (!(state.howitzerShells > 0)) {
+        showToast("Du har ingen haubitsgranater. Køb dem i barrakken.");
+        return;
+    }
+    closeModal();
+    if (state.pendingMarchOrder) exitMarchTargetMode();
+    state.mortarAim = { weapon: "howitzer", buildingId: b.id };
+    const { data } = await sb.rpc("howitzer_ready_at");
+    if (data !== undefined) state.howitzerReadyAt = data;
+    document.getElementById("mortar-banner-title").textContent = "VÆLG MÅL FOR HAUBITSEN:";
+    document.getElementById("mortar-banner").classList.remove("hidden");
+    map.getCanvas().style.cursor = "crosshair";
+    renderMortarAim(null, null);
+    const ring = circleRing(b.lat, b.lon, H.rangeM, 8);
     const lons = ring.map(p => p[0]), lats = ring.map(p => p[1]);
     if (!map.getBounds().contains([Math.min(...lons), Math.min(...lats)])) {
         map.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]], { padding: 60, duration: 700 });
@@ -3399,12 +3508,12 @@ function exitMortarAim() {
 function renderMortarAim(lat, lon) {
     const aim = state.mortarAim;
     if (!aim || !mapReady) return;
-    const g = state.garrisons.find(x => String(x.id) === String(aim.garrisonId));
+    const g = aimSource(aim);
     if (!g) {
         exitMortarAim();
         return;
     }
-    const M = GAME_CONFIG.MORTAR;
+    const M = weaponCfg(g.weapon);
     const line = (coords, props) => ({ type: "Feature", properties: props, geometry: { type: "LineString", coordinates: coords } });
     const features = [
         line(circleRing(g.lat, g.lon, M.rangeM, 180), { kind: "range" }),
@@ -3414,16 +3523,16 @@ function renderMortarAim(lat, lon) {
     if (lat != null) {
         const d = Geo.distanceM(g.lat, g.lon, lat, lon);
         const ok = d <= M.rangeM && d >= M.minRangeM;
-        const r = mortarSpreadM(d);
+        const r = mortarSpreadM(d, g.weapon);
         features.push({ type: "Feature", properties: { kind: "spread", ok },
             geometry: { type: "Polygon", coordinates: [circleRing(lat, lon, r)] } });
         if (info) {
             info.textContent = d > M.rangeM ? `${formatDistance(d)} — for langt væk (højst ${formatDistance(M.rangeM)}).`
                 : d < M.minRangeM ? `${formatDistance(d)} — for tæt på (mindst ${M.minRangeM} m).`
-                : `${formatDistance(d)} væk · granaterne lander inden for ${Math.round(r)} m af målet · flyvetid ca. ${Math.round(mortarFlightS(d))} s`;
+                : `${formatDistance(d)} væk · granaterne lander inden for ${Math.round(r)} m af målet · flyvetid ca. ${Math.round(mortarFlightS(d, g.weapon))} s`;
         }
     } else if (info) {
-        info.textContent = `Den gule ring viser rækkevidden (${formatDistance(M.rangeM)}). Vagten har ${g.shells || 0} granater med.`;
+        info.textContent = `Den gule ring viser rækkevidden (${formatDistance(M.rangeM)}). ${g.where} ${g.shells} granater.`;
     }
     map.getSource("src-mortar-aim")?.setData({ type: "FeatureCollection", features });
 }
@@ -3439,38 +3548,37 @@ function ownSoldiersNear(lat, lon, r) {
 }
 
 function openFireMortarModal(lat, lon) {
-    const aim = state.mortarAim;
-    const g = aim && state.garrisons.find(x => String(x.id) === String(aim.garrisonId));
+    const g = aimSource(state.mortarAim);
     if (!g) {
         exitMortarAim();
         return;
     }
-    const M = GAME_CONFIG.MORTAR;
+    const M = weaponCfg(g.weapon);
     const d = Geo.distanceM(g.lat, g.lon, lat, lon);
     if (d > M.rangeM) {
-        showToast(`Målet er ${formatDistance(d)} væk — morteren skyder højst ${formatDistance(M.rangeM)}.`);
+        showToast(`Målet er ${formatDistance(d)} væk — ${g.one}en skyder højst ${formatDistance(M.rangeM)}.`);
         return;
     }
     if (d < M.minRangeM) {
-        showToast(`Målet er for tæt på (${Math.round(d)} m) — morteren skal skyde mindst ${M.minRangeM} m.`);
+        showToast(`Målet er for tæt på (${Math.round(d)} m) — ${g.one}en skal skyde mindst ${M.minRangeM} m.`);
         return;
     }
     renderMortarAim(lat, lon);
-    const r = mortarSpreadM(d);
-    const usable = usableMortars(g);
-    const maxShells = Math.max(1, Math.min(M.salvoMax, g.shells || 0));
+    const r = mortarSpreadM(d, g.weapon);
+    const usable = Math.max(1, g.usable);
+    const maxShells = Math.max(1, Math.min(M.salvoMax, g.shells));
     const danger = r + M.blastM;
     const ownNear = ownSoldiersNear(lat, lon, danger);
-    const wait = mortarReadyInS(g);
+    const wait = g.wait;
 
     state.groupModal = null;
-    document.getElementById("modal-title").textContent = "💣 Affyr morteren?";
+    document.getElementById("modal-title").textContent = g.weapon === "howitzer" ? "💥 Affyr haubitsen?" : "💣 Affyr morteren?";
     document.getElementById("modal-body").innerHTML = `
         <p><strong>Mål:</strong> ${formatPos(lat, lon)} · ${formatDistance(d)} væk</p>
         <p><strong>Usikkerhed:</strong> hver granat lander et tilfældigt sted inden for <strong>${Math.round(r)} m</strong> af målet (den orange cirkel). Granatsplinter inden for ${M.blastM} m af et nedslag kan ramme soldater.</p>
-        <p><strong>Flyvetid:</strong> ca. ${Math.round(mortarFlightS(d))} s · ${usable} ${usable === 1 ? "morter" : "morterer"} skyder</p>
+        <p><strong>Flyvetid:</strong> ca. ${Math.round(mortarFlightS(d, g.weapon))} s · ${usable} ${usable === 1 ? g.one : g.many} skyder</p>
         ${ownNear > 0 ? `<p style="color:#FF8A80"><strong>⚠️ ${ownNear} af dine egne soldater</strong> står inden for ${Math.round(danger)} m af målet og kan blive ramt!</p>` : ""}
-        ${wait ? `<p style="color:#FFB74D">Morteren lades stadig — klar om ${wait} s.</p>` : ""}
+        ${wait ? `<p style="color:#FFB74D">${g.weapon === "howitzer" ? "Haubitsen" : "Morteren"} lades stadig — klar om ${wait} s.</p>` : ""}
         <div style="text-align:center;font-size:20px;font-weight:800;color:#FFD54F;" id="shell-val-label"></div>
         <input type="range" min="1" max="${maxShells}" value="${Math.min(3, maxShells)}" class="range-slider" id="shell-range-input" />
         <p class="muted-hint">Du ser kun virkningen, hvis dine soldater eller din telefon kan se nedslaget. Krateret kan alle se.</p>
@@ -3480,7 +3588,7 @@ function openFireMortarModal(lat, lon) {
     const update = () => {
         const n = parseInt(slider.value, 10) || 1;
         const secs = Math.ceil(n / usable) * M.reloadS;
-        label.textContent = `${n} ${n === 1 ? "granat" : "granater"} af ${g.shells || 0} · ${secs} s at skyde`;
+        label.textContent = `${n} ${n === 1 ? "granat" : "granater"} af ${g.shells} · ${secs} s at skyde`;
     };
     slider.oninput = update;
     update();
@@ -3491,7 +3599,8 @@ function openFireMortarModal(lat, lon) {
     document.getElementById("btn-fire-mortar").onclick = () => {
         const n = parseInt(slider.value, 10) || 1;
         closeModal();
-        fireMortar(g.id, lat, lon, n);
+        if (g.weapon === "howitzer") fireHowitzer(g.id, lat, lon, n);
+        else fireMortar(g.id, lat, lon, n);
     };
     document.getElementById("modal-overlay").classList.remove("hidden");
 }
@@ -3521,6 +3630,32 @@ async function fireMortar(garrisonId, lat, lon, n) {
         await pollWorld();
         await loadArmy();
         await loadReports();
+    }, Math.max(0, last - serverNow()) + 1500);
+}
+
+async function fireHowitzer(buildingId, lat, lon, n) {
+    const { data, error } = await sb.rpc("fire_howitzer", { p_building: buildingId, p_lat: lat, p_lon: lon, p_shells: n });
+    if (error) {
+        showToast("Haubitsen kunne ikke skyde: " + error.message);
+        return;
+    }
+    exitMortarAim();
+    const b = state.myBuildings.find(x => String(x.id) === String(buildingId));
+    state.howitzerReadyAt = data.ready_at;
+    state.howitzerShells = data.left;
+    data.impacts.forEach((imp, i) => state.craters.push({
+        id: `ny-${Date.now()}-${i}`, lat: imp.lat, lon: imp.lon, lands_at: imp.lands_at, weapon: "howitzer",
+        mine: true, from_lat: b?.lat, from_lon: b?.lon, fired_at: data.fired_at
+    }));
+    startShellAnimation();
+    showToast(`💥 ${n} ${n === 1 ? "haubitsgranat er" : "haubitsgranater er"} affyret! ${n === 1 ? "Den lander" : "De lander"} om ca. ${data.flight_s} s inden for ${data.spread_m} m af målet.`);
+
+    const last = Math.max(...data.impacts.map(x => Date.parse(x.lands_at)));
+    setTimeout(async () => {
+        await pollWorld();
+        await loadArmy();
+        await loadReports();
+        await syncAllFromSupabase();
     }, Math.max(0, last - serverNow()) + 1500);
 }
 
@@ -3743,12 +3878,13 @@ function renderCratersAndShells() {
         const land = Date.parse(c.lands_at);
         if (now >= land) {
             const ageH = (now - land) / 3600000;
-            craters.push(point(c.lat, c.lon, { op: Math.max(0.3, 1 - ageH / M.craterHours * 0.7), rot: craterRotation(c.id) }));
+            const big = c.weapon === "howitzer" ? 2 : 1;
+            craters.push(point(c.lat, c.lon, { op: Math.max(0.3, 1 - ageH / M.craterHours * 0.7), rot: craterRotation(c.id), sz: big }));
             const age = now - land;
             if (age < BLAST_MS) {
                 busy = true;
                 const k = age / BLAST_MS;
-                shells.push(point(c.lat, c.lon, { kind: "blast", size: 0.6 + 0.9 * Math.sin(Math.PI * Math.min(1, k * 1.6)), rot: 0, op: 1 - k * k }));
+                shells.push(point(c.lat, c.lon, { kind: "blast", size: big * (0.6 + 0.9 * Math.sin(Math.PI * Math.min(1, k * 1.6))), rot: 0, op: 1 - k * k }));
             }
             continue;
         }
@@ -3757,7 +3893,7 @@ function renderCratersAndShells() {
 
         // Granaten flyver i en bue: positionen langs jorden + en højde, der løfter den op på skærmen.
         const dist = Geo.distanceM(c.from_lat, c.from_lon, c.lat, c.lon);
-        const flightMs = mortarFlightS(dist) * 1000;
+        const flightMs = mortarFlightS(dist, c.weapon) * 1000;
         const launch = land - flightMs;
         const t = (now - launch) / flightMs;
         if (t < 0) continue; // salve: venter på sin tur
@@ -3824,8 +3960,8 @@ const REPORT_TEXT = {
     patrol_defeated: r => `🏅 Dine soldater nedkæmpede en fjendtlig patrulje på ${r.enemy_losses} soldater.`,
     patrol_won: r => `💀 En fjendtlig patrulje nedkæmpede ${r.count} af dine soldater.`,
     shelled: r => r.survivors <= 0
-        ? `💥 En mortergranat ramte dine ${r.count} soldater — ingen overlevede.`
-        : `💥 En mortergranat ramte dine soldater: ${r.enemy_losses} træffere${r.losses ? `, ${r.losses} faldt` : ""}.`,
+        ? `💥 En granat ramte dine ${r.count} soldater — ingen overlevede.`
+        : `💥 En granat ramte dine soldater: ${r.enemy_losses} træffere${r.losses ? `, ${r.losses} faldt` : ""}.`,
     mortar_hit: r => `💣 Din granat ramte fjenden: ${r.count} træffere${r.enemy_losses ? `, ${r.enemy_losses} faldt` : ""}.`,
     truck_burned: r => `🔥 ${r.count === 1 ? "En af dine lastbiler er" : `${r.count} af dine lastbiler er`} skudt i brand og kan ikke køre mere${r.survivors > 0 ? "" : " — ingen af soldaterne overlevede"}.`,
     truck_stopped: r => `🚚 Delingen kan ikke køre videre: ${r.survivors} soldater er steget af og står nu vagt.`
@@ -3911,7 +4047,8 @@ function renderBattlesSidebar() {
         for (const b of battles) {
             const o = battleOutcome(b);
             const enemy = b.enemy === "player" ? "mod en anden spiller"
-                : b.enemy === "mortar" ? "mortergranater" : "mod en fjendtlig patrulje";
+                : b.enemy === "mortar" ? "mortergranater"
+                : b.enemy === "howitzer" ? "haubitsgranater" : "mod en fjendtlig patrulje";
             const sel = String(b.id) === String(selectedBattleId);
             html += `
                 <div class="item-row ${sel ? "item-row-selected" : ""}" style="cursor:pointer;" onclick="showBattle(${b.id})">
@@ -4415,6 +4552,7 @@ const RULE_GROUPS = [
     ["vision", "Udsyn og bevægelse"],
     ["fire", "Kamp: geværild og energi"],
     ["mortar", "Let morter"],
+    ["howitzer", "Haubits"],
     ["truck", "Lastbil"],
     ["mapfire", "Brændende bygninger på kortet"],
     ["npc", "Fjendtlige patruljer"],
@@ -4460,6 +4598,21 @@ const RULE_INFO = {
     mortar_flight_base_s:       ["mortar", "Flyvetid: grundværdi", "s"],
     mortar_flight_mps:          ["mortar", "Flyvetid: granatens fart", "km/t"],
     mortar_crater_hours:        ["mortar", "Så længe et krater kan ses", "timer"],
+    howitzer_price_steps:       ["howitzer", "Pris for én haubits", "skridt"],
+    howitzer_price_steel:       ["howitzer", "Pris for én haubits", "stål"],
+    howitzer_shell_price_steps: ["howitzer", "Pris for én haubitsgranat", "skridt"],
+    howitzer_shell_price_steel: ["howitzer", "Pris for én haubitsgranat", "stål"],
+    howitzer_range_m:           ["howitzer", "Længste skud", "m"],
+    howitzer_min_range_m:       ["howitzer", "Korteste skud", "m"],
+    howitzer_spread_base_m:     ["howitzer", "Spredning: grundværdi", "m"],
+    howitzer_spread_pct:        ["howitzer", "Spredning: andel af afstanden (0,01 = 1 %)", "0–1"],
+    howitzer_blast_m:           ["howitzer", "Granatsplinter rækker så langt fra nedslaget", "m"],
+    howitzer_hits:              ["howitzer", "Træffere midt i nedslaget (færre længere ude)", "træffere"],
+    howitzer_crew:              ["howitzer", "Ledige soldater i barrakken pr. haubits", "stk."],
+    howitzer_reload_s:          ["howitzer", "Tid mellem to granater fra samme haubits", "s"],
+    howitzer_salvo_max:         ["howitzer", "Flest granater pr. ordre", "stk."],
+    howitzer_flight_base_s:     ["howitzer", "Flyvetid: grundværdi", "s"],
+    howitzer_flight_mps:        ["howitzer", "Flyvetid: granatens fart", "km/t"],
     truck_price_steps:          ["truck", "Pris for én lastbil", "skridt"],
     truck_price_steel:          ["truck", "Pris for én lastbil", "stål"],
     truck_capacity:             ["truck", "Soldater pr. lastbil", "soldater"],
@@ -5077,10 +5230,10 @@ function codexBuildingsHtml() {
 }
 
 function codexWeaponsHtml() {
-    const C = GAME_CONFIG, M = C.MORTAR;
+    const C = GAME_CONFIG, M = C.MORTAR, H = C.HOWITZER;
     return `
         <details class="codex-section">
-            <summary><span class="codex-sum-title">🔫 Våben</span><span class="codex-sum-sub">gevær, let morter og mortergranat</span></summary>
+            <summary><span class="codex-sum-title">🔫 Våben</span><span class="codex-sum-sub">gevær, let morter, haubits og deres granater</span></summary>
             <div class="codex-grid codex-grid-3">
                 <div class="codex-card">
                     <div class="codex-card-head"><h3>Gevær</h3><span class="badge">alle soldater</span></div>
@@ -5115,6 +5268,30 @@ function codexWeaponsHtml() {
                     <p class="muted-hint">Ammunition til morteren. Soldaterne bærer granaterne med ud, og et krater kan ses i ${fmtNum(M.craterHours)} timer. Lander en granat i en af kortets brune bygninger, går den i brand med ${fmtNum(Math.round(GAME_CONFIG.MAP_FIRE.chance * 100))} % chance: den brænder i ${fmtNum(GAME_CONFIG.MAP_FIRE.fireHours)} timer og står derefter som udbrændt ruin i ${fmtNum(GAME_CONFIG.MAP_FIRE.ruinHours)} timer.</p>
                     ${codexStats([
                         ["Pris", codexPrice(M.shellSteps, M.shellSteel)]
+                    ])}
+                </div>
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Haubits</h3><span class="badge">købes i barrakken</span></div>
+                    <div class="codex-weapon-img"><img src="assets/haubits.png" class="pixel-img" alt="Haubits" /></div>
+                    <p class="muted-hint">Tungt feltartilleri, der står ved barrakken og skyder derfra. Vælg barrakken og tryk <em>Skyd med haubits</em>. Granaterne lander et sted inde i spredningscirklen og kan også ramme dine egne soldater.</p>
+                    ${codexStats([
+                        ["Pris", codexPrice(H.priceSteps, H.priceSteel)],
+                        ["Betjenes af", `${fmtNum(H.crew)} ledige soldater i barrakken`],
+                        ["Rækkevidde", `${formatDistance(H.minRangeM)} – ${formatDistance(H.rangeM)}`],
+                        ["Spredning", `${formatDistance(H.spreadBaseM)} + ${fmtPct(H.spreadPct)} af afstanden`],
+                        ["Granatsplinter", `op til ${formatDistance(H.blastM)} fra nedslaget`],
+                        ["Træffere midt i nedslaget", `${fmtNum(H.hits)} (færre længere ude)`],
+                        ["Ladetid", `${fmtNum(H.reloadS)} s`],
+                        ["Flest granater pr. ordre", fmtNum(H.salvoMax)],
+                        ["Flyvetid", `${fmtNum(H.flightBaseS)} s + afstand / ${fmtNum(H.flightMps)} m/s`]
+                    ])}
+                </div>
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Haubitsgranat</h3><span class="badge">købes i barrakken</span></div>
+                    <div class="codex-weapon-img"><img src="assets/haubitsgranat.png" class="pixel-img" alt="" /></div>
+                    <p class="muted-hint">Ammunition til haubitsen. Granaterne ligger på lager ved barrakken. Krateret er dobbelt så stort som mortergranatens, og granaten kan også sætte kortets brune bygninger i brand.</p>
+                    ${codexStats([
+                        ["Pris", codexPrice(H.shellSteps, H.shellSteel)]
                     ])}
                 </div>
             </div>

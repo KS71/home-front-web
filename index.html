@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>HOME FRONT — Command Center</title>
     <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
-    <link rel="stylesheet" href="style.css?v=69" />
+    <link rel="stylesheet" href="style.css?v=70" />
 </head>
 <body>
     <!-- Login / Titelskærm Overlay -->
@@ -105,7 +105,7 @@
             <!-- Banner når man sigter med en morter -->
             <div id="mortar-banner" class="march-banner mortar-banner hidden">
                 <div class="march-banner-text">
-                    💣 <strong>VÆLG MÅL FOR MORTEREN:</strong> Klik på kortet. Granaterne lander tilfældigt inde i den orange cirkel.
+                    💣 <strong id="mortar-banner-title">VÆLG MÅL FOR MORTEREN:</strong> Klik på kortet. Granaterne lander tilfældigt inde i den orange cirkel.
                     <div id="mortar-banner-info" class="march-banner-sub"></div>
                 </div>
                 <div class="march-banner-actions">
@@ -212,6 +212,6 @@
 
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="game.js?v=69"></script>
+    <script src="game.js?v=70"></script>
 </body>
 </html>
