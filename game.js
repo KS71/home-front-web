@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 75;
+const APP_VERSION = 76;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -2147,13 +2147,14 @@ function renderPointBox(lat, lon, box, badge) {
                 <div class="item-row-top">
                     <img src="assets/tropper.png" class="pixel-img item-sprite" />
                     <div class="item-info">
-                        <div class="item-title ${m.patrolPath ? 'item-title-blue' : 'item-title-orange'}">${m.count} soldater ${m.patrolPath ? 'på patrulje' : 'på march'}${mortarTag(m)}${truckTag(m)}</div>
+                        <div class="item-title ${m.patrolPath ? 'item-title-blue' : 'item-title-orange'}">${m.count} soldater ${m.patrolPath ? 'på patrulje' : 'på march'}${mortarTag(m)}${howitzerTag(m)}${truckTag(m)}</div>
                         <div class="item-sub">${marchEtaText(m)}</div>
                         <div class="item-sub">${energyText(m)}</div>
                     </div>
                 </div>
                 <div class="item-actions">
                     <button class="btn btn-small" onclick="openGroupModal('march', '${m.id}')">📋 Soldater</button>
+                    <button class="btn btn-small btn-danger" onclick="stopMarch('${m.id}')">🛑 Stop</button>
                     <button class="btn btn-small btn-primary" onclick="startRedirectMarch('${m.id}')">🧭 Nyt mål</button>
                     <button class="btn btn-small btn-danger" onclick="recallMarch('${m.id}')">🏠 Kald hjem</button>
                 </div>
@@ -2589,6 +2590,7 @@ function renderTroopsSidebar() {
                 <div class="item-actions">
                     <button class="btn btn-small" onclick="event.stopPropagation(); openGroupModal('march', '${m.id}')">📋 Soldater</button>
                     <button class="btn btn-small" onclick="event.stopPropagation(); jumpToMarch('${m.id}')">🎯 Hop til</button>
+                    <button class="btn btn-small btn-danger" onclick="event.stopPropagation(); stopMarch('${m.id}')">🛑 Stop</button>
                     <button class="btn btn-small btn-primary" onclick="event.stopPropagation(); startRedirectMarch('${m.id}')">🧭 Nyt mål</button>
                     <button class="btn btn-small btn-danger" onclick="event.stopPropagation(); recallMarch('${m.id}')">🏠 Kald hjem</button>
                 </div>
@@ -2992,7 +2994,7 @@ async function openConfirmMarchModal(order, target) {
         <p><strong>Patrulje:</strong> ${wps.length} punkter i ring (1 → … → ${wps.length} → 1), indtil du giver en ny ordre.</p>
         <p><strong>Hen til punkt 1:</strong> ca. ${formatDistance(distM)} · ${formatSeconds(durationSec)}</p>
         <p><strong>Én runde:</strong> ca. ${formatDistance(loopM)} · ${formatSeconds(loopSec)}</p>
-        <p style="color:#90A4AE;font-size:13px;">Patruljen skyder på fjender, den møder. Brug "Nyt mål" eller "Kald hjem" for at stoppe den.</p>
+        <p style="color:#90A4AE;font-size:13px;">Patruljen skyder på fjender, den møder. Brug "Stop", "Nyt mål" eller "Kald hjem" for at stoppe den.</p>
     ` : `
         <p><strong>Mål:</strong> ${escapeHtml(target.label)}${via}</p>
         <p><strong>Afstand langs land/kyst:</strong> ca. ${formatDistance(distM)}</p>
@@ -3104,6 +3106,32 @@ window.recallMarch = async function(marchId) {
     }
     await loadArmy();
     showToast(`${m.count} soldater vender om og går hjem til barrakken!`);
+};
+
+window.stopMarch = async function(marchId) {
+    const m = findMarch(marchId);
+    if (!m) return;
+    showToast("Stopper delingen…");
+    const { data, error } = await sb.rpc("stop_march", { p_march: m.id });
+    if (error) {
+        if (error.message && (error.message.includes("stop_march") || error.code === "PGRST202")) {
+            showToast("Kør venligst 0035_stop_march.sql i Supabase for at aktivere stop-knappen.");
+        } else {
+            showToast("Kunne ikke stoppe delingen: " + error.message);
+        }
+        return;
+    }
+    await loadArmy();
+    await syncAllFromSupabase();
+    if (data && data.lat != null && data.lon != null) {
+        const near = garrisonsNear(state.garrisons, data.lat, data.lon);
+        if (near.length > 0) {
+            state.highlight = { garrisons: new Set([String(near[0].id)]), marches: new Set() };
+            renderTroopsSidebar();
+            renderTroopsOnMap();
+        }
+    }
+    showToast(`🛑 ${m.count} soldater er stoppet og står nu vagt!`);
 };
 
 window.jumpToPoint = function(lat, lon) {
@@ -3248,6 +3276,7 @@ function renderGroupModal() {
             ${soldierTilesHtml(g)}`;
         actions.innerHTML = gm.kind === "march" ? `
             <button class="btn" onclick="closeModal(); jumpToMarch('${g.id}')">🎯 Hop til</button>
+            <button class="btn btn-danger" onclick="closeModal(); stopMarch('${g.id}')">🛑 Stop</button>
             <button class="btn btn-primary" onclick="closeModal(); startRedirectMarch('${g.id}')">🧭 Nyt mål</button>
             ${hurt && (!g.driving || hurt >= g.count) ? `<button class="btn btn-primary" onclick="closeModal(); sendWoundedFromMarch('${g.id}')">🏥 Send ${hurt} ${hurt === 1 ? "såret" : "sårede"} til hospitalet</button>` : ""}
             <button class="btn btn-danger" onclick="closeModal(); recallMarch('${g.id}')">🏠 Kald hjem</button>
@@ -4191,6 +4220,7 @@ async function tickMarches() {
 }
 
 const REPORT_TEXT = {
+    stopped:    r => `🛑 ${r.count} soldater er stoppet og står nu vagt.`,
     returned:   r => `${r.count} soldater er vendt hjem til barrakken.`,
     arrived:    r => `Dine ${r.count} soldater er nået frem og står nu vagt.`,
     captured:   r => `Dine ${r.count} soldater er nået frem og står nu vagt.`,
@@ -4373,8 +4403,8 @@ async function loadReports() {
     }
     await sb.from("march_reports").update({ seen: true }).in("id", data.map(r => r.id));
     // Kamp mod patruljer ændrer antallet af soldater; hjemkomne sårede lægges på hospitalet.
-    if (data.some(r => r.kind !== "returned" && r.kind !== "arrived")) loadBattles();
-    if (data.some(r => r.kind.startsWith("patrol_") || r.kind.startsWith("truck_") || r.kind === "returned" || r.kind === "shelled")) {
+    if (data.some(r => r.kind !== "returned" && r.kind !== "arrived" && r.kind !== "stopped")) loadBattles();
+    if (data.some(r => r.kind.startsWith("patrol_") || r.kind.startsWith("truck_") || r.kind === "returned" || r.kind === "shelled" || r.kind === "stopped")) {
         await loadArmy();
         await syncAllFromSupabase();
     }
