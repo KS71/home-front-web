@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 83;
+const APP_VERSION = 84;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -663,19 +663,19 @@ function installGameLayers() {
         paint: { "icon-opacity": ["get", "op"] }
     });
 
-    // Tomme lastbiler, som soldaterne er steget af (0038). Lidt blege, fordi ingen sidder i dem.
+    // Tomme lastbiler, som soldaterne er steget af (0038).
     map.addLayer({
         id: "lyr-parked-trucks",
         type: "symbol",
         source: "src-parked-trucks",
+        // Samme faste størrelse som soldaterne, og til højre for dem, så soldaten ikke dækker.
         layout: {
             "icon-image": "img-parked-truck",
-            "icon-anchor": "bottom",
-            "icon-size": ["interpolate", ["exponential", 2], ["zoom"], 12, 0.12, 16, 0.5, 19, 2.0],
+            "icon-anchor": "bottom-left",
+            "icon-offset": ["get", "off"],
             "icon-allow-overlap": true,
             "icon-ignore-placement": true
-        },
-        paint: { "icon-opacity": 0.85 }
+        }
     });
 
     // Bogmærker: byggepladser er firkanter på 50×50 m, mål er små firkanter.
@@ -963,6 +963,15 @@ const truckHowitzerImgPromise = new Promise((resolve) => {
     img.src = "assets/lastbil_haubits.png";
 });
 
+// En haubits i stilling uden lastbil tegnes ved siden af soldaten.
+let howitzerImg = null;
+const howitzerImgPromise = new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => { howitzerImg = img; resolve(img); };
+    img.onerror = () => resolve(null);
+    img.src = "assets/haubits.png";
+});
+
 // Fjender (patruljer og andre spilleres soldater) tegnes i rød uniform.
 let npcSoldierImg = null;
 const npcImgPromise = new Promise((resolve) => {
@@ -976,7 +985,7 @@ const npcImgPromise = new Promise((resolve) => {
 // status for egne: "guard" (grøn), "patrol" (blå), "march" (orange), "combat" (rød hvis i/har været i kamp).
 function troopBadgeId(count, style = "own", pct = 100, status = "guard", truck = false, facingLeft = false, hasHowitzer = false) {
     const bucket = pct >= 100 ? "100" : pct < 40 ? `red-${Math.ceil(pct / 10)}` : `orange-${Math.ceil(pct / 10)}`;
-    const truckSuffix = truck ? (hasHowitzer ? (facingLeft ? "-truck-h-left" : "-truck-h") : (facingLeft ? "-truck-left" : "-truck")) : "";
+    const truckSuffix = truck ? (hasHowitzer ? (facingLeft ? "-truck-h-left" : "-truck-h") : (facingLeft ? "-truck-left" : "-truck")) : (hasHowitzer ? "-gun" : "");
     return `img-${style}-${status}-${count}-${bucket}${truckSuffix}`;
 }
 
@@ -990,20 +999,25 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
     if (redUniform) await npcImgPromise;
     if (truck && hasHowitzer) await truckHowitzerImgPromise;
     if (truck) await truckImgPromise;
+    if (!truck && hasHowitzer) await howitzerImgPromise;
+    const gunImg = !truck && hasHowitzer ? howitzerImg : null;
     const soldierImg = truck && hasHowitzer && truckHowitzerImg ? truckHowitzerImg : (truck && truckImg ? truckImg : (redUniform && npcSoldierImg ? npcSoldierImg : baseSoldierImg));
     if (!soldierImg) return;
 
     const scale = truck ? 2 : 3;
     const sw = soldierImg.width * scale;
     const sh = soldierImg.height * scale;
+    // Haubitsen står til venstre for soldaten; soldaten står stadig midt på sin position.
+    const gw = gunImg ? gunImg.width : 0;
+    const gh = gunImg ? gunImg.height : 0;
     const text = String(count);
 
     const canvas = document.createElement("canvas");
     const badgeW = Math.max(34, text.length * 10 + 16);
     const badgeH = 22;
     const barH = 5;
-    canvas.width = Math.max(sw, badgeW) + 8;
-    canvas.height = sh + badgeH + barH + 8;
+    canvas.width = Math.max(sw, badgeW) + 8 + (gunImg ? 2 * (gw + 4) : 0);
+    canvas.height = Math.max(sh, gh) + badgeH + barH + 8;
 
     const ctx = canvas.getContext("2d");
     ctx.imageSmoothingEnabled = false;
@@ -1055,7 +1069,9 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
         ctx.drawImage(soldierImg, sx, badgeH + barH + 6, sw, sh);
         ctx.restore();
     } else {
-        ctx.drawImage(soldierImg, sx, badgeH + barH + 6, sw, sh);
+        const top = badgeH + barH + 6 + Math.max(0, gh - sh);
+        ctx.drawImage(soldierImg, sx, top, sw, sh);
+        if (gunImg) ctx.drawImage(gunImg, sx - gw - 4, badgeH + barH + 6 + Math.max(0, sh - gh), gw, gh);
     }
 
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -1699,8 +1715,8 @@ async function renderTroopsOnMap() {
     map.getSource("src-troops")?.setData({ type: "FeatureCollection", features: troopFeatures });
     // Flere tomme lastbiler samme sted står lidt forskudt, så man kan se, hvor mange der er.
     const parkedFeatures = state.parkedTrucks.flatMap(p => (p.trucks || []).map((_, i) => ({
-        type: "Feature", properties: {},
-        geometry: { type: "Point", coordinates: [p.lon + i * 0.00012, p.lat - i * 0.00004] }
+        type: "Feature", properties: { off: [PARKED_OFFSET_X + i * 24, i * 12] },
+        geometry: { type: "Point", coordinates: [p.lon, p.lat] }
     })));
     map.getSource("src-parked-trucks")?.setData({ type: "FeatureCollection", features: parkedFeatures });
     map.getSource("src-march-lines")?.setData({ type: "FeatureCollection", features: lineFeatures });
@@ -1961,14 +1977,18 @@ function findBuilding(id) {
 
 // Vagtstyrker tæt på et punkt: inden for garrison_merge_m, eller så tæt på skærmen, at man har
 // klikket på deres ikon (ikonet står oven over punktet).
-// Tomme lastbiler under et tryk på kortet (samme slags ramme som ved soldaterne).
+// Tomme lastbiler tegnes så mange pixels til højre for deres position (ved siden af soldaten).
+const PARKED_OFFSET_X = 30;
+
+// Tomme lastbiler under et tryk på kortet: deres billede ved siden af soldaterne.
 function parkedTrucksNear(lat, lon) {
-    const pt = mapReady ? map.project([lon, lat]) : null;
+    if (!mapReady) return [];
+    const pt = map.project([lon, lat]);
     return state.parkedTrucks.filter(p => {
-        if (Geo.distanceM(lat, lon, p.lat, p.lon) <= GAME_CONFIG.GARRISON_MERGE_M) return true;
-        if (!pt) return false;
+        const n = (p.trucks || []).length;
         const pp = map.project([p.lon, p.lat]);
-        return pt.x >= pp.x - 30 && pt.x <= pp.x + 30 + 10 * (p.trucks || []).length && pt.y >= pp.y - 40 && pt.y <= pp.y + 10;
+        return pt.x >= pp.x + PARKED_OFFSET_X && pt.x <= pp.x + PARKED_OFFSET_X + 80 + 24 * (n - 1)
+            && pt.y >= pp.y - 50 && pt.y <= pp.y + 12 * n;
     });
 }
 
@@ -3304,11 +3324,10 @@ function openGroupModalAt(lat, lon) {
         ...garrisonsNear(state.enemies.garrisons, lat, lon).map(g => ({ kind: "enemy-garrison", id: g.id })),
         ...npcsNear(lat, lon).map(({ n }) => ({ kind: "npc", id: n.id }))
     ];
-    if (hits.length === 1) openGroupModal(hits[0].kind, hits[0].id);
-    else if (hits.length === 0) {
-        const p = parkedTrucksNear(lat, lon)[0];
-        if (p) openGroupModal("parked", p.id);
-    }
+    // Lastbilen står ved siden af soldaterne, så et tryk på den vinder over soldaterne.
+    const p = parkedTrucksNear(lat, lon)[0];
+    if (p) openGroupModal("parked", p.id);
+    else if (hits.length === 1) openGroupModal(hits[0].kind, hits[0].id);
 }
 
 function findGroup(kind, id) {
