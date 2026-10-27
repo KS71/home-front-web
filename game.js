@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 84;
+const APP_VERSION = 85;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -514,6 +514,7 @@ async function installPixelLandscape() {
         ["img-crater", "assets/krater.png", 2],
         ["img-wreck", "assets/lastbil_vrag.png", 2],
         ["img-parked-truck", "assets/lastbil.png", 2],
+        ["img-parked-truck-h", "assets/lastbil_haubits.png", 2],
         ["img-flame-0", "assets/flamme_1.png", 2],
         ["img-flame-1", "assets/flamme_2.png", 2],
         ["img-flame-2", "assets/flamme_3.png", 2],
@@ -670,7 +671,7 @@ function installGameLayers() {
         source: "src-parked-trucks",
         // Samme faste størrelse som soldaterne, og til højre for dem, så soldaten ikke dækker.
         layout: {
-            "icon-image": "img-parked-truck",
+            "icon-image": ["get", "img"],
             "icon-anchor": "bottom-left",
             "icon-offset": ["get", "off"],
             "icon-allow-overlap": true,
@@ -1714,8 +1715,13 @@ async function renderTroopsOnMap() {
 
     map.getSource("src-troops")?.setData({ type: "FeatureCollection", features: troopFeatures });
     // Flere tomme lastbiler samme sted står lidt forskudt, så man kan se, hvor mange der er.
+    // Haubitserne hænger bag de første lastbiler (1 haubits pr. lastbil).
     const parkedFeatures = state.parkedTrucks.flatMap(p => (p.trucks || []).map((_, i) => ({
-        type: "Feature", properties: { off: [PARKED_OFFSET_X + i * 24, i * 12] },
+        type: "Feature",
+        properties: {
+            img: i < (p.howitzers || 0) ? "img-parked-truck-h" : "img-parked-truck",
+            off: [PARKED_OFFSET_X + i * 24, i * 12]
+        },
         geometry: { type: "Point", coordinates: [p.lon, p.lat] }
     })));
     map.getSource("src-parked-trucks")?.setData({ type: "FeatureCollection", features: parkedFeatures });
@@ -1987,7 +1993,8 @@ function parkedTrucksNear(lat, lon) {
     return state.parkedTrucks.filter(p => {
         const n = (p.trucks || []).length;
         const pp = map.project([p.lon, p.lat]);
-        return pt.x >= pp.x + PARKED_OFFSET_X && pt.x <= pp.x + PARKED_OFFSET_X + 80 + 24 * (n - 1)
+        const w = (p.howitzers || 0) > 0 ? 124 : 80;
+        return pt.x >= pp.x + PARKED_OFFSET_X && pt.x <= pp.x + PARKED_OFFSET_X + w + 24 * (n - 1)
             && pt.y >= pp.y - 50 && pt.y <= pp.y + 12 * n;
     });
 }
@@ -3506,7 +3513,8 @@ window.dropOffFromTrucks = async function(id) {
         showToast("Soldaterne kunne ikke stige af: " + error.message);
         return;
     }
-    showToast(`🚚 Soldaterne er steget af. ${t === 1 ? "Lastbilen holder tom" : `De ${t} lastbiler holder tomme`} tilbage.`);
+    const h = g.howitzers || 0;
+    showToast(`🚚 Soldaterne er steget af. ${t === 1 ? "Lastbilen holder tom" : `De ${t} lastbiler holder tomme`} tilbage${h > 0 ? ` med ${h === 1 ? "haubitsen" : `${h} haubitser`} og granaterne på slæb` : ""}.`);
     await loadArmy();
 };
 
@@ -3525,10 +3533,12 @@ function renderParkedModal(p) {
     const T = GAME_CONFIG.TRUCK;
     const n = (p.trucks || []).length;
     const near = garrisonsByParked(p);
-    document.getElementById("modal-title").textContent = n === 1 ? "Tom lastbil" : `${n} tomme lastbiler`;
+    document.getElementById("modal-title").textContent = (n === 1 ? "Tom lastbil" : `${n} tomme lastbiler`)
+        + (p.howitzers > 0 ? ` med ${p.howitzers === 1 ? "haubits" : `${p.howitzers} haubitser`}` : "");
     document.getElementById("modal-body").innerHTML = `
         <p class="muted-hint">Soldaterne er steget af. ${n === 1 ? "Lastbilen holder" : "Lastbilerne holder"} her, indtil soldater inden for ${formatDistance(T.boardM)} stiger på igen. Kun du kan se ${n === 1 ? "den" : "dem"}.</p>
         ${truckLineHtml("parked", p)}
+        ${p.howitzers > 0 ? `<p class="muted-hint">💥 ${p.howitzers} ${p.howitzers === 1 ? "haubits" : "haubitser"} på slæb · 🎯 ${p.howitzer_shells || 0} haubitsgranater. Følger med, når soldater stiger på.</p>` : ""}
         ${near.length ? "" : `<p class="muted-hint">Ingen af dine soldater står tæt nok på. Send soldater herhen, så kan de stige på, når de er nået frem.</p>`}`;
     document.getElementById("modal-actions").innerHTML = `
         <button class="btn" onclick="closeModal(); jumpToPoint(${p.lat}, ${p.lon})">🎯 Hop til</button>
@@ -5847,7 +5857,7 @@ function codexVehiclesHtml() {
                 <div class="codex-card">
                     <div class="codex-card-head"><h3>Lastbil</h3><span class="badge">${buyWhere("trucks")}</span></div>
                     <div class="codex-weapon-img"><img src="assets/lastbil.png" class="pixel-img" alt="Lastbil" /></div>
-                    <p class="muted-hint">Grøn militærlastbil med presenning over ladet, hvor soldaterne sidder. Vælg lastbiler, når du sender soldater. Der skal mindst 1 soldat i hver lastbil for at køre den, og er der flere soldater, end der er plads til, går alle. Kommer den hjem til barrakken, bliver den repareret. Soldaterne kan stige af og lade lastbilen stå tom tilbage, indtil de (eller andre af dine soldater) kommer og stiger på igen.</p>
+                    <p class="muted-hint">Grøn militærlastbil med presenning over ladet, hvor soldaterne sidder. Vælg lastbiler, når du sender soldater. Der skal mindst 1 soldat i hver lastbil for at køre den, og er der flere soldater, end der er plads til, går alle. Kommer den hjem til barrakken, bliver den repareret. Soldaterne kan stige af og lade lastbilen stå tom tilbage, indtil de (eller andre af dine soldater) kommer og stiger på igen. En haubits på slæb bliver hængende bag den tomme lastbil sammen med sine granater.</p>
                     ${codexStats([
                         ["Pris", codexPrice(T.priceSteps, T.priceSteel)],
                         ["Plads til", `${fmtNum(T.capacity)} soldater`],
