@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 80;
+const APP_VERSION = 81;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -4635,7 +4635,7 @@ function renderContactsSidebar() {
                     <img src="assets/fjende.png" class="pixel-img item-sprite" />
                     <div class="item-info">
                         <div class="item-title enemy-title">${npcLabel(n)}: ${n.count} soldater</div>
-                        <div class="item-sub">${n.fighting ? "💥 i kamp med dine soldater" : (n.is_invasion && !n.by_soldiers ? "Radar / efterretning" : who(n))} · ${energyText(n)}${npcGear(n) ? ` · ${npcGear(n)}` : ""}</div>
+                        <div class="item-sub">${n.fighting ? "💥 i kamp med dine soldater" : who(n)} · ${energyText(n)}${npcGear(n) ? ` · ${npcGear(n)}` : ""}</div>
                     </div>
                 </div>
                 <div class="item-actions">
