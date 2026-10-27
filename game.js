@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 91;
+const APP_VERSION = 92;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -872,6 +872,7 @@ function installGameLayers() {
         layout: {
             "icon-image": ["get", "img"],
             "icon-anchor": "bottom",
+            "icon-offset": ["coalesce", ["get", "off"], ["literal", [0, 0]]],
             "icon-allow-overlap": true,
             "icon-ignore-placement": true
         }
@@ -1683,14 +1684,14 @@ async function renderTroopsOnMap() {
         return false;
     };
 
-    const addTroop = async (group, lat, lon, style, status = "guard", facingLeft = false) => {
+    const addTroop = async (group, lat, lon, style, status = "guard", facingLeft = false, shiftX = 0) => {
         const pct = energyPct(group);
         const truck = truckCount(group) > 0;
         const hasHowitzer = (group.howitzers || 0) > 0;
         await ensureTroopBadge(group.count, style, pct, status, truck, facingLeft, hasHowitzer);
         troopFeatures.push({
             type: "Feature",
-            properties: { img: troopBadgeId(group.count, style, pct, status, truck, facingLeft, hasHowitzer) },
+            properties: { img: troopBadgeId(group.count, style, pct, status, truck, facingLeft, hasHowitzer), off: [shiftX, 0] },
             geometry: { type: "Point", coordinates: [lon, lat] }
         });
     };
@@ -1731,7 +1732,7 @@ async function renderTroopsOnMap() {
         own.push([g.lat, g.lon]);
         const inCombat = (g.wounded && g.wounded.length > 0) || energyPct(g) < 100 || isFightingNear(g.lat, g.lon);
         const status = inCombat ? "combat" : "guard";
-        await addTroop(g, g.lat, g.lon, "own", status);
+        await addTroop(g, g.lat, g.lon, "own", status, false, garrisonShiftPx(g));
     }
 
     for (const m of state.marches) {
@@ -2052,6 +2053,17 @@ function findBuilding(id) {
 // Tomme lastbiler tegnes så mange pixels til højre for deres position (ved siden af soldaten).
 const PARKED_OFFSET_X = 30;
 
+// Soldater, der er steget af, står samme sted som lastbilen med resten af soldaterne (0045).
+// De tegnes så mange pixels til venstre, så de ikke dækker lastbilen.
+const DISMOUNTED_OFFSET_X = -45;
+
+function garrisonShiftPx(g) {
+    if (truckCount(g) > 0) return 0;
+    const byTruck = state.garrisons.some(x => x !== g && x.count > 0 && truckCount(x) > 0
+        && Geo.distanceM(x.lat, x.lon, g.lat, g.lon) <= GAME_CONFIG.GARRISON_MERGE_M);
+    return byTruck ? DISMOUNTED_OFFSET_X : 0;
+}
+
 // Tomme lastbiler under et tryk på kortet: deres billede ved siden af soldaterne.
 function parkedTrucksNear(lat, lon) {
     if (!mapReady) return [];
@@ -2077,7 +2089,8 @@ function garrisonsNear(list, lat, lon) {
         if (Geo.distanceM(lat, lon, g.lat, g.lon) <= GAME_CONFIG.GARRISON_MERGE_M) return true;
         if (!pt) return false;
         const gp = map.project([g.lon, g.lat]);
-        return Math.abs(pt.x - gp.x) <= 30 && pt.y >= gp.y - 85 && pt.y <= gp.y + 15;
+        const shift = list === state.garrisons ? garrisonShiftPx(g) : 0;
+        return Math.abs(pt.x - (gp.x + shift)) <= 30 && pt.y >= gp.y - 85 && pt.y <= gp.y + 15;
     });
 }
 
@@ -2347,11 +2360,11 @@ function garrisonRowsHtml(list) {
 }
 
 // Afstand på skærmen fra klikket til en gruppes ikon (ikonet står lidt over positionen).
-function clickDistancePx(lat, lon, gLat, gLon) {
+function clickDistancePx(lat, lon, gLat, gLon, shiftX = 0) {
     if (!mapReady) return Geo.distanceM(lat, lon, gLat, gLon);
     const pt = map.project([lon, lat]);
     const gp = map.project([gLon, gLat]);
-    return Math.hypot(pt.x - gp.x, pt.y - (gp.y - 35));
+    return Math.hypot(pt.x - (gp.x + shiftX), pt.y - (gp.y - 35));
 }
 
 window.showAllGroupsHere = function(all) {
@@ -2390,7 +2403,7 @@ function renderPointBox(lat, lon, box, badge) {
         // Står flere af dine grupper tæt på skærmen, vises kun den, der er nærmest klikket.
         // Resten ligger bag knappen "Vis N andre grupper her".
         const own = [
-            ...ownGuards.map(g => ({ kind: "garrison", g, d: clickDistancePx(lat, lon, g.lat, g.lon) })),
+            ...ownGuards.map(g => ({ kind: "garrison", g, d: clickDistancePx(lat, lon, g.lat, g.lon, garrisonShiftPx(g)) })),
             ...ownMarches.map(m => ({ kind: "march", g: m, d: clickDistancePx(lat, lon, ...marchCurrentPos(m)) }))
         ].sort((a, b) => a.d - b.d);
         const shown = state.selected?.showAll ? own : own.slice(0, 1);
@@ -3563,7 +3576,8 @@ function renderGroupModal() {
             <button class="btn btn-primary" onclick="closeModal(); sendFromGarrison(${g.id})">🪖 Send soldater</button>
             ${g.mortars > 0 ? `<button class="btn btn-gold" onclick="closeModal(); startMortarAim(${g.id})">💣 Affyr morter</button>` : ""}
             ${g.howitzers > 0 ? `<button class="btn btn-danger" onclick="closeModal(); startHowitzerAimGarrison(${g.id})">💥 Affyr haubits</button>` : ""}
-            ${truckCount(g) > 0 ? `<button class="btn btn-primary" onclick="closeModal(); dropOffFromTrucks(${g.id})">🚚 Stig af lastbil${truckCount(g) === 1 ? "en" : "erne"}</button>` : ""}
+            ${truckCount(g) > 0 ? `<button class="btn btn-primary" onclick="openDismountModal(${g.id})">🚚 Stig af lastbil${truckCount(g) === 1 ? "en" : "erne"}</button>` : ""}
+            ${state.garrisons.filter(x => x.id !== g.id && x.count > 0 && truckCount(x) > 0 && Geo.distanceM(x.lat, x.lon, g.lat, g.lon) <= GAME_CONFIG.TRUCK.boardM).map(x => `<button class="btn btn-primary" onclick="closeModal(); mergeWithGarrison(${g.id}, ${x.id})">🚚 Stig på ${truckCount(x) === 1 ? "lastbilen" : `de ${truckCount(x)} lastbiler`} (${x.count} soldater i)</button>`).join("")}
             ${state.parkedTrucks.filter(p => garrisonsByParked(p).some(x => x.id === g.id)).map(p => `<button class="btn btn-primary" onclick="closeModal(); boardTrucks(${p.id}, ${g.id})">🚚 Stig på ${p.trucks.length === 1 ? "lastbilen" : `${p.trucks.length} lastbiler`}</button>`).join("")}
             ${hurt ? `<button class="btn btn-primary" onclick="closeModal(); sendWoundedToHospital(${g.id})">🏥 Send ${hurt} ${hurt === 1 ? "såret" : "sårede"} til hospitalet</button>` : ""}
             <button class="btn btn-danger" onclick="closeModal(); sendGarrisonHome(${g.id})">🏠 Send hjem</button>
@@ -3631,19 +3645,57 @@ window.sendGarrisonHome = function(id) {
 
 window.openGroupModal = openGroupModal;
 
-// Soldaterne stiger af og bliver stående som vagt; lastbilerne holder tomme tilbage, hvor de står,
-// indtil soldater stiger på igen (0038).
-window.dropOffFromTrucks = async function(id) {
+// Vælg hvor mange soldater der stiger af (0045). Stiger alle af, holder lastbilerne tomme tilbage.
+// Ellers bliver resten siddende i lastbilerne (mindst én i hver) og kan køre videre.
+window.openDismountModal = function(id) {
     const g = state.garrisons.find(x => String(x.id) === String(id));
     const t = truckCount(g);
     if (!g || t <= 0) return;
-    const { error } = await sb.rpc("park_trucks", { p_garrison: g.id });
+    state.groupModal = null;
+    const maxSome = g.count - t; // flest der kan stige af, hvis nogen skal blive i lastbilerne
+    document.getElementById("modal-title").textContent = "🚚 Stig af lastbil" + (t === 1 ? "en" : "erne");
+    document.getElementById("modal-body").innerHTML = `
+        <p>Vælg hvor mange af de ${g.count} soldater der skal stige af:</p>
+        <div style="text-align:center;font-size:20px;font-weight:800;color:#39FF14;" id="dismount-val-label"></div>
+        <input type="range" min="1" max="${g.count}" value="${g.count}" class="range-slider" id="dismount-range-input" />
+        <p class="muted-hint" id="dismount-hint"></p>`;
+    document.getElementById("modal-actions").innerHTML = `
+        <button class="btn btn-primary" id="dismount-ok">🚚 Stig af</button>
+        <button class="btn" onclick="closeModal()">Annuller</button>`;
+    const slider = document.getElementById("dismount-range-input");
+    const update = () => {
+        const n = Number(slider.value);
+        const ok = n >= g.count || n <= maxSome;
+        document.getElementById("dismount-val-label").textContent = `${n} / ${g.count} soldater`;
+        document.getElementById("dismount-hint").textContent = n >= g.count
+            ? `Alle stiger af. ${t === 1 ? "Lastbilen holder tom" : `De ${t} lastbiler holder tomme`} tilbage her.`
+            : ok ? `${g.count - n} bliver siddende i ${t === 1 ? "lastbilen" : "lastbilerne"} med alt udstyret og kan køre videre. De ${n} står vagt til fods ved siden af.`
+            : `Der skal blive mindst én soldat i hver lastbil. Vælg højst ${maxSome}, eller lad alle stige af.`;
+        document.getElementById("dismount-ok").disabled = !ok;
+    };
+    slider.oninput = update;
+    update();
+    document.getElementById("dismount-ok").onclick = () => {
+        closeModal();
+        dropOffFromTrucks(g.id, Number(slider.value));
+    };
+    document.getElementById("modal-overlay").classList.remove("hidden");
+};
+
+window.dropOffFromTrucks = async function(id, count) {
+    const g = state.garrisons.find(x => String(x.id) === String(id));
+    const t = truckCount(g);
+    if (!g || t <= 0) return;
+    const n = Math.min(count ?? g.count, g.count);
+    const { error } = await sb.rpc("dismount_soldiers", { p_garrison: g.id, p_count: n });
     if (error) {
         showToast("Soldaterne kunne ikke stige af: " + error.message);
         return;
     }
     const h = g.howitzers || 0;
-    showToast(`🚚 Soldaterne er steget af. ${t === 1 ? "Lastbilen holder tom" : `De ${t} lastbiler holder tomme`} tilbage${h > 0 ? ` med ${h === 1 ? "haubitsen" : `${h} haubitser`} og granaterne på slæb` : ""}.`);
+    showToast(n >= g.count
+        ? `🚚 Soldaterne er steget af. ${t === 1 ? "Lastbilen holder tom" : `De ${t} lastbiler holder tomme`} tilbage${h > 0 ? ` med ${h === 1 ? "haubitsen" : `${h} haubitser`} og granaterne på slæb` : ""}.`
+        : `🚚 ${n} ${n === 1 ? "soldat er steget" : "soldater er steget"} af. ${g.count - n} bliver i ${t === 1 ? "lastbilen" : "lastbilerne"}.`);
     await loadArmy();
 };
 
