@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 71;
+const APP_VERSION = 72;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -2020,6 +2020,8 @@ function renderBuildingBox(bld, box, badge) {
         const prod = computeProductionContents(bld);
         const housing = cfg?.housing ? cfg.housing[bld.level - 1] : null;
         const avail = availableInBarracks();
+        // Våbenfabrikken bruger den nærmeste barrak: dér er soldaterne, lageret og haubitserne.
+        const home = bld.kind === "barracks" ? bld : bld.kind === "weapons_factory" ? nearestOwnBarracks(bld.lat, bld.lon) : null;
         html += `
             <div class="item-row">
                 <div class="item-row-top">
@@ -2029,19 +2031,19 @@ function renderBuildingBox(bld, box, badge) {
                         <div class="item-sub">${cfg ? cfg.desc : ""}</div>
                         <div class="item-sub">${size}×${size} m · ${formatPos(bld.lat, bld.lon)}</div>
                         ${housing ? `<div class="item-sub" style="color:#76FF03">Plads her: ${housing} · Ledige i barrak: ${avail}</div>` : ""}
-                        ${bld.kind === "barracks" ? `<div class="item-sub" style="color:#FFB74D">🧨 Morterer på lager: ${state.mortarsHome} · 💣 Granater: ${state.shells} · 🚚 Lastbiler: ${state.trucksHome}</div>
-                        ${GAME_CONFIG.HOWITZER.enabled ? `<div class="item-sub" style="color:#FFB74D">💥 Haubitser: ${state.howitzersHome} · 🎯 Haubitsgranater: ${state.howitzerShells}</div>` : ""}
-                        ${factoryEnabled() ? `<div class="item-sub">Våben, granater og køretøjer købes i våbenfabrikken og står på lager her.</div>` : ""}` : ""}
-                        ${bld.kind === "weapons_factory" ? `<div class="item-sub" style="color:#FFB74D">${factoryLineText(bld)}</div>` : ""}
+                        ${home ? stockLinesHtml() : ""}
+                        ${bld.kind === "barracks" && factoryEnabled() ? `<div class="item-sub">Våben, granater og køretøjer købes i våbenfabrikken og står på lager her.</div>` : ""}
+                        ${bld.kind === "weapons_factory" ? `<div class="item-sub" style="color:#FFB74D">${factoryLineText(bld)}</div>
+                        <div class="item-sub">${home ? `Udstyret står på lager i barrakken. Soldater sendes ud og haubitsen skyder fra den nærmeste barrak (${formatDistance(Geo.distanceM(bld.lat, bld.lon, home.lat, home.lon))} herfra).` : "Du har ingen barrak at opbevare udstyret i."}</div>` : ""}
                         ${prod ? `<div class="item-sub" style="color:#FFD54F">${prod.material === "steel" ? "Klar til afhentning" : "Klar til indkaldelse"}: ${prod.amount} / ${prod.capacity} ${prod.unit} (${prod.perHour}/t)</div>` : ""}
                         ${hospitalLineHtml(bld)}
                     </div>
                 </div>
                 <div class="item-actions">
                     ${bld.kind === "hospital" ? `<button class="btn btn-small btn-primary" onclick="openHospitalModal(${bld.id})">🏥 Patienter</button>` : ""}
-                    ${bld.kind === "barracks" ? `<button class="btn btn-small btn-primary" ${avail <= 0 ? "disabled" : ""} onclick="sendFromBuilding(${bld.id})">🪖 Send soldater (${avail} klar)</button>` : ""}
+                    ${home ? `<button class="btn btn-small btn-primary" ${avail <= 0 ? "disabled" : ""} onclick="sendFromBuilding(${home.id})">🪖 Send soldater (${avail} klar)</button>` : ""}
                     ${bld.kind === (factoryEnabled() ? "weapons_factory" : "barracks") ? equipmentButtonsHtml(bld) : ""}
-                    ${bld.kind === "barracks" && state.howitzersHome > 0 ? `<button class="btn btn-small btn-danger" onclick="startHowitzerAim(${bld.id})">💥 Skyd med haubits</button>` : ""}
+                    ${home && state.howitzersHome > 0 ? `<button class="btn btn-small btn-danger" onclick="startHowitzerAim(${home.id})">💥 Skyd med haubits</button>` : ""}
                     ${prod && prod.amount > 0 ? `<button class="btn btn-small btn-primary" onclick="collectFromBuilding(${bld.id})">📥 ${prod.material === "steel" ? "Hent" : "Indkald"} ${prod.amount} ${prod.unit}</button>` : ""}
                     ${bld.kind === "academy" ? `<button class="btn btn-small btn-gold" onclick="recruitSoldierInstant()">⚡ Uddan 1 straks (${GAME_CONFIG.INSTANT_SOLDIER_STEPS} skridt)</button>` : ""}
                     ${nextPrice ? `<button class="btn btn-small" onclick="upgradeBuilding(${bld.id})">⬆️ Opgradér til trin ${bld.level + 1} (${nextPrice} skridt${nextSteel ? ` + ${nextSteel} stål` : ""})</button>` : `<span class="badge">Fuldt udbygget</span>`}
@@ -3443,6 +3445,18 @@ function equipmentButtonsHtml(bld) {
             ? `<button class="btn btn-small btn-gold" onclick="openBuyEquipmentModal('${item}')">${label}</button>`
             : `<button class="btn btn-small" disabled title="Opgradér våbenfabrikken til trin ${need}">🔒 ${label.replace(/^\S+ /, "")} (trin ${need})</button>`;
     }).join("\n");
+}
+
+// Din nærmeste barrak (eller null).
+function nearestOwnBarracks(lat, lon) {
+    return state.myBuildings.filter(b => b.kind === "barracks")
+        .sort((a, b) => Geo.distanceM(lat, lon, a.lat, a.lon) - Geo.distanceM(lat, lon, b.lat, b.lon))[0] || null;
+}
+
+// Lageret i barrakken: morterer, granater, lastbiler og haubitser.
+function stockLinesHtml() {
+    return `<div class="item-sub" style="color:#FFB74D">🧨 Morterer på lager: ${state.mortarsHome} · 💣 Granater: ${state.shells} · 🚚 Lastbiler: ${state.trucksHome}</div>
+        ${GAME_CONFIG.HOWITZER.enabled ? `<div class="item-sub" style="color:#FFB74D">💥 Haubitser: ${state.howitzersHome} · 🎯 Haubitsgranater: ${state.howitzerShells}</div>` : ""}`;
 }
 
 function factoryLineText(bld) {
