@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 90;
+const APP_VERSION = 91;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -2346,6 +2346,20 @@ function garrisonRowsHtml(list) {
     `).join("");
 }
 
+// Afstand på skærmen fra klikket til en gruppes ikon (ikonet står lidt over positionen).
+function clickDistancePx(lat, lon, gLat, gLon) {
+    if (!mapReady) return Geo.distanceM(lat, lon, gLat, gLon);
+    const pt = map.project([lon, lat]);
+    const gp = map.project([gLon, gLat]);
+    return Math.hypot(pt.x - gp.x, pt.y - (gp.y - 35));
+}
+
+window.showAllGroupsHere = function(all) {
+    if (!state.selected) return;
+    state.selected.showAll = all;
+    renderSelectedBox();
+};
+
 function renderPointBox(lat, lon, box, badge) {
     badge.textContent = formatPos(lat, lon);
     const terr = terrainAt(lat, lon);
@@ -2372,7 +2386,18 @@ function renderPointBox(lat, lon, box, badge) {
     if (ownGuards.length > 0 || ownMarches.length > 0 || enemyGuards.length > 0 || npcsHere.length > 0) {
         setSelectedShape(null);
         badge.textContent = ownGuards.length + ownMarches.length > 0 ? "Dine soldater" : "Fjendtlige soldater";
-        html = garrisonRowsHtml(ownGuards) + ownMarches.map(m => `
+
+        // Står flere af dine grupper tæt på skærmen, vises kun den, der er nærmest klikket.
+        // Resten ligger bag knappen "Vis N andre grupper her".
+        const own = [
+            ...ownGuards.map(g => ({ kind: "garrison", g, d: clickDistancePx(lat, lon, g.lat, g.lon) })),
+            ...ownMarches.map(m => ({ kind: "march", g: m, d: clickDistancePx(lat, lon, ...marchCurrentPos(m)) }))
+        ].sort((a, b) => a.d - b.d);
+        const shown = state.selected?.showAll ? own : own.slice(0, 1);
+        const others = own.length - shown.length;
+        const guardsShown = shown.filter(x => x.kind === "garrison").map(x => x.g);
+        const marchesShown = shown.filter(x => x.kind === "march").map(x => x.g);
+        html = garrisonRowsHtml(guardsShown) + marchesShown.map(m => `
             <div class="item-row" style="margin-top:8px;">
                 <div class="item-row-top">
                     <img src="assets/tropper.png" class="pixel-img item-sprite" />
@@ -2390,6 +2415,11 @@ function renderPointBox(lat, lon, box, badge) {
                 </div>
             </div>
         `).join("");
+        if (others > 0) {
+            html += `<div class="item-actions" style="margin-top:8px;"><button class="btn btn-small btn-muted" onclick="showAllGroupsHere(true)">👥 Vis ${others} ${others === 1 ? "anden gruppe" : "andre grupper"} her</button></div>`;
+        } else if (own.length > 1) {
+            html += `<div class="item-actions" style="margin-top:8px;"><button class="btn btn-small btn-muted" onclick="showAllGroupsHere(false)">Vis kun den nærmeste</button></div>`;
+        }
         if (enemyGuards.length > 0) {
             const n = enemyGuards.reduce((sum, g) => sum + g.count, 0);
             const g = enemyGuards[0];
