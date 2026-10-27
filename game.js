@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 86;
+const APP_VERSION = 87;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -4833,7 +4833,7 @@ function renderContactsSidebar() {
         return;
     }
 
-    const who = o => o.by_soldiers ? "set af dine soldater" : "set med telefonen";
+    const who = o => o.by_soldiers ? "set af dine soldater" : (o.always_visible && !o.in_sight ? "synlig til test" : "set med telefonen");
     const rows = [];
     for (const b of e.buildings) {
         const cfg = GAME_CONFIG.BUILDINGS[b.kind];
