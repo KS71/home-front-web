@@ -4925,20 +4925,127 @@ function codexSoldierHtml() {
     const dmgMin = codexRule("hit_damage_min", 15), dmgMax = codexRule("hit_damage_max", 40);
     return `
         <details class="codex-section">
-            <summary><span class="codex-sum-title">🪖 Soldater</span><span class="codex-sum-sub">din hær: energi, fart, udsyn og pris</span></summary>
+            <summary><span class="codex-sum-title">🪖 Soldater</span><span class="codex-sum-sub">infanteri i brug + 5 kommende specialsoldater</span></summary>
+            
+            <div class="codex-subheading">Aktiv enhedstype</div>
             <div class="codex-hero">
-            <img src="assets/figur.png" class="pixel-img codex-hero-img" alt="Soldat" />
-            <div class="codex-hero-text">
-                <p class="muted-hint">Din eneste enhedstype indtil videre. Soldater uddannes i militærskolen og bor i barrakkerne. De går i realistisk tempo, ser fjender omkring sig og skyder, når fjenden er inden for skudafstand. Sårede soldater heles kun i et felthospital.</p>
-                ${codexStats([
-                    ["Energi", `${fmtNum(C.SOLDIER_HP)}`],
-                    ["Gå-fart", `${fmtKmh(C.SOLDIER_SPEED_MPS)} (${fmtNum(C.SOLDIER_SPEED_MPS)} m/s)`],
-                    ["Udsyn", formatDistance(C.SOLDIER_VISION_M)],
-                    ["Uddannes straks for", codexPrice(C.INSTANT_SOLDIER_STEPS, 0)],
-                    ["Bliver én vagtstyrke inden for", formatDistance(C.GARRISON_MERGE_M)]
-                ])}
-                <p class="muted-hint">Hvert træffer koster ${fmtNum(dmgMin)}–${fmtNum(dmgMax)} energi, og ${fmtPct(codexRule("hit_kill_chance", 0.05))} af træfferne dræber med det samme.</p>
+                <img src="assets/figur.png" class="pixel-img codex-hero-img" alt="Infanteri" />
+                <div class="codex-hero-text">
+                    <div class="codex-card-head" style="margin-bottom: 4px;">
+                        <h3>Infanteri (Riffelsoldat)</h3>
+                        <span class="badge badge-green">I brug nu</span>
+                    </div>
+                    <p class="muted-hint">Spillets grundenhed. Soldater uddannes i militærskolen og bor i barrakkerne. De går i realistisk tempo, ser fjender omkring sig og skyder automatisk, når fjenden er inden for skudafstand. Sårede soldater heles i felthospitalet.</p>
+                    ${codexStats([
+                        ["Energi", `${fmtNum(C.SOLDIER_HP)}`],
+                        ["Gå-fart", `${fmtKmh(C.SOLDIER_SPEED_MPS)} (${fmtNum(C.SOLDIER_SPEED_MPS)} m/s)`],
+                        ["Udsyn", formatDistance(C.SOLDIER_VISION_M)],
+                        ["Rækkevidde", "100 m (Gevær M/95)"],
+                        ["Skade", `${fmtNum(dmgMin)}–${fmtNum(dmgMax)} (${fmtPct(codexRule("hit_kill_chance", 0.05))} øjeblikkelig død)`],
+                        ["Uddannes straks for", codexPrice(C.INSTANT_SOLDIER_STEPS, 0)],
+                        ["Bliver én vagtstyrke inden for", formatDistance(C.GARRISON_MERGE_M)]
+                    ])}
+                </div>
             </div>
+
+            <div class="codex-subheading">Kommende soldatertyper</div>
+            <p class="muted-hint" style="margin-bottom: 12px;">Disse specialiserede soldaterroller er under forberedelse. De kan ikke uddannes endnu, men deres egenskaber, våben og taktiske roller i spillet er fastlagt herunder.</p>
+            
+            <div class="codex-grid codex-grid-3">
+                <div class="codex-card">
+                    <div class="codex-card-head">
+                        <h3>Snigskytte</h3>
+                        <span class="badge badge-pending">Kommer senere</span>
+                    </div>
+                    <div class="codex-soldier-img"><img src="assets/snigskytte.png" class="pixel-img" alt="Snigskytte" /></div>
+                    <p class="muted-hint">Præcisionsskytte iført ghillie-sløring og lyddæmpet riffel. Rækker dobbelt så langt som almindeligt infanteri og ses først på klos hold. Ideel til at udtynde fjendtlige patruljer uden selv at blive opdaget.</p>
+                    ${codexStats([
+                        ["Rolle", "Langtrækkende snigmorder"],
+                        ["Energi", "80"],
+                        ["Gå-fart", "4,5 km/t (sniger sig)"],
+                        ["Udsyn", "350 m (præcisionssigte)"],
+                        ["Rækkevidde", "200 m (dobbelt af infanteri)"],
+                        ["Skade", "35–60 (20 % øjeblikkelig død)"],
+                        ["Skjul", "Synlig for fjenden under 100 m"],
+                        ["Forventet pris", codexPrice(2500, 50)]
+                    ])}
+                </div>
+
+                <div class="codex-card">
+                    <div class="codex-card-head">
+                        <h3>Panserværnssoldat</h3>
+                        <span class="badge badge-pending">Kommer senere</span>
+                    </div>
+                    <div class="codex-soldier-img"><img src="assets/panservaern.png" class="pixel-img" alt="Panserværnssoldat" /></div>
+                    <p class="muted-hint">Tungt udrustet soldat med skudsikker hjelm og panserværnsraketstyr (Bazooka/AT4). Knuser lastbiler og pansrede køretøjer og skader bygninger, men taber i nærkamp mod hurtigt infanteri.</p>
+                    ${codexStats([
+                        ["Rolle", "Køretøjs- & bygningsknuser"],
+                        ["Energi", "110 (pansret vest & hjelm)"],
+                        ["Gå-fart", "3,8 km/t (tung last)"],
+                        ["Udsyn", "200 m"],
+                        ["Rækkevidde", "120 m"],
+                        ["Mod køretøjer/bygninger", "150–250 skade"],
+                        ["Mod infanteri", "15–25 skade (langsom genladning)"],
+                        ["Forventet pris", codexPrice(2000, 100)]
+                    ])}
+                </div>
+
+                <div class="codex-card">
+                    <div class="codex-card-head">
+                        <h3>Spejder</h3>
+                        <span class="badge badge-pending">Kommer senere</span>
+                    </div>
+                    <div class="codex-soldier-img"><img src="assets/spejder.png" class="pixel-img" alt="Spejder" /></div>
+                    <p class="muted-hint">Let og lynhurtig rekognosceringssoldat i boonie hat med militærkikkert og håndleds-GPS. Ser over dobbelt så langt som andre soldater og fungerer som fremskudt lyttepost for basen.</p>
+                    ${codexStats([
+                        ["Rolle", "Hurtigt udsyn & lyttepost"],
+                        ["Energi", "75 (let udrustning)"],
+                        ["Gå-fart", "7,0 km/t (hurtig march)"],
+                        ["Udsyn", "600 m (ekstrem rækkevidde)"],
+                        ["Rækkevidde", "50 m (selvforsvar)"],
+                        ["Skade", "10–20"],
+                        ["Speciale", "Afslører miner & snigskytter"],
+                        ["Forventet pris", codexPrice(1500, 10)]
+                    ])}
+                </div>
+
+                <div class="codex-card">
+                    <div class="codex-card-head">
+                        <h3>Sanitetssoldat</h3>
+                        <span class="badge badge-pending">Kommer senere</span>
+                    </div>
+                    <div class="codex-soldier-img"><img src="assets/sanitet.png" class="pixel-img" alt="Sanitetssoldat" /></div>
+                    <p class="muted-hint">Feltlæge med Røde Kors på hjelm og armbind. Heler sårede soldater direkte ude i felten under march eller vagttjeneste, så gruppen kan kæmpe videre uden at skulle tilbage til felthospitalet.</p>
+                    ${codexStats([
+                        ["Rolle", "Mobil heling i felten"],
+                        ["Energi", "90"],
+                        ["Gå-fart", "5,0 km/t"],
+                        ["Udsyn", "250 m"],
+                        ["Felt-heling", "25 energi/minut til delingen"],
+                        ["Rækkevidde", "80 m (let selvforsvar)"],
+                        ["Skade", "15–30"],
+                        ["Forventet pris", codexPrice(2000, 40)]
+                    ])}
+                </div>
+
+                <div class="codex-card">
+                    <div class="codex-card-head">
+                        <h3>Ingeniør</h3>
+                        <span class="badge badge-pending">Kommer senere</span>
+                    </div>
+                    <div class="codex-soldier-img"><img src="assets/ingenioer.png" class="pixel-img" alt="Ingeniør" /></div>
+                    <p class="muted-hint">Pionersoldat med feltskovl, pansermine og værktøjsbælte. Kan udlægge og fjerne minefelter, etablere pigtrådsspærringer, reparere køretøjer og slukke brændende bygninger på en tredjedel af tiden.</p>
+                    ${codexStats([
+                        ["Rolle", "Pioner, miner & brandslukning"],
+                        ["Energi", "100"],
+                        ["Gå-fart", "4,5 km/t"],
+                        ["Udsyn", "250 m"],
+                        ["Brandslukning", "Slukker brande 3x hurtigere"],
+                        ["Speciale", "Miner, pigtråd & reparation"],
+                        ["Skade", "15–35 (+ sprængladninger)"],
+                        ["Forventet pris", codexPrice(2200, 80)]
+                    ])}
+                </div>
             </div>
         </details>`;
 }

@@ -247,6 +247,12 @@ body, html {
     border-color: rgba(57, 255, 20, 0.4);
 }
 
+.badge-pending {
+    color: #FFA000;
+    border-color: rgba(255, 160, 0, 0.4);
+    background: rgba(255, 160, 0, 0.08);
+}
+
 .card-box {
     background: #171E26;
     border: 1px solid #263238;
@@ -1167,6 +1173,34 @@ body, html {
     max-width: 90%;
     width: auto;
     object-fit: contain;
+}
+
+.codex-soldier-img {
+    height: 160px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #11161C;
+    border: 1px solid #263238;
+    border-radius: 8px;
+    padding: 8px;
+    margin-bottom: 10px;
+}
+
+.codex-soldier-img img {
+    height: 146px;
+    max-width: 90%;
+    width: auto;
+    object-fit: contain;
+}
+
+.codex-subheading {
+    margin: 18px 0 8px;
+    font-size: 13px;
+    font-weight: 700;
+    color: #FFD54F;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
 }
 
 .codex-stats {
