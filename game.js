@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 81;
+const APP_VERSION = 82;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -3077,6 +3077,7 @@ async function openConfirmMarchModal(order, target) {
         <p><strong>Afstand langs land/kyst:</strong> ca. ${formatDistance(distM)}</p>
         <p><strong>Rejsetid:</strong> ${formatSeconds(durationSec)}</p>
         ${truckInfo}
+        ${order.dropOff ? `<p>🪖 <strong>${order.dropOff} soldater stiger af</strong> og bliver stående som vagt. ${order.count === 1 ? "1 soldat kører lastbilen" : `${order.count} soldater kører lastbilerne`} hjem.</p>` : ""}
         <p style="color:#90A4AE;font-size:13px;">Er du sikker på, at du vil sende soldaterne hertil?</p>
     `;
     document.getElementById("modal-actions").innerHTML = `
@@ -3362,6 +3363,7 @@ function renderGroupModal() {
             <button class="btn btn-primary" onclick="closeModal(); sendFromGarrison(${g.id})">🪖 Send soldater</button>
             ${g.mortars > 0 ? `<button class="btn btn-gold" onclick="closeModal(); startMortarAim(${g.id})">💣 Affyr morter</button>` : ""}
             ${g.howitzers > 0 ? `<button class="btn btn-danger" onclick="closeModal(); startHowitzerAimGarrison(${g.id})">💥 Affyr haubits</button>` : ""}
+            ${truckCount(g) > 0 && g.count > truckCount(g) ? `<button class="btn btn-primary" onclick="closeModal(); dropOffFromTrucks(${g.id})">🚚 Sæt soldaterne af</button>` : ""}
             ${hurt ? `<button class="btn btn-primary" onclick="closeModal(); sendWoundedToHospital(${g.id})">🏥 Send ${hurt} ${hurt === 1 ? "såret" : "sårede"} til hospitalet</button>` : ""}
             <button class="btn btn-danger" onclick="closeModal(); sendGarrisonHome(${g.id})">🏠 Send hjem</button>
             <button class="btn" onclick="closeModal()">Luk</button>`;
@@ -3414,6 +3416,22 @@ window.sendGarrisonHome = function(id) {
 };
 
 window.openGroupModal = openGroupModal;
+
+// Soldaterne stiger af og bliver stående som vagt; lastbilerne kører hjem til den nærmeste barrak
+// med 1 soldat bag rattet i hver (der skal mindst 1 soldat i hver lastbil for at køre den).
+window.dropOffFromTrucks = function(id) {
+    const g = state.garrisons.find(x => String(x.id) === String(id));
+    const t = truckCount(g);
+    if (!g || t <= 0 || g.count <= t) return;
+    const home = nearestOwn("barracks", g.lat, g.lon);
+    if (!home) {
+        showToast("Du har ingen barrak, lastbilerne kan køre hjem til.");
+        return;
+    }
+    openConfirmMarchModal(
+        { from: { type: "garrison", id: g.id, lat: g.lat, lon: g.lon }, count: t, trucks: t, dropOff: g.count - t },
+        { lat: home.b.lat, lon: home.b.lon, label: buildingLabel(home.b) });
+};
 
 // Kun de sårede går til det nærmeste hospital; de raske bliver stående.
 window.sendWoundedToHospital = function(id) {
