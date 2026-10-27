@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 74;
+const APP_VERSION = 75;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -1433,21 +1433,22 @@ async function findTruckPathAsync(startLat, startLon, endLat, endLon) {
     let best = field;
     try {
         const url = `https://router.project-osrm.org/route/v1/driving/${startLon.toFixed(6)},${startLat.toFixed(6)};${endLon.toFixed(6)},${endLat.toFixed(6)}?overview=full&geometries=geojson`;
-        const resp = await fetch(url);
+        const resp = await fetch(url, { signal: AbortSignal.timeout(6000) });
         if (resp.ok) {
             const json = await resp.json();
             const coords = json?.routes?.[0]?.geometry?.coordinates;
             if (Array.isArray(coords) && coords.length >= 2) {
                 const road = simplifyPolyline(coords.map(c => [c[1], c[0]]), 0.00012);
-                const viaRoad = [
+                best = [
                     [startLat, startLon],
                     ...road.map((p, i) => [p[0], p[1], i === 0 ? 0 : 1]),
                     [endLat, endLon, 0]
                 ];
-                if (truckPathSeconds(viaRoad) < truckPathSeconds(best)) best = viaRoad;
             }
         }
-    } catch (_) {}
+    } catch (e) {
+        console.warn("OSRM truck route warning:", e);
+    }
     return best;
 }
 
