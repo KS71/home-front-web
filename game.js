@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 66;
+const APP_VERSION = 67;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -5253,7 +5253,7 @@ function showAppVersion() {
         el.textContent = short ? `v${APP_VERSION}` : `version ${APP_VERSION}`;
         if (stale && short) {
             el.classList.add("stale");
-            el.textContent = `v${APP_VERSION} · genindlæs`;
+            el.textContent = `v${APP_VERSION} ⟳`;   // kort, så toppen ikke skubbes
             el.title = `Siden er version ${pageVersion}, men spillet kører version ${APP_VERSION}. Klik for at genindlæse.`;
             el.onclick = () => location.reload();
         }
