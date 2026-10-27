@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 70;
+const APP_VERSION = 71;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -123,6 +123,22 @@ const GAME_CONFIG = {
                 capacity: [50, 120, 250, 450, 800]
             },
             size: 100
+        },
+        weapons_factory: {
+            id: "weapons_factory",
+            name: "Våbenfabrikken",
+            shortName: "våbenfabrik",
+            desc: "Sælger våben, granater og køretøjer. Højere trin låser op for tungere udstyr og giver rabat. Udstyret står på lager i barrakken.",
+            stages: ["Værksted", "Våbenværksted", "Ammunitionsfabrik", "Våbenfabrik", "Rustningskombinat"],
+            sprites: ["vaabenfabrik_1", "vaabenfabrik_2", "vaabenfabrik_3", "vaabenfabrik_4", "vaabenfabrik_5"],
+            prices: [1000, 1800, 3000, 4500, 6500],
+            materials: [{}, { steel: 50 }, { steel: 100 }, { steel: 200 }, { steel: 300 }],
+            // Det trin, hvert stykke udstyr kræver, og rabatten pr. trin (config.rules factory_*).
+            unlock: { mortars: 1, mortar_shells: 1, trucks: 1, howitzers: 3, howitzer_shells: 3 },
+            discount: [0, 0.05, 0.10, 0.15, 0.20],
+            size: 60,
+            needsRules: true,      // vises først, når 0033 er kørt (reglerne kender bygningen)
+            enabled: false
         }
     }
 };
@@ -484,6 +500,11 @@ async function installPixelLandscape() {
         ["img-b-staalvaerk_3", "assets/staalvaerk_3.png", 2],
         ["img-b-staalvaerk_4", "assets/staalvaerk_4.png", 2],
         ["img-b-staalvaerk_5", "assets/staalvaerk_5.png", 2],
+        ["img-b-vaabenfabrik_1", "assets/vaabenfabrik_1.png", 4],
+        ["img-b-vaabenfabrik_2", "assets/vaabenfabrik_2.png", 4],
+        ["img-b-vaabenfabrik_3", "assets/vaabenfabrik_3.png", 4],
+        ["img-b-vaabenfabrik_4", "assets/vaabenfabrik_4.png", 4],
+        ["img-b-vaabenfabrik_5", "assets/vaabenfabrik_5.png", 4],
         ["img-crater", "assets/krater.png", 2],
         ["img-wreck", "assets/lastbil_vrag.png", 2],
         ["img-flame-0", "assets/flamme_1.png", 2],
@@ -1709,6 +1730,10 @@ async function syncAllFromSupabase() {
                     if (r.building_production?.[k]) bcfg.production = r.building_production[k];
                     if (r.building_size_m?.[k]) bcfg.size = Number(r.building_size_m[k]);
                 }
+                const wf = GAME_CONFIG.BUILDINGS.weapons_factory;
+                wf.enabled = !!r.building_prices?.weapons_factory;
+                if (r.factory_unlock) wf.unlock = r.factory_unlock;
+                if (r.factory_discount) wf.discount = r.factory_discount.map(Number);
                 const mortarRules = {
                     priceSteps: "mortar_price_steps", priceSteel: "mortar_price_steel",
                     shellSteps: "mortar_shell_price_steps", shellSteel: "mortar_shell_price_steel",
@@ -2005,7 +2030,9 @@ function renderBuildingBox(bld, box, badge) {
                         <div class="item-sub">${size}×${size} m · ${formatPos(bld.lat, bld.lon)}</div>
                         ${housing ? `<div class="item-sub" style="color:#76FF03">Plads her: ${housing} · Ledige i barrak: ${avail}</div>` : ""}
                         ${bld.kind === "barracks" ? `<div class="item-sub" style="color:#FFB74D">🧨 Morterer på lager: ${state.mortarsHome} · 💣 Granater: ${state.shells} · 🚚 Lastbiler: ${state.trucksHome}</div>
-                        ${GAME_CONFIG.HOWITZER.enabled ? `<div class="item-sub" style="color:#FFB74D">💥 Haubitser: ${state.howitzersHome} · 🎯 Haubitsgranater: ${state.howitzerShells}</div>` : ""}` : ""}
+                        ${GAME_CONFIG.HOWITZER.enabled ? `<div class="item-sub" style="color:#FFB74D">💥 Haubitser: ${state.howitzersHome} · 🎯 Haubitsgranater: ${state.howitzerShells}</div>` : ""}
+                        ${factoryEnabled() ? `<div class="item-sub">Våben, granater og køretøjer købes i våbenfabrikken og står på lager her.</div>` : ""}` : ""}
+                        ${bld.kind === "weapons_factory" ? `<div class="item-sub" style="color:#FFB74D">${factoryLineText(bld)}</div>` : ""}
                         ${prod ? `<div class="item-sub" style="color:#FFD54F">${prod.material === "steel" ? "Klar til afhentning" : "Klar til indkaldelse"}: ${prod.amount} / ${prod.capacity} ${prod.unit} (${prod.perHour}/t)</div>` : ""}
                         ${hospitalLineHtml(bld)}
                     </div>
@@ -2013,12 +2040,8 @@ function renderBuildingBox(bld, box, badge) {
                 <div class="item-actions">
                     ${bld.kind === "hospital" ? `<button class="btn btn-small btn-primary" onclick="openHospitalModal(${bld.id})">🏥 Patienter</button>` : ""}
                     ${bld.kind === "barracks" ? `<button class="btn btn-small btn-primary" ${avail <= 0 ? "disabled" : ""} onclick="sendFromBuilding(${bld.id})">🪖 Send soldater (${avail} klar)</button>` : ""}
-                    ${bld.kind === "barracks" ? `<button class="btn btn-small btn-gold" onclick="openBuyEquipmentModal('mortars')">🧨 Køb morter</button>
-                    <button class="btn btn-small btn-gold" onclick="openBuyEquipmentModal('mortar_shells')">💣 Køb granater</button>
-                    <button class="btn btn-small btn-gold" onclick="openBuyEquipmentModal('trucks')">🚚 Køb lastbil</button>
-                    ${GAME_CONFIG.HOWITZER.enabled ? `<button class="btn btn-small btn-gold" onclick="openBuyEquipmentModal('howitzers')">💥 Køb haubits</button>
-                    <button class="btn btn-small btn-gold" onclick="openBuyEquipmentModal('howitzer_shells')">🎯 Køb haubitsgranater</button>` : ""}
-                    ${state.howitzersHome > 0 ? `<button class="btn btn-small btn-danger" onclick="startHowitzerAim(${bld.id})">💥 Skyd med haubits</button>` : ""}` : ""}
+                    ${bld.kind === (factoryEnabled() ? "weapons_factory" : "barracks") ? equipmentButtonsHtml(bld) : ""}
+                    ${bld.kind === "barracks" && state.howitzersHome > 0 ? `<button class="btn btn-small btn-danger" onclick="startHowitzerAim(${bld.id})">💥 Skyd med haubits</button>` : ""}
                     ${prod && prod.amount > 0 ? `<button class="btn btn-small btn-primary" onclick="collectFromBuilding(${bld.id})">📥 ${prod.material === "steel" ? "Hent" : "Indkald"} ${prod.amount} ${prod.unit}</button>` : ""}
                     ${bld.kind === "academy" ? `<button class="btn btn-small btn-gold" onclick="recruitSoldierInstant()">⚡ Uddan 1 straks (${GAME_CONFIG.INSTANT_SOLDIER_STEPS} skridt)</button>` : ""}
                     ${nextPrice ? `<button class="btn btn-small" onclick="upgradeBuilding(${bld.id})">⬆️ Opgradér til trin ${bld.level + 1} (${nextPrice} skridt${nextSteel ? ` + ${nextSteel} stål` : ""})</button>` : `<span class="badge">Fuldt udbygget</span>`}
@@ -2206,6 +2229,7 @@ function clearFootprintPreview() {
 function buildChoicesHtml(lat, lon, terr) {
     let html = "";
     for (const cfg of Object.values(GAME_CONFIG.BUILDINGS)) {
+        if (cfg.needsRules && !cfg.enabled) continue;
         const p = cfg.prices[0];
         const size = cfg.size || 30;
         const near = nearestBuildingGap(lat, lon, size);
@@ -3368,7 +3392,75 @@ function circleRing(lat, lon, r, n = 72) {
 }
 
 // ---------------------------------------------------------------- køb
-// Udstyr, der købes i barrakken: navn, billede, pris og forklaring.
+// Våbenfabrikken (0033): udstyr købes der, tungt udstyr kræver et højere trin, og højere trin giver rabat.
+const EQUIPMENT_ITEMS = [
+    ["mortars", "🧨 Køb morter"],
+    ["mortar_shells", "💣 Køb granater"],
+    ["trucks", "🚚 Køb lastbil"],
+    ["howitzers", "💥 Køb haubits"],
+    ["howitzer_shells", "🎯 Køb haubitsgranater"]
+];
+const EQUIPMENT_NAMES = {
+    mortars: "morter", mortar_shells: "mortergranater", trucks: "lastbil",
+    howitzers: "haubits", howitzer_shells: "haubitsgranater"
+};
+
+function factoryEnabled() {
+    return GAME_CONFIG.BUILDINGS.weapons_factory.enabled;
+}
+
+// Højeste trin blandt dine våbenfabrikker (0 = ingen).
+function factoryLevel() {
+    return state.myBuildings.filter(b => b.kind === "weapons_factory").reduce((m, b) => Math.max(m, b.level), 0);
+}
+
+function factoryUnlockLevel(item) {
+    return Number(GAME_CONFIG.BUILDINGS.weapons_factory.unlock?.[item] || 1);
+}
+
+function factoryDiscount() {
+    if (!factoryEnabled()) return 0;
+    const lvl = factoryLevel();
+    return lvl > 0 ? Math.min(0.9, Math.max(0, Number(GAME_CONFIG.BUILDINGS.weapons_factory.discount?.[lvl - 1] || 0))) : 0;
+}
+
+// Prisen efter rabat, regnet ud som på serveren.
+function discounted(n) {
+    return Math.round(n * (1 - factoryDiscount()));
+}
+
+function equipmentAvailable(item) {
+    if (!factoryEnabled()) return item.startsWith("howitzer") ? GAME_CONFIG.HOWITZER.enabled : true;
+    if (item.startsWith("howitzer") && !GAME_CONFIG.HOWITZER.enabled) return false;
+    return true;
+}
+
+function equipmentButtonsHtml(bld) {
+    const lvl = factoryEnabled() ? bld.level : Infinity;
+    return EQUIPMENT_ITEMS.filter(([item]) => equipmentAvailable(item)).map(([item, label]) => {
+        const need = factoryEnabled() ? factoryUnlockLevel(item) : 1;
+        return lvl >= need
+            ? `<button class="btn btn-small btn-gold" onclick="openBuyEquipmentModal('${item}')">${label}</button>`
+            : `<button class="btn btn-small" disabled title="Opgradér våbenfabrikken til trin ${need}">🔒 ${label.replace(/^\S+ /, "")} (trin ${need})</button>`;
+    }).join("\n");
+}
+
+function factoryLineText(bld) {
+    const F = GAME_CONFIG.BUILDINGS.weapons_factory;
+    const disc = Number(F.discount?.[bld.level - 1] || 0);
+    const locked = EQUIPMENT_ITEMS.map(([i]) => i).filter(i => equipmentAvailable(i) && factoryUnlockLevel(i) > bld.level);
+    return `🏭 Rabat på udstyr: ${Math.round(disc * 100)} %${locked.length
+        ? ` · Låses op senere: ${locked.map(i => `${EQUIPMENT_NAMES[i]} (trin ${factoryUnlockLevel(i)})`).join(", ")}` : ""}`;
+}
+
+// "købes i våbenfabrikken (trin 3)" til Oversigten.
+function buyWhere(item) {
+    if (!factoryEnabled()) return "købes i barrakken";
+    const need = factoryUnlockLevel(item);
+    return need > 1 ? `købes i våbenfabrikken (trin ${need})` : "købes i våbenfabrikken";
+}
+
+// Udstyr, der købes i våbenfabrikken: navn, billede, pris før rabat og forklaring.
 function equipmentInfo(item) {
     const M = GAME_CONFIG.MORTAR, T = GAME_CONFIG.TRUCK;
     if (item === "mortars") return {
@@ -3401,8 +3493,9 @@ function equipmentInfo(item) {
 
 window.openBuyEquipmentModal = function(item) {
     const E = equipmentInfo(item);
-    const steps = E.steps;
-    const steel = E.steel;
+    const steps = discounted(E.steps);
+    const steel = discounted(E.steel);
+    const disc = factoryDiscount();
     const afford = Math.floor(Math.min(state.balance / Math.max(steps, 1), steel > 0 ? state.steel / steel : Infinity));
     const max = Math.max(1, Math.min(E.max, afford));
     state.groupModal = null;
@@ -3412,7 +3505,7 @@ window.openBuyEquipmentModal = function(item) {
             <img src="assets/${E.img}.png" class="pixel-img item-sprite" />
             <p class="muted-hint" style="margin:0;">${E.desc}</p>
         </div>
-        <p>Pris pr. stk.: <strong>${steps} skridt + ${steel} stål</strong>. Du har ${state.balance.toLocaleString("da-DK")} skridt og ${state.steel.toLocaleString("da-DK")} stål.</p>
+        <p>Pris pr. stk.: <strong>${steps} skridt + ${steel} stål</strong>${disc > 0 ? ` (${Math.round(disc * 100)} % rabat fra våbenfabrikken)` : ""}. Du har ${state.balance.toLocaleString("da-DK")} skridt og ${state.steel.toLocaleString("da-DK")} stål.</p>
         <div style="text-align:center;font-size:20px;font-weight:800;color:#FFD54F;" id="buy-val-label"></div>
         <input type="range" min="1" max="${max}" value="1" class="range-slider" id="buy-range-input" ${afford < 1 ? "disabled" : ""} />
         ${afford < 1 ? `<p class="muted-hint" style="color:#FF8A80">Du har ikke skridt og stål nok til at købe en ${E.one}.</p>` : ""}
@@ -3477,7 +3570,7 @@ window.startHowitzerAim = async function(buildingId) {
         return;
     }
     if (!(state.howitzerShells > 0)) {
-        showToast("Du har ingen haubitsgranater. Køb dem i barrakken.");
+        showToast(`Du har ingen haubitsgranater. Køb dem i ${factoryEnabled() ? "våbenfabrikken" : "barrakken"}.`);
         return;
     }
     closeModal();
@@ -4644,6 +4737,8 @@ const RULE_INFO = {
     building_production:        ["build", "Produktion pr. trin", ""],
     hospital_beds:              ["build", "Felthospitalet: senge pr. trin", "sårede"],
     hospital_heal_per_hour:     ["build", "Felthospitalet: heling pr. time pr. trin", "energi"],
+    factory_unlock:             ["build", "Våbenfabrikken: trin, som hvert stykke udstyr kræver", "trin"],
+    factory_discount:           ["build", "Våbenfabrikken: rabat på udstyr pr. trin (0,05 = 5 %)", "0–1"],
     building_terrain:           ["build", "Terræn, man må bygge på (adskilt med komma)", ""],
     starting_steps:             ["economy", "Skridt ved start", "skridt"],
     instant_soldier_steps:      ["economy", "Pris for at straks-uddanne én soldat", "skridt"],
@@ -4658,7 +4753,9 @@ const RULE_INFO = {
 
 const RULE_SUBLABELS = {
     per_hour: "pr. time", capacity: "lager", material: "materiale",
-    soldiers: "soldater", steel: "stål"
+    soldiers: "soldater", steel: "stål",
+    mortars: "morter", mortar_shells: "mortergranater", trucks: "lastbil",
+    howitzers: "haubits", howitzer_shells: "haubitsgranater"
 };
 
 let adminRules = null;   // reglerne, som de så ud, da fanen blev åbnet
@@ -5070,6 +5167,11 @@ function codexStageEffect(b, i) {
     }
     if (b.beds) lines.push(`🩹 ${fmtNum(b.beds[i])} senge`);
     if (b.healPerHour) lines.push(`💚 ${fmtNum(b.healPerHour[i])} energi/time`);
+    if (b.unlock) {
+        const items = EQUIPMENT_ITEMS.map(([it]) => it).filter(it => factoryUnlockLevel(it) === i + 1);
+        if (items.length) lines.push(`🔓 ${items.map(it => EQUIPMENT_NAMES[it]).join(", ")}`);
+        lines.push(`🏷 ${Math.round(Number(b.discount?.[i] || 0) * 100)} % rabat`);
+    }
     return lines.map(l => `<div>${l}</div>`).join("");
 }
 
@@ -5247,7 +5349,7 @@ function codexWeaponsHtml() {
                     ])}
                 </div>
                 <div class="codex-card">
-                    <div class="codex-card-head"><h3>Let morter</h3><span class="badge">købes i barrakken</span></div>
+                    <div class="codex-card-head"><h3>Let morter</h3><span class="badge">${buyWhere("mortars")}</span></div>
                     <div class="codex-weapon-img"><img src="assets/morter.png" class="pixel-img" alt="" /></div>
                     <p class="muted-hint">Bæres af soldaterne og skyder, når de står vagt. Granaterne lander et sted inde i spredningscirklen.</p>
                     ${codexStats([
@@ -5263,7 +5365,7 @@ function codexWeaponsHtml() {
                     ])}
                 </div>
                 <div class="codex-card">
-                    <div class="codex-card-head"><h3>Mortergranat</h3><span class="badge">købes i barrakken</span></div>
+                    <div class="codex-card-head"><h3>Mortergranat</h3><span class="badge">${buyWhere("mortar_shells")}</span></div>
                     <div class="codex-weapon-img"><img src="assets/granat.png" class="pixel-img" alt="" /></div>
                     <p class="muted-hint">Ammunition til morteren. Soldaterne bærer granaterne med ud, og et krater kan ses i ${fmtNum(M.craterHours)} timer. Lander en granat i en af kortets brune bygninger, går den i brand med ${fmtNum(Math.round(GAME_CONFIG.MAP_FIRE.chance * 100))} % chance: den brænder i ${fmtNum(GAME_CONFIG.MAP_FIRE.fireHours)} timer og står derefter som udbrændt ruin i ${fmtNum(GAME_CONFIG.MAP_FIRE.ruinHours)} timer.</p>
                     ${codexStats([
@@ -5271,7 +5373,7 @@ function codexWeaponsHtml() {
                     ])}
                 </div>
                 <div class="codex-card">
-                    <div class="codex-card-head"><h3>Haubits</h3><span class="badge">købes i barrakken</span></div>
+                    <div class="codex-card-head"><h3>Haubits</h3><span class="badge">${buyWhere("howitzers")}</span></div>
                     <div class="codex-weapon-img"><img src="assets/haubits.png" class="pixel-img" alt="Haubits" /></div>
                     <p class="muted-hint">Tungt feltartilleri, der står ved barrakken og skyder derfra. Vælg barrakken og tryk <em>Skyd med haubits</em>. Granaterne lander et sted inde i spredningscirklen og kan også ramme dine egne soldater.</p>
                     ${codexStats([
@@ -5287,7 +5389,7 @@ function codexWeaponsHtml() {
                     ])}
                 </div>
                 <div class="codex-card">
-                    <div class="codex-card-head"><h3>Haubitsgranat</h3><span class="badge">købes i barrakken</span></div>
+                    <div class="codex-card-head"><h3>Haubitsgranat</h3><span class="badge">${buyWhere("howitzer_shells")}</span></div>
                     <div class="codex-weapon-img"><img src="assets/haubitsgranat.png" class="pixel-img" alt="" /></div>
                     <p class="muted-hint">Ammunition til haubitsen. Granaterne ligger på lager ved barrakken. Krateret er dobbelt så stort som mortergranatens, og granaten kan også sætte kortets brune bygninger i brand.</p>
                     ${codexStats([
@@ -5305,7 +5407,7 @@ function codexVehiclesHtml() {
             <summary><span class="codex-sum-title">🚚 Køretøjer</span><span class="codex-sum-sub">lastbil til troppetransport</span></summary>
             <div class="codex-grid codex-grid-3">
                 <div class="codex-card">
-                    <div class="codex-card-head"><h3>Lastbil</h3><span class="badge">købes i barrakken</span></div>
+                    <div class="codex-card-head"><h3>Lastbil</h3><span class="badge">${buyWhere("trucks")}</span></div>
                     <div class="codex-weapon-img"><img src="assets/lastbil.png" class="pixel-img" alt="Lastbil" /></div>
                     <p class="muted-hint">Grøn militærlastbil med presenning over ladet, hvor soldaterne sidder. Vælg lastbiler, når du sender soldater. Der skal mindst 1 soldat i hver lastbil for at køre den, og er der flere soldater, end der er plads til, går alle. Kommer den hjem til barrakken, bliver den repareret.</p>
                     ${codexStats([
