@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 82;
+const APP_VERSION = 83;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -45,7 +45,8 @@ const GAME_CONFIG = {
         roadMps: 22.22, fieldMps: 5.556,       // 80 km/t på vej, 20 km/t uden for vejene
         hp: 300,                               // energi pr. lastbil
         hitShare: 0.4,                         // andel af træfferne, der rammer en lastbil
-        wreckHours: 24                         // så længe et udbrændt vrag kan ses
+        wreckHours: 24,                        // så længe et udbrændt vrag kan ses
+        boardM: 50                             // så tæt skal soldaterne stå for at stige på (0038)
     },
     // Haubits (0032), står ved barrakken og skyder derfra. Overskrives af config.rules (howitzer_*).
     HOWITZER: {
@@ -227,6 +228,7 @@ const state = {
     howitzersHome: 0,      // haubitser, der står ved barrakken
     howitzerShells: 0,     // haubitsgranater på lager
     howitzerReadyAt: null, // haubitserne er ladt igen herfra (ISO-tid fra serveren)
+    parkedTrucks: [],      // tomme lastbiler, soldaterne er steget af (0038): { id, lat, lon, trucks }
     wrecks: [],            // udbrændte køretøjer fra mortar_craters(): { id, kind, lat, lon, burned_at, mine }
     mortarAim: null,       // { weapon: "mortar", garrisonId } eller { weapon: "howitzer", buildingId } mens man sigter
     craters: [],           // nedslag fra mortar_craters(): { id, lat, lon, lands_at, fire_checked, mine, from_lat, from_lon, fired_at }
@@ -288,13 +290,15 @@ function marchFromRow(row) {
 
 async function loadArmy() {
     if (!state.user) return;
-    const [mRes, gRes] = await Promise.all([
+    const [mRes, gRes, pRes] = await Promise.all([
         // "*", så siden også virker, før databasen har fået kolonnen wounded (0011).
         sb.from("marches").select("*"),
-        sb.from("garrisons").select("*")
+        sb.from("garrisons").select("*"),
+        sb.from("parked_trucks").select("*")
     ]);
     if (mRes.data) state.marches = mRes.data.map(marchFromRow);
     if (gRes.data) state.garrisons = gRes.data;
+    if (pRes.data) state.parkedTrucks = pRes.data;
     renderGroupModal();
     renderTroopsSidebar();
     renderBuildingsSidebar();
@@ -509,6 +513,7 @@ async function installPixelLandscape() {
         ["img-b-vaabenfabrik_5", "assets/vaabenfabrik_5.png", 4],
         ["img-crater", "assets/krater.png", 2],
         ["img-wreck", "assets/lastbil_vrag.png", 2],
+        ["img-parked-truck", "assets/lastbil.png", 2],
         ["img-flame-0", "assets/flamme_1.png", 2],
         ["img-flame-1", "assets/flamme_2.png", 2],
         ["img-flame-2", "assets/flamme_3.png", 2],
@@ -598,6 +603,7 @@ function installGameLayers() {
     map.addSource("src-craters", { type: "geojson", data: empty });
     map.addSource("src-shells", { type: "geojson", data: empty });
     map.addSource("src-wrecks", { type: "geojson", data: empty });
+    map.addSource("src-parked-trucks", { type: "geojson", data: empty });
     map.addSource("src-mortar-aim", { type: "geojson", data: empty });
     map.addSource("src-fire-areas", { type: "geojson", data: empty });
     map.addSource("src-fire-flames", { type: "geojson", data: empty });
@@ -655,6 +661,21 @@ function installGameLayers() {
             "icon-ignore-placement": true
         },
         paint: { "icon-opacity": ["get", "op"] }
+    });
+
+    // Tomme lastbiler, som soldaterne er steget af (0038). Lidt blege, fordi ingen sidder i dem.
+    map.addLayer({
+        id: "lyr-parked-trucks",
+        type: "symbol",
+        source: "src-parked-trucks",
+        layout: {
+            "icon-image": "img-parked-truck",
+            "icon-anchor": "bottom",
+            "icon-size": ["interpolate", ["exponential", 2], ["zoom"], 12, 0.12, 16, 0.5, 19, 2.0],
+            "icon-allow-overlap": true,
+            "icon-ignore-placement": true
+        },
+        paint: { "icon-opacity": 0.85 }
     });
 
     // Bogmærker: byggepladser er firkanter på 50×50 m, mål er små firkanter.
@@ -1676,6 +1697,12 @@ async function renderTroopsOnMap() {
     }
 
     map.getSource("src-troops")?.setData({ type: "FeatureCollection", features: troopFeatures });
+    // Flere tomme lastbiler samme sted står lidt forskudt, så man kan se, hvor mange der er.
+    const parkedFeatures = state.parkedTrucks.flatMap(p => (p.trucks || []).map((_, i) => ({
+        type: "Feature", properties: {},
+        geometry: { type: "Point", coordinates: [p.lon + i * 0.00012, p.lat - i * 0.00004] }
+    })));
+    map.getSource("src-parked-trucks")?.setData({ type: "FeatureCollection", features: parkedFeatures });
     map.getSource("src-march-lines")?.setData({ type: "FeatureCollection", features: lineFeatures });
     shotPairs = findShotPairs(npcs, own);
     renderShots();
@@ -1830,7 +1857,8 @@ async function syncAllFromSupabase() {
                     priceSteps: "truck_price_steps", priceSteel: "truck_price_steel",
                     capacity: "truck_capacity", roadMps: "truck_road_speed_mps",
                     fieldMps: "truck_field_speed_mps", hp: "truck_hp",
-                    hitShare: "truck_hit_share", wreckHours: "truck_wreck_hours"
+                    hitShare: "truck_hit_share", wreckHours: "truck_wreck_hours",
+                    boardM: "truck_board_m"
                 };
                 for (const [k, key] of Object.entries(truckRules)) {
                     if (r[key] != null) GAME_CONFIG.TRUCK[k] = Number(r[key]);
@@ -1933,6 +1961,22 @@ function findBuilding(id) {
 
 // Vagtstyrker tæt på et punkt: inden for garrison_merge_m, eller så tæt på skærmen, at man har
 // klikket på deres ikon (ikonet står oven over punktet).
+// Tomme lastbiler under et tryk på kortet (samme slags ramme som ved soldaterne).
+function parkedTrucksNear(lat, lon) {
+    const pt = mapReady ? map.project([lon, lat]) : null;
+    return state.parkedTrucks.filter(p => {
+        if (Geo.distanceM(lat, lon, p.lat, p.lon) <= GAME_CONFIG.GARRISON_MERGE_M) return true;
+        if (!pt) return false;
+        const pp = map.project([p.lon, p.lat]);
+        return pt.x >= pp.x - 30 && pt.x <= pp.x + 30 + 10 * (p.trucks || []).length && pt.y >= pp.y - 40 && pt.y <= pp.y + 10;
+    });
+}
+
+// Egne vagtstyrker tæt nok på tomme lastbiler til at stige på.
+function garrisonsByParked(p) {
+    return state.garrisons.filter(g => g.count > 0 && Geo.distanceM(g.lat, g.lon, p.lat, p.lon) <= GAME_CONFIG.TRUCK.boardM);
+}
+
 function garrisonsNear(list, lat, lon) {
     const pt = mapReady ? map.project([lon, lat]) : null;
     return list.filter(g => {
@@ -3077,7 +3121,6 @@ async function openConfirmMarchModal(order, target) {
         <p><strong>Afstand langs land/kyst:</strong> ca. ${formatDistance(distM)}</p>
         <p><strong>Rejsetid:</strong> ${formatSeconds(durationSec)}</p>
         ${truckInfo}
-        ${order.dropOff ? `<p>🪖 <strong>${order.dropOff} soldater stiger af</strong> og bliver stående som vagt. ${order.count === 1 ? "1 soldat kører lastbilen" : `${order.count} soldater kører lastbilerne`} hjem.</p>` : ""}
         <p style="color:#90A4AE;font-size:13px;">Er du sikker på, at du vil sende soldaterne hertil?</p>
     `;
     document.getElementById("modal-actions").innerHTML = `
@@ -3262,6 +3305,10 @@ function openGroupModalAt(lat, lon) {
         ...npcsNear(lat, lon).map(({ n }) => ({ kind: "npc", id: n.id }))
     ];
     if (hits.length === 1) openGroupModal(hits[0].kind, hits[0].id);
+    else if (hits.length === 0) {
+        const p = parkedTrucksNear(lat, lon)[0];
+        if (p) openGroupModal("parked", p.id);
+    }
 }
 
 function findGroup(kind, id) {
@@ -3272,6 +3319,7 @@ function findGroup(kind, id) {
         case "enemy-garrison": return state.enemies.garrisons.find(same);
         case "enemy-march": return state.enemies.marches.find(same);
         case "npc": return state.enemies.npcs.find(same);
+        case "parked": return state.parkedTrucks.find(same);
     }
     return null;
 }
@@ -3326,10 +3374,20 @@ function renderGroupModal() {
     const body = document.getElementById("modal-body");
     const actions = document.getElementById("modal-actions");
     const g = findGroup(gm.kind, gm.id);
-    if (!g || g.count <= 0) {
+    if (gm.kind === "parked" && !g) {
+        title.textContent = "Lastbilerne holder her ikke længere";
+        body.innerHTML = `<p class="muted-hint">Soldaterne er steget på igen.</p>`;
+        actions.innerHTML = `<button class="btn" onclick="closeModal()">Luk</button>`;
+        return;
+    }
+    if (gm.kind !== "parked" && (!g || g.count <= 0)) {
         title.textContent = "Gruppen findes ikke længere";
         body.innerHTML = `<p class="muted-hint">Soldaterne er nået frem, gået hjem, slået sammen med andre eller faldet i kamp.</p>`;
         actions.innerHTML = `<button class="btn" onclick="closeModal()">Luk</button>`;
+        return;
+    }
+    if (gm.kind === "parked") {
+        renderParkedModal(g);
         return;
     }
     const [lat, lon] = groupPos(gm.kind, g);
@@ -3363,7 +3421,8 @@ function renderGroupModal() {
             <button class="btn btn-primary" onclick="closeModal(); sendFromGarrison(${g.id})">🪖 Send soldater</button>
             ${g.mortars > 0 ? `<button class="btn btn-gold" onclick="closeModal(); startMortarAim(${g.id})">💣 Affyr morter</button>` : ""}
             ${g.howitzers > 0 ? `<button class="btn btn-danger" onclick="closeModal(); startHowitzerAimGarrison(${g.id})">💥 Affyr haubits</button>` : ""}
-            ${truckCount(g) > 0 && g.count > truckCount(g) ? `<button class="btn btn-primary" onclick="closeModal(); dropOffFromTrucks(${g.id})">🚚 Sæt soldaterne af</button>` : ""}
+            ${truckCount(g) > 0 ? `<button class="btn btn-primary" onclick="closeModal(); dropOffFromTrucks(${g.id})">🚚 Stig af lastbil${truckCount(g) === 1 ? "en" : "erne"}</button>` : ""}
+            ${state.parkedTrucks.filter(p => garrisonsByParked(p).some(x => x.id === g.id)).map(p => `<button class="btn btn-primary" onclick="closeModal(); boardTrucks(${p.id}, ${g.id})">🚚 Stig på ${p.trucks.length === 1 ? "lastbilen" : `${p.trucks.length} lastbiler`}</button>`).join("")}
             ${hurt ? `<button class="btn btn-primary" onclick="closeModal(); sendWoundedToHospital(${g.id})">🏥 Send ${hurt} ${hurt === 1 ? "såret" : "sårede"} til hospitalet</button>` : ""}
             <button class="btn btn-danger" onclick="closeModal(); sendGarrisonHome(${g.id})">🏠 Send hjem</button>
             <button class="btn" onclick="closeModal()">Luk</button>`;
@@ -3417,21 +3476,47 @@ window.sendGarrisonHome = function(id) {
 
 window.openGroupModal = openGroupModal;
 
-// Soldaterne stiger af og bliver stående som vagt; lastbilerne kører hjem til den nærmeste barrak
-// med 1 soldat bag rattet i hver (der skal mindst 1 soldat i hver lastbil for at køre den).
-window.dropOffFromTrucks = function(id) {
+// Soldaterne stiger af og bliver stående som vagt; lastbilerne holder tomme tilbage, hvor de står,
+// indtil soldater stiger på igen (0038).
+window.dropOffFromTrucks = async function(id) {
     const g = state.garrisons.find(x => String(x.id) === String(id));
     const t = truckCount(g);
-    if (!g || t <= 0 || g.count <= t) return;
-    const home = nearestOwn("barracks", g.lat, g.lon);
-    if (!home) {
-        showToast("Du har ingen barrak, lastbilerne kan køre hjem til.");
+    if (!g || t <= 0) return;
+    const { error } = await sb.rpc("park_trucks", { p_garrison: g.id });
+    if (error) {
+        showToast("Soldaterne kunne ikke stige af: " + error.message);
         return;
     }
-    openConfirmMarchModal(
-        { from: { type: "garrison", id: g.id, lat: g.lat, lon: g.lon }, count: t, trucks: t, dropOff: g.count - t },
-        { lat: home.b.lat, lon: home.b.lon, label: buildingLabel(home.b) });
+    showToast(`🚚 Soldaterne er steget af. ${t === 1 ? "Lastbilen holder tom" : `De ${t} lastbiler holder tomme`} tilbage.`);
+    await loadArmy();
 };
+
+window.boardTrucks = async function(parkedId, garrisonId) {
+    const { data, error } = await sb.rpc("board_trucks", { p_parked: parkedId, p_garrison: garrisonId });
+    if (error) {
+        showToast("Soldaterne kunne ikke stige på: " + error.message);
+        return;
+    }
+    showToast(`🚚 Soldaterne er steget på. Vagtstyrken har nu ${data.trucks} ${data.trucks === 1 ? "lastbil" : "lastbiler"}.`);
+    await loadArmy();
+};
+
+// Popup for tomme lastbiler: hvem der kan stige på, eller send soldater herhen.
+function renderParkedModal(p) {
+    const T = GAME_CONFIG.TRUCK;
+    const n = (p.trucks || []).length;
+    const near = garrisonsByParked(p);
+    document.getElementById("modal-title").textContent = n === 1 ? "Tom lastbil" : `${n} tomme lastbiler`;
+    document.getElementById("modal-body").innerHTML = `
+        <p class="muted-hint">Soldaterne er steget af. ${n === 1 ? "Lastbilen holder" : "Lastbilerne holder"} her, indtil soldater inden for ${formatDistance(T.boardM)} stiger på igen. Kun du kan se ${n === 1 ? "den" : "dem"}.</p>
+        ${truckLineHtml("parked", p)}
+        ${near.length ? "" : `<p class="muted-hint">Ingen af dine soldater står tæt nok på. Send soldater herhen, så kan de stige på, når de er nået frem.</p>`}`;
+    document.getElementById("modal-actions").innerHTML = `
+        <button class="btn" onclick="closeModal(); jumpToPoint(${p.lat}, ${p.lon})">🎯 Hop til</button>
+        ${near.map(g => `<button class="btn btn-primary" onclick="closeModal(); boardTrucks(${p.id}, ${g.id})">🚚 Stig på (${g.count} soldater)</button>`).join("")}
+        <button class="btn btn-primary" onclick="closeModal(); sendSoldiersTo(${p.lat}, ${p.lon})">🪖 Send soldater hertil</button>
+        <button class="btn" onclick="closeModal()">Luk</button>`;
+}
 
 // Kun de sårede går til det nærmeste hospital; de raske bliver stående.
 window.sendWoundedToHospital = function(id) {
@@ -3583,6 +3668,7 @@ function truckLineHtml(kind, g) {
     const how = kind === "march"
         ? (g.driving ? `Kører i ${t.length} ${word}: ${fmtKmh(T.roadMps)} på vej, ${fmtKmh(T.fieldMps)} uden for vejene.`
                      : `${t.length} ${word} følger med, men alle kan ikke køre, så de går i gåtempo.`)
+        : kind === "parked" ? `${t.length} ${word} uden soldater (plads til ${t.length * T.capacity}).`
         : `${t.length} ${word} holder hos vagten (plads til ${t.length * T.capacity} soldater).`;
     const cards = [...t].sort((a, b) => a - b).map(hp => {
         const pct = Math.max(0, Math.min(100, Math.round(hp / T.hp * 100)));
@@ -5032,6 +5118,7 @@ const RULE_INFO = {
     truck_hp:                   ["truck", "Energi pr. lastbil", "energi"],
     truck_hit_share:            ["truck", "Andel af træfferne, der rammer en lastbil (0,4 = 40 %)", "0–1"],
     truck_wreck_hours:          ["truck", "Så længe et udbrændt vrag kan ses", "timer"],
+    truck_board_m:              ["truck", "Så tæt skal soldater stå på tomme lastbiler for at stige på", "m"],
     map_fire_chance:            ["mapfire", "Chance for at en mortergranat sætter kortets bygning i brand (0,3 = 30 %)", "0–1"],
     map_fire_hours:             ["mapfire", "Så længe bygningen brænder", "timer"],
     map_ruin_hours:             ["mapfire", "Så længe den udbrændte ruin kan ses bagefter (168 = en uge)", "timer"],
@@ -5741,7 +5828,7 @@ function codexVehiclesHtml() {
                 <div class="codex-card">
                     <div class="codex-card-head"><h3>Lastbil</h3><span class="badge">${buyWhere("trucks")}</span></div>
                     <div class="codex-weapon-img"><img src="assets/lastbil.png" class="pixel-img" alt="Lastbil" /></div>
-                    <p class="muted-hint">Grøn militærlastbil med presenning over ladet, hvor soldaterne sidder. Vælg lastbiler, når du sender soldater. Der skal mindst 1 soldat i hver lastbil for at køre den, og er der flere soldater, end der er plads til, går alle. Kommer den hjem til barrakken, bliver den repareret.</p>
+                    <p class="muted-hint">Grøn militærlastbil med presenning over ladet, hvor soldaterne sidder. Vælg lastbiler, når du sender soldater. Der skal mindst 1 soldat i hver lastbil for at køre den, og er der flere soldater, end der er plads til, går alle. Kommer den hjem til barrakken, bliver den repareret. Soldaterne kan stige af og lade lastbilen stå tom tilbage, indtil de (eller andre af dine soldater) kommer og stiger på igen.</p>
                     ${codexStats([
                         ["Pris", codexPrice(T.priceSteps, T.priceSteel)],
                         ["Plads til", `${fmtNum(T.capacity)} soldater`],
