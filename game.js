@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 78;
+const APP_VERSION = 79;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -5408,16 +5408,18 @@ function codexSoldierHtml() {
         <details class="codex-section">
             <summary><span class="codex-sum-title">🪖 Soldater</span><span class="codex-sum-sub">infanteri i brug + 5 kommende specialsoldater</span></summary>
             
-            <div class="codex-subheading">Aktiv enhedstype</div>
-            <div class="codex-hero">
-                <img src="assets/figur.png" class="pixel-img codex-hero-img" alt="Infanteri" />
-                <div class="codex-hero-text">
-                    <div class="codex-card-head" style="margin-bottom: 4px;">
+            <p class="muted-hint" style="margin-bottom: 12px;">Infanteriet er i brug nu. De øvrige specialiserede soldaterroller er under forberedelse. De kan ikke uddannes endnu, men deres egenskaber, våben og taktiske roller i spillet er fastlagt herunder.</p>
+
+            <div class="codex-grid codex-grid-3">
+                <div class="codex-card">
+                    <div class="codex-card-head">
                         <h3>Infanteri (Riffelsoldat)</h3>
                         <span class="badge badge-green">I brug nu</span>
                     </div>
+                    <div class="codex-soldier-img"><img src="assets/figur.png" class="pixel-img" alt="Infanteri" /></div>
                     <p class="muted-hint">Spillets grundenhed. Soldater uddannes i militærskolen og bor i barrakkerne. De går i realistisk tempo, ser fjender omkring sig og skyder automatisk, når fjenden er inden for skudafstand. Sårede soldater heles i felthospitalet.</p>
                     ${codexStats([
+                        ["Rolle", "Grundenhed"],
                         ["Energi", `${fmtNum(C.SOLDIER_HP)}`],
                         ["Gå-fart", `${fmtKmh(C.SOLDIER_SPEED_MPS)} (${fmtNum(C.SOLDIER_SPEED_MPS)} m/s)`],
                         ["Udsyn", formatDistance(C.SOLDIER_VISION_M)],
@@ -5427,12 +5429,7 @@ function codexSoldierHtml() {
                         ["Bliver én vagtstyrke inden for", formatDistance(C.GARRISON_MERGE_M)]
                     ])}
                 </div>
-            </div>
 
-            <div class="codex-subheading">Kommende soldatertyper</div>
-            <p class="muted-hint" style="margin-bottom: 12px;">Disse specialiserede soldaterroller er under forberedelse. De kan ikke uddannes endnu, men deres egenskaber, våben og taktiske roller i spillet er fastlagt herunder.</p>
-            
-            <div class="codex-grid codex-grid-3">
                 <div class="codex-card">
                     <div class="codex-card-head">
                         <h3>Snigskytte</h3>
