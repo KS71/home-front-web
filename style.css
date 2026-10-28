@@ -50,7 +50,7 @@ body, html {
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    background: rgba(17, 22, 28, 0.92);
+    background: #11161C;
     border: 1px solid #2C3A47;
     border-radius: 10px;
     padding: 10px 16px;
