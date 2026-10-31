@@ -3,7 +3,10 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 106;
+const APP_VERSION = 107;
+
+// Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
+const STREET_TACTICAL_ZOOM = 16;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -2058,6 +2061,9 @@ function scheduleLandscapeTileSync() {
         syncVectorTilesToChunks();
         if (!renderedLandscapeWin.valid || landscapeTileGen !== prevGen) {
             refreshLandscape3D(true);
+            if (landscapeTileGen !== prevGen && map && map.getZoom() >= STREET_TACTICAL_ZOOM - 0.5) {
+                renderTroopsOnMap();
+            }
         }
     }, 35);
 }
@@ -2292,6 +2298,10 @@ function installGameLayers() {
     map.addSource("src-mortar-aim", { type: "geojson", data: empty });
     map.addSource("src-fire-areas", { type: "geojson", data: empty });
     map.addSource("src-fire-flames", { type: "geojson", data: empty });
+    map.addSource("src-street-rings", { type: "geojson", data: empty });
+    map.addSource("src-los-blocked", { type: "geojson", data: empty });
+    map.addSource("src-street-units", { type: "geojson", data: empty });
+    map.addSource("src-street-badges", { type: "geojson", data: empty });
 
     // Kortets bygninger, der brænder (glødende) eller er udbrændte ruiner. Tegnes i bygningens
     // rigtige form oven på den brune bygning.
@@ -2334,11 +2344,12 @@ function installGameLayers() {
         paint: { "icon-opacity": ["get", "op"] }
     });
 
-    // Udbrændte lastbiler: blegner, jo ældre de er. Samme faste størrelse som lastbilerne.
+    // Udbrændte lastbiler: overbliks-størrelse når zoomet ud (< 16), gade-størrelse tæt på (>= 16).
     map.addLayer({
         id: "lyr-wrecks",
         type: "symbol",
         source: "src-wrecks",
+        maxzoom: STREET_TACTICAL_ZOOM,
         layout: {
             "icon-image": "img-wreck",
             "icon-allow-overlap": true,
@@ -2346,13 +2357,26 @@ function installGameLayers() {
         },
         paint: { "icon-opacity": ["get", "op"] }
     });
+    map.addLayer({
+        id: "lyr-wrecks-street",
+        type: "symbol",
+        source: "src-wrecks",
+        minzoom: STREET_TACTICAL_ZOOM,
+        layout: {
+            "icon-image": "img-wreck",
+            "icon-size": ["interpolate", ["exponential", 2], ["zoom"], 16, 0.19, 17, 0.24, 18, 0.42, 20, 1.65, 22, 6.6],
+            "icon-allow-overlap": true,
+            "icon-ignore-placement": true
+        },
+        paint: { "icon-opacity": ["get", "op"] }
+    });
 
-    // Tomme lastbiler, som soldaterne er steget af (0038).
+    // Tomme lastbiler, som soldaterne er steget af (0038): overbliks-ikon under zoom 16.
     map.addLayer({
         id: "lyr-parked-trucks",
         type: "symbol",
         source: "src-parked-trucks",
-        // Samme faste størrelse som soldaterne, og til højre for dem, så soldaten ikke dækker.
+        maxzoom: STREET_TACTICAL_ZOOM,
         layout: {
             "icon-image": ["get", "img"],
             "icon-anchor": "bottom-left",
@@ -2501,7 +2525,48 @@ function installGameLayers() {
         }
     });
 
-    // Geværild mellem dine soldater og fjendtlige patruljer i kamp: lysspor og mundingsglimt.
+    // Taktisk markering på gadeniveau (zoom 16+): ring om valgte/kæmpende grupper og spærrede skudlinjer ved huse
+    map.addLayer({
+        id: "lyr-street-rings",
+        type: "line",
+        source: "src-street-rings",
+        minzoom: STREET_TACTICAL_ZOOM,
+        paint: {
+            "line-color": ["get", "c"],
+            "line-width": ["case", ["boolean", ["get", "sel"], false], 2.4, 1.6],
+            "line-dasharray": [2, 1.6],
+            "line-opacity": ["case", ["boolean", ["get", "sel"], false], 0.9, 0.55]
+        }
+    });
+    map.addLayer({
+        id: "lyr-los-blocked",
+        type: "line",
+        source: "src-los-blocked",
+        minzoom: STREET_TACTICAL_ZOOM,
+        filter: ["==", ["geometry-type"], "LineString"],
+        paint: {
+            "line-color": "#FFB74D",
+            "line-width": 1.6,
+            "line-dasharray": [2, 2.5],
+            "line-opacity": 0.62
+        }
+    });
+    map.addLayer({
+        id: "lyr-los-blocked-dot",
+        type: "circle",
+        source: "src-los-blocked",
+        minzoom: STREET_TACTICAL_ZOOM,
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: {
+            "circle-color": "#FF7043",
+            "circle-stroke-color": "#11161C",
+            "circle-stroke-width": 1.5,
+            "circle-radius": 3.5,
+            "circle-opacity": 0.85
+        }
+    });
+
+    // Geværild mellem dine soldater og fjender med fri skudlinje: lysspor og mundingsglimt.
     map.addLayer({
         id: "lyr-shots",
         type: "line",
@@ -2510,8 +2575,8 @@ function installGameLayers() {
         layout: { "line-cap": "round" },
         paint: {
             "line-color": ["match", ["get", "from"], "npc", "#FF6E40", "#FFF176"],
-            "line-width": 3,
-            "line-blur": 1,
+            "line-width": ["interpolate", ["linear"], ["zoom"], 13, 3, 16, 2.6, 17.5, 2.1, 20, 3.0],
+            "line-blur": 0.8,
             "line-opacity": 0.95
         }
     });
@@ -2523,18 +2588,61 @@ function installGameLayers() {
         paint: {
             "circle-color": "#FFE082",
             "circle-radius": ["get", "r"],
-            "circle-blur": 0.6,
-            "circle-opacity": 0.9
+            "circle-blur": 0.5,
+            "circle-opacity": 0.92
         }
     });
+
+    // Overbliks-ikoner (store soldater og køretøjer) når man er zoomet ud (< zoom 16)
     map.addLayer({
         id: "lyr-troops",
         type: "symbol",
         source: "src-troops",
+        maxzoom: STREET_TACTICAL_ZOOM,
         layout: {
             "icon-image": ["get", "img"],
             "icon-anchor": "bottom",
             "icon-offset": ["coalesce", ["get", "off"], ["literal", [0, 0]]],
+            "icon-allow-overlap": true,
+            "icon-ignore-placement": true
+        }
+    });
+
+    // Gade-niveau (zoom 16+): individuelle små soldater og køretøjer i formation nede på gaderne
+    map.addLayer({
+        id: "lyr-street-units",
+        type: "symbol",
+        source: "src-street-units",
+        minzoom: STREET_TACTICAL_ZOOM,
+        layout: {
+            "icon-image": ["get", "img"],
+            "icon-anchor": "center",
+            "icon-size": ["interpolate", ["exponential", 2], ["zoom"],
+                16, ["get", "s16"],
+                17, ["get", "s17"],
+                18, ["get", "s18"],
+                20, ["get", "s20"],
+                22, ["get", "s22"]
+            ],
+            "icon-rotate": ["coalesce", ["get", "rot"], 0],
+            "icon-rotation-alignment": "map",
+            "icon-pitch-alignment": "map",
+            "symbol-sort-key": ["coalesce", ["get", "sort"], 0],
+            "icon-allow-overlap": true,
+            "icon-ignore-placement": true
+        }
+    });
+
+    // Kompakt svævende tal- og energimærke over hver deling på gadeniveau (zoom 16+)
+    map.addLayer({
+        id: "lyr-street-badges",
+        type: "symbol",
+        source: "src-street-badges",
+        minzoom: STREET_TACTICAL_ZOOM,
+        layout: {
+            "icon-image": ["get", "img"],
+            "icon-anchor": "bottom",
+            "icon-offset": ["coalesce", ["get", "off"], ["literal", [0, -14]]],
             "icon-allow-overlap": true,
             "icon-ignore-placement": true
         }
@@ -2882,8 +2990,516 @@ const STRING_PULL_LOOKAHEAD = 30;
 // Giver browseren et øjeblik til at tegne (så "Beregner rute…" ikke fryser).
 const yieldToBrowser = () => new Promise(r => setTimeout(r, 0));
 
+// ============================================================================
+// Bygnings-kollision, Skudlinje (Line of Sight) & Taktisk Gade-Pathfinding (v107)
+// ============================================================================
+
+function pointInRingLL(lon, lat, ring) {
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const xi = ring[i][0], yi = ring[i][1];
+        const xj = ring[j][0], yj = ring[j][1];
+        if ((yi > lat) !== (yj > lat) && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) {
+            inside = !inside;
+        }
+    }
+    return inside;
+}
+
+// Skæringspunkt t på A->B hvis A->B skærer C->D; ellers -1
+function segSegIntersectT(ax, ay, bx, by, cx, cy, dx, dy) {
+    const d1x = bx - ax, d1y = by - ay;
+    const d2x = dx - cx, d2y = dy - cy;
+    const den = d1x * d2y - d1y * d2x;
+    if (Math.abs(den) < 1e-12) return -1;
+    const qx = cx - ax, qy = cy - ay;
+    const t = (qx * d2y - qy * d2x) / den;
+    if (t < 0 || t > 1) return -1;
+    const u = (qx * d1y - qy * d1x) / den;
+    if (u < 0 || u > 1) return -1;
+    return t;
+}
+
+function pointToSegDistSq2D(px, py, ax, ay, bx, by) {
+    let x = ax, y = ay;
+    let dx = bx - x, dy = by - y;
+    if (dx !== 0 || dy !== 0) {
+        const t = ((px - x) * dx + (py - y) * dy) / (dx * dx + dy * dy);
+        if (t > 1) { x = bx; y = by; }
+        else if (t > 0) { x += dx * t; y += dy * t; }
+    }
+    const ex = px - x, ey = py - y;
+    return ex * ex + ey * ey;
+}
+
+function segToSegDistSq2D(ax, ay, bx, by, cx, cy, dx, dy) {
+    if (segSegIntersectT(ax, ay, bx, by, cx, cy, dx, dy) >= 0) return 0;
+    return Math.min(
+        pointToSegDistSq2D(ax, ay, cx, cy, dx, dy),
+        pointToSegDistSq2D(bx, by, cx, cy, dx, dy),
+        pointToSegDistSq2D(cx, cy, ax, ay, bx, by),
+        pointToSegDistSq2D(dx, dy, ax, ay, bx, by)
+    );
+}
+
+// Gennemløber alle kortets bygninger i rawChunks, hvis kasse overlapper det givne område
+function forEachMapBuildingInBBox(minLat, maxLat, minLon, maxLon, cb) {
+    const cx0 = Math.floor(minLon / CHUNK_LON) - 1;
+    const cx1 = Math.floor(maxLon / CHUNK_LON) + 1;
+    const cy0 = Math.floor(minLat / CHUNK_LAT) - 1;
+    const cy1 = Math.floor(maxLat / CHUNK_LAT) + 1;
+    if ((cx1 - cx0) * (cy1 - cy0) > 900) return false;
+    for (let cy = cy0; cy <= cy1; cy++) {
+        for (let cx = cx0; cx <= cx1; cx++) {
+            const ch = rawChunks.get(cx + ":" + cy);
+            if (!ch || !ch.rawBlds.length) continue;
+            for (let i = 0; i < ch.rawBlds.length; i++) {
+                const rb = ch.rawBlds[i];
+                if (rb.maxLon < minLon || rb.minLon > maxLon || rb.maxLat < minLat || rb.minLat > maxLat) continue;
+                if (cb(rb) === true) return true;
+            }
+        }
+    }
+    return false;
+}
+
+function pointInsideMapBuilding(lat, lon, padM = 1.0) {
+    const cosLat = Math.max(Math.cos(lat * RAD_PER_DEG), MIN_COS);
+    const mPerLon = 111320 * cosLat;
+    const mPerLat = 111320;
+    const padLat = padM / mPerLat;
+    const padLon = padM / mPerLon;
+    const padSq = padM * padM;
+
+    return forEachMapBuildingInBBox(lat - padLat, lat + padLat, lon - padLon, lon + padLon, (rb) => {
+        if (pointInRingLL(lon, lat, rb.raw)) return true;
+        if (padM <= 0.05) return false;
+        const ring = rb.raw;
+        for (let i = 0; i < ring.length - 1; i++) {
+            const ax = (ring[i][0] - lon) * mPerLon, ay = (ring[i][1] - lat) * mPerLat;
+            const bx = (ring[i + 1][0] - lon) * mPerLon, by = (ring[i + 1][1] - lat) * mPerLat;
+            if (pointToSegDistSq2D(0, 0, ax, ay, bx, by) <= padSq) return true;
+        }
+        return false;
+    });
+}
+
+function pointInsideAnyBuilding(lat, lon, padM = 1.0, ignorePts = null) {
+    if (pointInsideMapBuilding(lat, lon, padM)) return true;
+    const vis = state.visibleBuildings || [];
+    for (let i = 0; i < vis.length; i++) {
+        const b = vis[i];
+        const sz = buildingSize(b.kind);
+        if (ignorePts) {
+            let skip = false;
+            for (let k = 0; k < ignorePts.length; k++) {
+                if (Geo.pointInSquare(ignorePts[k][0], ignorePts[k][1], b.lat, b.lon, sz + 3)) {
+                    skip = true;
+                    break;
+                }
+            }
+            if (skip) continue;
+        }
+        if (Geo.pointInSquare(lat, lon, b.lat, b.lon, sz + padM * 2)) return true;
+    }
+    return false;
+}
+
+// Skubber et klik på et hustag ud på nærmeste frie fortov/gade/have lige uden for muren
+function snapOutsideMapBuilding(lat, lon, marginM = 2.2) {
+    syncVectorTilesToChunks();
+    if (!pointInsideMapBuilding(lat, lon, 1.1)) return [lat, lon];
+    const cosLat = Math.max(Math.cos(lat * RAD_PER_DEG), MIN_COS);
+    const mPerLon = 111320 * cosLat;
+    const mPerLat = 111320;
+
+    for (let dist = marginM; dist <= 26; dist += 2.2) {
+        const steps = 16;
+        let best = null;
+        let bestRoadScore = Infinity;
+        for (let s = 0; s < steps; s++) {
+            const ang = (s / steps) * Math.PI * 2;
+            const cLat = lat + (Math.sin(ang) * dist) / mPerLat;
+            const cLon = lon + (Math.cos(ang) * dist) / mPerLon;
+            if (isWaterAt(cLat, cLon)) continue;
+            if (pointInsideAnyBuilding(cLat, cLon, 1.25)) continue;
+            const onRoad = isNearRoadFast(cLat, cLon, 8.5);
+            const score = dist - (onRoad ? 1.8 : 0);
+            if (score < bestRoadScore) {
+                bestRoadScore = score;
+                best = [cLat, cLon];
+            }
+        }
+        if (best) return best;
+    }
+    return [lat, lon];
+}
+
+// Finder første sted (t mellem 0 og 1), hvor en linje (fx skudlinje eller rutestykke) rammer en bygning.
+// Returnerer null ved fri linje, eller { t, hitLat, hitLon } ved blokering.
+function firstBuildingHitOnSegment(lat1, lon1, lat2, lon2, padM = 0.25, allowEndpointMapBlds = false) {
+    const midLat = (lat1 + lat2) * 0.5;
+    const midLon = (lon1 + lon2) * 0.5;
+    const cosLat = Math.max(Math.cos(midLat * RAD_PER_DEG), MIN_COS);
+    const mPerLon = 111320 * cosLat;
+    const mPerLat = 111320;
+
+    const ax = (lon1 - midLon) * mPerLon, ay = (lat1 - midLat) * mPerLat;
+    const bx = (lon2 - midLon) * mPerLon, by = (lat2 - midLat) * mPerLat;
+    const segLen = Math.hypot(bx - ax, by - ay);
+    if (segLen < 0.4) return null;
+
+    const padLat = Math.max(padM, 2) / mPerLat;
+    const padLon = Math.max(padM, 2) / mPerLon;
+    const minLat = Math.min(lat1, lat2) - padLat, maxLat = Math.max(lat1, lat2) + padLat;
+    const minLon = Math.min(lon1, lon2) - padLon, maxLon = Math.max(lon1, lon2) + padLon;
+    const padSq = padM * padM;
+
+    let bestT = Infinity;
+
+    const testRing = (ring) => {
+        if (allowEndpointMapBlds && (pointInRingLL(lon1, lat1, ring) || pointInRingLL(lon2, lat2, ring))) {
+            return;
+        }
+        let hitThis = false;
+        for (let i = 0; i < ring.length - 1; i++) {
+            const cx = (ring[i][0] - midLon) * mPerLon, cy = (ring[i][1] - midLat) * mPerLat;
+            const dx = (ring[i + 1][0] - midLon) * mPerLon, dy = (ring[i + 1][1] - midLat) * mPerLat;
+            const t = segSegIntersectT(ax, ay, bx, by, cx, cy, dx, dy);
+            if (t >= 0.015 && t <= 0.985) {
+                if (t < bestT) bestT = t;
+                hitThis = true;
+            } else if (padM > 0.05 && segToSegDistSq2D(ax, ay, bx, by, cx, cy, dx, dy) <= padSq) {
+                if (0.5 < bestT) bestT = 0.5;
+                hitThis = true;
+            }
+        }
+        if (!hitThis && pointInRingLL(midLon, midLat, ring)) {
+            if (0.5 < bestT) bestT = 0.5;
+        }
+    };
+
+    forEachMapBuildingInBBox(minLat, maxLat, minLon, maxLon, (rb) => {
+        testRing(rb.raw);
+        return false;
+    });
+
+    // Spillernes militærbygninger (forsvarere inde i selve bygningen kan skyde/gå ud fra den)
+    const vis = state.visibleBuildings || [];
+    for (let i = 0; i < vis.length; i++) {
+        const b = vis[i];
+        const sz = buildingSize(b.kind);
+        if (Geo.pointInSquare(lat1, lon1, b.lat, b.lon, sz + 2.5) ||
+            Geo.pointInSquare(lat2, lon2, b.lat, b.lon, sz + 2.5)) {
+            continue;
+        }
+        const hLat = (sz * 0.5) / mPerLat;
+        const hLon = (sz * 0.5) / (111320 * Math.max(Math.cos(b.lat * RAD_PER_DEG), MIN_COS));
+        if (b.lat + hLat < minLat || b.lat - hLat > maxLat || b.lon + hLon < minLon || b.lon - hLon > maxLon) continue;
+        const sqRing = [
+            [b.lon - hLon, b.lat - hLat],
+            [b.lon + hLon, b.lat - hLat],
+            [b.lon + hLon, b.lat + hLat],
+            [b.lon - hLon, b.lat + hLat],
+            [b.lon - hLon, b.lat - hLat]
+        ];
+        testRing(sqRing);
+    }
+
+    if (bestT === Infinity) return null;
+    return {
+        t: bestT,
+        hitLat: lat1 + (lat2 - lat1) * bestT,
+        hitLon: lon1 + (lon2 - lon1) * bestT
+    };
+}
+
+function segmentCrossesBuilding(lat1, lon1, lat2, lon2, padM = 1.15, allowEndpointMapBlds = true) {
+    return firstBuildingHitOnSegment(lat1, lon1, lat2, lon2, padM, allowEndpointMapBlds) !== null;
+}
+
+function hasLineOfSight(lat1, lon1, lat2, lon2) {
+    return firstBuildingHitOnSegment(lat1, lon1, lat2, lon2, 0.2, false) === null;
+}
+
+function isNearRoadFast(lat, lon, maxDistM = 7.5) {
+    const cx = Math.floor(lon / CHUNK_LON), cy = Math.floor(lat / CHUNK_LAT);
+    const ch = rawChunks.get(cx + ":" + cy);
+    if (!ch || !ch.roadSegs.length) return false;
+    const cosLat = Math.max(Math.cos(lat * RAD_PER_DEG), MIN_COS);
+    const mPerLon = 111320 * cosLat;
+    const maxSq = maxDistM * maxDistM;
+    for (let i = 0; i < ch.roadSegs.length; i++) {
+        const s = ch.roadSegs[i];
+        if (lon < s.minX || lon > s.maxX || lat < s.minY || lat > s.maxY) continue;
+        const ax = (s.x1 - lon) * mPerLon, ay = (s.y1 - lat) * 111320;
+        const bx = (s.x2 - lon) * mPerLon, by = (s.y2 - lat) * 111320;
+        if (pointToSegDistSq2D(0, 0, ax, ay, bx, by) <= maxSq) return true;
+    }
+    return false;
+}
+
+// Finder vejens retning (enhedsvektor øst/nord i meter) tæt ved et punkt, så parkerede lastbiler og vagter følger gaden
+function nearestRoadDirection(lat, lon, maxDistM = 24) {
+    const cx = Math.floor(lon / CHUNK_LON), cy = Math.floor(lat / CHUNK_LAT);
+    const cosLat = Math.max(Math.cos(lat * RAD_PER_DEG), MIN_COS);
+    const mPerLon = 111320 * cosLat;
+    let bestSq = maxDistM * maxDistM;
+    let bestDir = null;
+
+    for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+            const ch = rawChunks.get((cx + dx) + ":" + (cy + dy));
+            if (!ch || !ch.roadSegs.length) continue;
+            for (let i = 0; i < ch.roadSegs.length; i++) {
+                const s = ch.roadSegs[i];
+                const ax = (s.x1 - lon) * mPerLon, ay = (s.y1 - lat) * 111320;
+                const bx = (s.x2 - lon) * mPerLon, by = (s.y2 - lat) * 111320;
+                const dSq = pointToSegDistSq2D(0, 0, ax, ay, bx, by);
+                if (dSq < bestSq) {
+                    const vx = bx - ax, vy = by - ay;
+                    const len = Math.hypot(vx, vy);
+                    if (len > 1) {
+                        bestSq = dSq;
+                        bestDir = vx >= 0 ? { ux: vx / len, uy: vy / len } : { ux: -vx / len, uy: -vy / len };
+                    }
+                }
+            }
+        }
+    }
+    return bestDir || { ux: 1, uy: 0 };
+}
+
+function areBuildingsLoadedAlong(lat1, lon1, lat2, lon2) {
+    const midLat = (lat1 + lat2) * 0.5, midLon = (lon1 + lon2) * 0.5;
+    const check = (la, lo) => rawChunks.has(Math.floor(lo / CHUNK_LON) + ":" + Math.floor(la / CHUNK_LAT));
+    return check(lat1, lon1) && check(midLat, midLon) && check(lat2, lon2);
+}
+
+// Hurtig lokal A* på fint metergitter (2,4 - 7,5 m), der leder soldater rundt om huse, hegn og vand
+// og foretrækker gader/stier en lille smule, når vejen er næsten lige lang.
+function findTacticalBuildingPath(startLat, startLon, endLat, endLon) {
+    const distM = Geo.distanceM(startLat, startLon, endLat, endLon);
+    if (distM < 2 || distM > 1600) return null;
+
+    const midLat = (startLat + endLat) * 0.5;
+    const cosLat = Math.max(Math.cos(midLat * RAD_PER_DEG), MIN_COS);
+    const mPerLat = 111320;
+    const mPerLon = 111320 * cosLat;
+
+    const stepM = Math.max(2.4, Math.min(7.5, distM / 46));
+    const padM = Math.max(80, Math.min(280, distM * 0.45));
+
+    const minLat = Math.min(startLat, endLat) - padM / mPerLat;
+    const maxLat = Math.max(startLat, endLat) + padM / mPerLat;
+    const minLon = Math.min(startLon, endLon) - padM / mPerLon;
+    const maxLon = Math.max(startLon, endLon) + padM / mPerLon;
+
+    const stepLat = stepM / mPerLat;
+    const stepLon = stepM / mPerLon;
+    const rows = Math.min(128, Math.max(24, Math.ceil((maxLat - minLat) / stepLat) + 1));
+    const cols = Math.min(128, Math.max(24, Math.ceil((maxLon - minLon) / stepLon) + 1));
+    const effStepLat = (maxLat - minLat) / (rows - 1);
+    const effStepLon = (maxLon - minLon) / (cols - 1);
+
+    const toCell = (la, lo) => [
+        Math.max(0, Math.min(rows - 1, Math.round((la - minLat) / effStepLat))),
+        Math.max(0, Math.min(cols - 1, Math.round((lo - minLon) / effStepLon)))
+    ];
+    const cellLat = r => minLat + r * effStepLat;
+    const cellLon = c => minLon + c * effStepLon;
+
+    const [sr, sc] = toCell(startLat, startLon);
+    const [er, ec] = toCell(endLat, endLon);
+    const startIdx = sr * cols + sc;
+    const goalIdx = er * cols + ec;
+    if (startIdx === goalIdx) return [[startLat, startLon], [endLat, endLon]];
+
+    const ignorePts = [[startLat, startLon], [endLat, endLon]];
+    const totalCells = rows * cols;
+    const stateCache = new Uint8Array(totalCells); // 0=ukendt, 1=fri, 2=vej, 3=spærret
+
+    const cellKind = (r, c) => {
+        if ((r === sr && c === sc) || (r === er && c === ec)) return 2;
+        const idx = r * cols + c;
+        let st = stateCache[idx];
+        if (st !== 0) return st;
+        const la = cellLat(r), lo = cellLon(c);
+        if (isWaterAt(la, lo) || pointInsideAnyBuilding(la, lo, 1.35, ignorePts)) {
+            st = 3;
+        } else {
+            st = isNearRoadFast(la, lo, 6.5) ? 2 : 1;
+        }
+        stateCache[idx] = st;
+        return st;
+    };
+
+    const gScore = new Float32Array(totalCells).fill(Infinity);
+    const cameFrom = new Int32Array(totalCells).fill(-1);
+    const closed = new Uint8Array(totalCells);
+    gScore[startIdx] = 0;
+
+    // Binær min-heap til lynhurtig A* (< 3 ms)
+    const heapIdx = [startIdx];
+    const heapF = [Math.hypot(er - sr, ec - sc) * 0.9];
+    const heapPush = (idx, f) => {
+        let i = heapIdx.length;
+        heapIdx.push(idx);
+        heapF.push(f);
+        while (i > 0) {
+            const p = (i - 1) >> 1;
+            if (heapF[p] <= f) break;
+            heapIdx[i] = heapIdx[p]; heapF[i] = heapF[p];
+            i = p;
+        }
+        heapIdx[i] = idx; heapF[i] = f;
+    };
+    const heapPop = () => {
+        const top = heapIdx[0];
+        const lastIdx = heapIdx.pop();
+        const lastF = heapF.pop();
+        const n = heapIdx.length;
+        if (n > 0) {
+            let i = 0;
+            while (true) {
+                let l = i * 2 + 1, r = l + 1, s = i;
+                if (l < n && heapF[l] < (s === i ? lastF : heapF[s])) s = l;
+                if (r < n && heapF[r] < (s === i ? lastF : heapF[s])) s = r;
+                if (s === i) break;
+                heapIdx[i] = heapIdx[s]; heapF[i] = heapF[s];
+                i = s;
+            }
+            heapIdx[i] = lastIdx; heapF[i] = lastF;
+        }
+        return top;
+    };
+
+    const dr = [-1, 1, 0, 0, -1, -1, 1, 1];
+    const dc = [0, 0, -1, 1, -1, 1, -1, 1];
+    const baseCost = [1, 1, 1, 1, 1.4142, 1.4142, 1.4142, 1.4142];
+
+    while (heapIdx.length > 0) {
+        const u = heapPop();
+        if (u === goalIdx) break;
+        if (closed[u]) continue;
+        closed[u] = 1;
+
+        const ur = Math.floor(u / cols), uc = u % cols;
+        for (let d = 0; d < 8; d++) {
+            const nr = ur + dr[d], nc = uc + dc[d];
+            if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
+            const v = nr * cols + nc;
+            if (closed[v]) continue;
+            const kind = cellKind(nr, nc);
+            if (kind === 3) continue;
+            // Undgå at skære skråt gennem et hushjørne
+            if (d >= 4 && (cellKind(ur + dr[d], uc) === 3 || cellKind(ur, uc + dc[d]) === 3)) continue;
+
+            const stepW = kind === 2 ? 0.90 : 1.0;
+            const tg = gScore[u] + baseCost[d] * stepW;
+            if (tg < gScore[v]) {
+                cameFrom[v] = u;
+                gScore[v] = tg;
+                heapPush(v, tg + Math.hypot(er - nr, ec - nc) * 0.89);
+            }
+        }
+    }
+
+    if (cameFrom[goalIdx] === -1) return null;
+
+    const raw = [];
+    let cur = goalIdx;
+    while (cur !== -1 && cur !== startIdx) {
+        raw.push([cellLat(Math.floor(cur / cols)), cellLon(cur % cols)]);
+        cur = cameFrom[cur];
+    }
+    raw.reverse();
+    const full = [[startLat, startLon], ...raw.slice(0, -1), [endLat, endLon]];
+
+    // Stram ruten op, men kun hvor hverken vand eller bygninger krydses!
+    const smoothed = [full[0]];
+    let i = 0;
+    while (i < full.length - 1) {
+        let next = i + 1;
+        for (let j = full.length - 1; j >= i + 2; j--) {
+            if (!segmentCrossesWater(full[i][0], full[i][1], full[j][0], full[j][1]) &&
+                !segmentCrossesBuilding(full[i][0], full[i][1], full[j][0], full[j][1], 1.25, true)) {
+                next = j;
+                break;
+            }
+        }
+        smoothed.push(full[next]);
+        i = next;
+    }
+    return smoothed;
+}
+
+// Synkroniser nærliggende bygningsomrids til serveren (0046_gadekamp_skudlinje.sql), når egne soldater
+// og fjender er tæt på hinanden, så serverens npc_step heller ikke skyder gennem huse.
+// Virker uden fejl, også før 0046 er kørt i Supabase.
+const sentCombatBuildingKeys = new Set();
+let serverSupportsCombatBuildings = true;
+let syncingCombatBuildings = false;
+
+async function syncCombatBuildingsToServer(ownPositions, enemyPositions) {
+    if (!serverSupportsCombatBuildings || syncingCombatBuildings || !state.user || !ownPositions.length || !enemyPositions.length) return;
+    const toSend = [];
+    for (let i = 0; i < enemyPositions.length; i++) {
+        const [eLat, eLon] = enemyPositions[i];
+        let nearOwn = false;
+        for (let j = 0; j < ownPositions.length; j++) {
+            if (Geo.distanceM(eLat, eLon, ownPositions[j][0], ownPositions[j][1]) <= 210) {
+                nearOwn = true;
+                break;
+            }
+        }
+        if (!nearOwn) continue;
+        const padLat = 130 / 111320;
+        const padLon = 130 / (111320 * Math.max(Math.cos(eLat * RAD_PER_DEG), MIN_COS));
+        forEachMapBuildingInBBox(eLat - padLat, eLat + padLat, eLon - padLon, eLon + padLon, (rb) => {
+            const bKey = Math.round(rb.lat0 * 5e4) + ":" + Math.round(rb.lon0 * 3e4);
+            if (!sentCombatBuildingKeys.has(bKey) && rb.raw.length >= 4 && rb.raw.length <= 85) {
+                sentCombatBuildingKeys.add(bKey);
+                toSend.push({ key: bKey, ring: rb.raw });
+            }
+            return toSend.length >= 100;
+        });
+        if (toSend.length >= 100) break;
+    }
+    if (!toSend.length) return;
+    syncingCombatBuildings = true;
+    try {
+        const { error } = await sb.rpc("report_combat_buildings", { p_buildings: toSend });
+        if (error) {
+            if (error.code === "PGRST202" || String(error.message || "").includes("report_combat_buildings")) {
+                serverSupportsCombatBuildings = false;
+            } else {
+                for (const item of toSend) sentCombatBuildingKeys.delete(item.key);
+            }
+        }
+    } catch (_) {
+        for (const item of toSend) sentCombatBuildingKeys.delete(item.key);
+    } finally {
+        syncingCombatBuildings = false;
+    }
+}
+
+function canShortcutAcrossLandAndBuildings(lat1, lon1, lat2, lon2) {
+    if (segmentCrossesWater(lat1, lon1, lat2, lon2)) return false;
+    if (segmentCrossesBuilding(lat1, lon1, lat2, lon2, 1.25, true)) return false;
+    // Hvis vi er zoomet langt ud (< 14), så z14-huse ikke er indlæst på hele stykket, må vi ikke skære genvej gennem byzoner
+    if (Geo.distanceM(lat1, lon1, lat2, lon2) > 55 && !areBuildingsLoadedAlong(lat1, lon1, lat2, lon2)) {
+        const midLat = (lat1 + lat2) * 0.5, midLon = (lon1 + lon2) * 0.5;
+        if (terrainAt(midLat, midLon).id === "town" || terrainAt(lat1, lon1).id === "town" || terrainAt(lat2, lon2).id === "town") {
+            return false;
+        }
+    }
+    return true;
+}
+
 async function tightenPathAcrossLand(rawPts) {
     if (!rawPts || rawPts.length <= 2) return rawPts;
+    syncVectorTilesToChunks();
 
     function stringPull(pts) {
         const out = [pts[0]];
@@ -2891,7 +3507,7 @@ async function tightenPathAcrossLand(rawPts) {
         while (i < pts.length - 1) {
             let next = i + 1;
             for (let j = Math.min(pts.length - 1, i + STRING_PULL_LOOKAHEAD); j >= i + 2; j--) {
-                if (!segmentCrossesWater(pts[i][0], pts[i][1], pts[j][0], pts[j][1])) {
+                if (canShortcutAcrossLandAndBuildings(pts[i][0], pts[i][1], pts[j][0], pts[j][1])) {
                     next = j;
                     break;
                 }
@@ -2902,11 +3518,11 @@ async function tightenPathAcrossLand(rawPts) {
         return out;
     }
 
-    // 1. Første grov-stramning hen over alt tørt land
+    // 1. Stram kun op over åbent land uden vand og uden bygninger
     let path = stringPull(rawPts);
     await yieldToBrowser();
 
-    // 2. Indsæt ekstra mellempunkter langs kyst-strækninger og træk hjørnerne helt ind til strandkanten
+    // 2. Indsæt ekstra mellempunkter på lange åbne strækninger og glat hjørner uden at skære ind i bygninger eller vand
     const refined = [path[0]];
     for (let i = 0; i < path.length - 1; i++) {
         const a = path[i], b = path[i + 1];
@@ -2917,14 +3533,14 @@ async function tightenPathAcrossLand(rawPts) {
                 const t = s / steps;
                 const mLat = a[0] + (b[0] - a[0]) * t;
                 const mLon = a[1] + (b[1] - a[1]) * t;
-                if (!isWaterAt(mLat, mLon)) refined.push([mLat, mLon]);
+                if (!isWaterAt(mLat, mLon) && !pointInsideMapBuilding(mLat, mLon, 1.2)) refined.push([mLat, mLon]);
             }
         }
         refined.push(b);
     }
     path = refined;
 
-    const rounds = path.length > 40 ? 2 : 5;
+    const rounds = path.length > 40 ? 2 : 4;
     for (let iter = 0; iter < rounds; iter++) {
         await yieldToBrowser();
         for (let k = 1; k < path.length - 1; k++) {
@@ -2938,8 +3554,9 @@ async function tightenPathAcrossLand(rawPts) {
             if (
                 isPointOnScreen(candLat, candLon) &&
                 !isWaterAt(candLat, candLon) &&
-                !segmentCrossesWater(prev[0], prev[1], candLat, candLon) &&
-                !segmentCrossesWater(candLat, candLon, next[0], next[1])
+                !pointInsideAnyBuilding(candLat, candLon, 1.3, [path[0], path[path.length - 1]]) &&
+                canShortcutAcrossLandAndBuildings(prev[0], prev[1], candLat, candLon) &&
+                canShortcutAcrossLandAndBuildings(candLat, candLon, next[0], next[1])
             ) {
                 path[k] = [candLat, candLon];
             }
@@ -3138,15 +3755,33 @@ function findLandPathLocal(startLat, startLon, endLat, endLon) {
  * - Ruten bøjer KUN af ved vand (langs kysten/stranden eller over en bro).
  */
 async function findLandPathAsync(startLat, startLon, endLat, endLon) {
-
-    // Sørg for at hele ruten er i kortets synsfelt, så vand-lagene er tegnet og kan aflæses
+    // Sørg for at hele ruten er i kortets synsfelt, og synkronisér vektorfliser (bygninger og veje)
     await ensureRouteInView(startLat, startLon, endLat, endLon);
+    syncVectorTilesToChunks();
 
-    // Hvis fugleflugtslinjen slet ikke krydser vand, går soldaten 100% lige over land/bygninger/græs!
-    if (!segmentCrossesWater(startLat, startLon, endLat, endLon)) {
+    const distM = Geo.distanceM(startLat, startLon, endLat, endLon);
+    const crossesWater = segmentCrossesWater(startLat, startLon, endLat, endLon);
+    const crossesBld = segmentCrossesBuilding(startLat, startLon, endLat, endLon, 1.15, true);
+    const unloadedTown = distM > 60 && !areBuildingsLoadedAlong(startLat, startLon, endLat, endLon) && (
+        terrainAt((startLat + endLat) * 0.5, (startLon + endLon) * 0.5).id === "town" ||
+        terrainAt(startLat, startLon).id === "town" ||
+        terrainAt(endLat, endLon).id === "town"
+    );
+
+    // 1. Fri linje på åbent land/gade uden hverken vand eller bygninger i vejen
+    if (!crossesWater && !crossesBld && !unloadedTown) {
         return [[startLat, startLon], [endLat, endLon]];
     }
 
+    // 2. Taktisk gade- og bygningsrute i nærområdet (<= 1,5 km): hurtig lokal A* rundt om huse og ad gader
+    if (!crossesWater && !unloadedTown && distM <= 1500) {
+        const localStreetPath = findTacticalBuildingPath(startLat, startLon, endLat, endLon);
+        if (localStreetPath && localStreetPath.length >= 2) {
+            return localStreetPath;
+        }
+    }
+
+    // 3. Længere ruter eller ruter over broer/gennem byer: OSRM gangsti/gade + bygnings-sikker opstramning
     try {
         const url = `https://router.project-osrm.org/route/v1/foot/${startLon.toFixed(6)},${startLat.toFixed(6)};${endLon.toFixed(6)},${endLat.toFixed(6)}?overview=full&geometries=geojson`;
         const resp = await fetch(url);
@@ -3155,16 +3790,30 @@ async function findLandPathAsync(startLat, startLon, endLat, endLon) {
             const coords = json?.routes?.[0]?.geometry?.coordinates;
             if (Array.isArray(coords) && coords.length >= 2) {
                 const rawLatLon = coords.map(c => [c[1], c[0]]);
+                const simplified = simplifyPolyline(rawLatLon, 0.00008);
+                let startConn = [[startLat, startLon]];
+                if (simplified.length > 0 && segmentCrossesBuilding(startLat, startLon, simplified[0][0], simplified[0][1], 1.1, true)) {
+                    const detour = findTacticalBuildingPath(startLat, startLon, simplified[0][0], simplified[0][1]);
+                    if (detour && detour.length > 2) startConn = detour.slice(0, -1);
+                }
+                let endConn = [[endLat, endLon]];
+                const lastRoad = simplified[simplified.length - 1];
+                if (lastRoad && segmentCrossesBuilding(lastRoad[0], lastRoad[1], endLat, endLon, 1.1, true)) {
+                    const detour = findTacticalBuildingPath(lastRoad[0], lastRoad[1], endLat, endLon);
+                    if (detour && detour.length > 2) endConn = detour.slice(1);
+                }
                 const base = [
-                    [startLat, startLon],
-                    ...simplifyPolyline(rawLatLon, 0.00018).slice(1, -1),
-                    [endLat, endLon]
+                    ...startConn,
+                    ...simplified,
+                    ...endConn
                 ];
                 return await tightenPathAcrossLand(base);
             }
         }
     } catch (_) {}
 
+    const localFallback = distM <= 1600 ? findTacticalBuildingPath(startLat, startLon, endLat, endLon) : null;
+    if (localFallback) return localFallback;
     return await tightenPathAcrossLand(findLandPathLocal(startLat, startLon, endLat, endLon));
 }
 
@@ -3331,22 +3980,425 @@ function marchFacingLeft(m, now = serverNow()) {
     return false;
 }
 
+// ============================================================================
+// Taktisk gade-visning (zoom 16+): små soldater og køretøjer i formation
+// ============================================================================
+const registeredStreetSprites = new Set();
+const registeredStreetBadges = new Set();
+
+function troopStatusStrokeColor(style, status) {
+    if (style === "npc" || style === "enemy") return "#FF5252";
+    if (style.startsWith("ally-")) return "#" + style.slice(5);
+    if (status === "combat") return "#FF5252";
+    if (status === "patrol") return "#4FC3F7";
+    if (status === "march") return "#FF9800";
+    return "#39FF14";
+}
+
+async function ensureStreetUnitSprites(style = "own") {
+    const redUniform = style === "npc" || style === "enemy";
+    const allyHex = style.startsWith("ally-") ? "#" + style.slice(5) : null;
+    await Promise.all([soldierImgPromise, npcImgPromise, truckImgPromise, truckHowitzerImgPromise, howitzerImgPromise]);
+
+    const addShadowedSprite = (id, srcImg, scale, flipX = false, dimAlpha = 1) => {
+        if (!srcImg || !mapReady || registeredStreetSprites.has(id)) return;
+        registeredStreetSprites.add(id);
+        const sw = srcImg.width * scale;
+        const sh = srcImg.height * scale;
+        const pad = 4;
+        const canvas = document.createElement("canvas");
+        canvas.width = sw + pad * 2;
+        canvas.height = sh + pad * 2 + 2;
+        const ctx = canvas.getContext("2d");
+        ctx.imageSmoothingEnabled = false;
+
+        // Blød mørk pixel-skygge under støvler / dæk, så små enheder står skarpt mod både asfalt og fortov
+        ctx.fillStyle = "rgba(15, 20, 28, 0.42)";
+        ctx.beginPath();
+        ctx.ellipse(canvas.width * 0.5, pad + sh - 1, sw * 0.42, Math.max(2.5, sh * 0.16), 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.save();
+        ctx.globalAlpha = dimAlpha;
+        if (flipX) {
+            ctx.translate(canvas.width, 0);
+            ctx.scale(-1, 1);
+        }
+        ctx.drawImage(srcImg, pad, pad, sw, sh);
+        ctx.restore();
+
+        if (!map.hasImage(id)) {
+            const d = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            map.addImage(id, { width: canvas.width, height: canvas.height, data: d.data });
+        }
+    };
+
+    let solImg = redUniform && npcSoldierImg ? npcSoldierImg : baseSoldierImg;
+    if (allyHex && solImg) solImg = tintedUniform(solImg, allyHex);
+    const solKey = redUniform ? "enemy" : (allyHex ? style : "own");
+    addShadowedSprite(`st-sol-${solKey}`, solImg, 2, false);
+    addShadowedSprite(`st-sol-${solKey}-l`, solImg, 2, true);
+
+    addShadowedSprite("st-truck", truckImg, 2, false);
+    addShadowedSprite("st-truck-l", truckImg, 2, true);
+    addShadowedSprite("st-truck-h", truckHowitzerImg, 2, false);
+    addShadowedSprite("st-truck-h-l", truckHowitzerImg, 2, true);
+    addShadowedSprite("st-parked", truckImg, 2, false, 0.88);
+    addShadowedSprite("st-parked-h", truckHowitzerImg, 2, false, 0.88);
+    addShadowedSprite("st-howitzer", howitzerImg, 1, false);
+    addShadowedSprite("st-howitzer-l", howitzerImg, 1, true);
+}
+
+function streetBadgeId(count, strokeColor, pct, tag = "") {
+    const bucket = pct >= 100 ? "100" : pct < 40 ? `r${Math.ceil(pct / 10)}` : `o${Math.ceil(pct / 10)}`;
+    return `st-lbl-${strokeColor.slice(1)}-${count}-${bucket}${tag ? "-" + tag : ""}`;
+}
+
+function ensureStreetBadge(count, strokeColor, pct, tag = "") {
+    const id = streetBadgeId(count, strokeColor, pct, tag);
+    if (!mapReady || registeredStreetBadges.has(id)) return id;
+    registeredStreetBadges.add(id);
+
+    const label = tag ? `${count} · ${tag}` : String(count);
+    const w = Math.max(24, label.length * 7 + 12);
+    const pillH = 16;
+    const barH = 4;
+    const canvas = document.createElement("canvas");
+    canvas.width = w + 4;
+    canvas.height = pillH + barH + 5;
+    const ctx = canvas.getContext("2d");
+
+    ctx.fillStyle = "rgba(17, 22, 28, 0.90)";
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.roundRect(2, 1.5, w, pillH, 7);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = "#FFFFFF";
+    ctx.font = "bold 10.5px monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, 2 + w / 2, 1.5 + pillH / 2 + 0.5);
+
+    const step = Math.max(0.08, Math.ceil(pct / 10) / 10);
+    const by = pillH + 2.5;
+    ctx.fillStyle = "rgba(17, 22, 28, 0.90)";
+    ctx.fillRect(4, by, w - 4, barH);
+    ctx.fillStyle = energyColor(pct);
+    ctx.fillRect(5, by + 1, Math.max(1, (w - 6) * step), barH - 2);
+
+    if (!map.hasImage(id)) {
+        const d = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        map.addImage(id, { width: canvas.width, height: canvas.height, data: d.data });
+    }
+    return id;
+}
+
+// Skaleringsprofil pr. enhedstype (zoom 16 -> 22): tydelige mini-enheder ved zoom 16, ægte gade-/hus-proportioner ved zoom 17-22
+function streetUnitScaleProps(kind) {
+    if (kind === "truck-h") return { s16: 0.18, s17: 0.22, s18: 0.40, s20: 1.55, s22: 6.20 }; // ~12,2 m vogntog (128 px bred)
+    if (kind === "truck")   return { s16: 0.18, s17: 0.22, s18: 0.40, s20: 1.55, s22: 6.20 }; // ~7,8 m lastbil (84 px bred -> samme førerhus-skala!)
+    if (kind === "gun")     return { s16: 0.15, s17: 0.19, s18: 0.32, s20: 1.22, s22: 4.88 }; // ~5,6 m haubits (76 px bred)
+    return                         { s16: 0.22, s17: 0.25, s18: 0.36, s20: 1.22, s22: 4.88 }; // ~3,1 m soldat (40 px bred inkl. pad)
+}
+
+function visibleSoldierCount(count) {
+    if (count <= 0) return 0;
+    if (count <= 12) return count;
+    return Math.min(16, 12 + Math.floor(Math.log2(count / 12 + 1) * 2));
+}
+
+// Finder punkt og kurs langs en march-rute forskudt deltaM meter frem (+) eller tilbage (-) fra nuværende fremskridt
+function pointAlongMarchByMeters(m, now, deltaM) {
+    const pts = m.path && m.path.length >= 2 ? m.path : [[m.startLat, m.startLon], [m.toLat, m.toLon]];
+    const segM = [];
+    let totalM = 0;
+    for (let i = 0; i < pts.length - 1; i++) {
+        const d = Geo.distanceM(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]);
+        segM.push(d);
+        totalM += d;
+    }
+    if (totalM < 0.2) {
+        return { lat: pts[0][0], lon: pts[0][1], ux: 1, uy: 0 };
+    }
+    const cur = marchCurrentPos(m, now);
+    let curM = 0, bestD = Infinity, acc = 0;
+    for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i], b = pts[i + 1];
+        const cosL = Math.max(Math.cos(a[0] * RAD_PER_DEG), MIN_COS);
+        const ax = (a[1] - cur[1]) * 111320 * cosL, ay = (a[0] - cur[0]) * 111320;
+        const bx = (b[1] - cur[1]) * 111320 * cosL, by = (b[0] - cur[0]) * 111320;
+        const dx = bx - ax, dy = by - ay;
+        const l2 = dx * dx + dy * dy;
+        const t = l2 > 1e-6 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / l2)) : 0;
+        const px = ax + dx * t, py = ay + dy * t;
+        const d2 = px * px + py * py;
+        if (d2 < bestD) {
+            bestD = d2;
+            curM = acc + segM[i] * t;
+        }
+        acc += segM[i];
+    }
+
+    const targetM = Math.max(0, Math.min(totalM, curM + deltaM));
+    let walk = 0;
+    for (let i = 0; i < segM.length; i++) {
+        if (walk + segM[i] >= targetM || i === segM.length - 1) {
+            const t = segM[i] > 0.01 ? (targetM - walk) / segM[i] : 0;
+            const lat = pts[i][0] + (pts[i + 1][0] - pts[i][0]) * t;
+            const lon = pts[i][1] + (pts[i + 1][1] - pts[i][1]) * t;
+            const cosL = Math.max(Math.cos(lat * RAD_PER_DEG), MIN_COS);
+            const vx = (pts[i + 1][1] - pts[i][1]) * 111320 * cosL;
+            const vy = (pts[i + 1][0] - pts[i][0]) * 111320;
+            const len = Math.hypot(vx, vy) || 1;
+            return { lat, lon, ux: vx / len, uy: vy / len };
+        }
+        walk += segM[i];
+    }
+    return { lat: cur[0], lon: cur[1], ux: 1, uy: 0 };
+}
+
+// Udregner diskret vej-hældning til side-view lastbil, så den følger skrå gader uden nogensinde at vende på hovedet
+function vehicleTiltDeg(ux, uy) {
+    const facingLeft = ux < -0.02;
+    const absX = Math.max(0.25, Math.abs(ux));
+    const slopeDeg = Math.atan2(uy, absX) * (180 / Math.PI);
+    const clamped = Math.max(-24, Math.min(24, slopeDeg));
+    return { facingLeft, rot: facingLeft ? clamped : -clamped };
+}
+
+function groundCircleFeature(lat, lon, radiusM, props) {
+    const cosLat = Math.max(Math.cos(lat * RAD_PER_DEG), MIN_COS);
+    const coords = [];
+    const steps = 28;
+    for (let i = 0; i <= steps; i++) {
+        const a = (i / steps) * Math.PI * 2;
+        coords.push([
+            lon + (Math.cos(a) * radiusM) / (111320 * cosLat),
+            lat + (Math.sin(a) * radiusM) / 111320
+        ]);
+    }
+    return { type: "Feature", properties: props, geometry: { type: "LineString", coordinates: coords } };
+}
+
+// Gemmer hver gruppes små gade-positioner, så både lysspor (geværild) og museklik rammer de enkelte små soldater/lastbiler!
+const activeStreetFormations = new Map(); // "kind:id" -> Array<[lat, lon]>
+
+function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marchObj, now, isSelected, shiftMeters = 0) {
+    const unitFeats = [];
+    const positions = [];
+    const cosLat = Math.max(Math.cos(lat * RAD_PER_DEG), MIN_COS);
+    const invLon = 1 / (111320 * cosLat);
+    const invLat = 1 / 111320;
+    const redUniform = style === "npc" || style === "enemy";
+    const solKey = redUniform ? "enemy" : (style.startsWith("ally-") ? style : "own");
+
+    const trucks = truckCount(group);
+    const howitzers = group.howitzers || 0;
+    const isMoving = !!marchObj && (marchObj.arrivesAtMillis > marchObj.startedAtMillis + 500) && now < marchObj.arrivesAtMillis;
+    const isDriving = trucks > 0 && (marchObj ? (marchObj.driving !== false && truckCanDrive(group.count, trucks)) : truckCanDrive(group.count, trucks));
+
+    const pushUnit = (uLat, uLon, img, kind, rot = 0) => {
+        positions.push([uLat, uLon]);
+        unitFeats.push({
+            type: "Feature",
+            properties: {
+                img,
+                rot,
+                sort: -uLat,
+                ...streetUnitScaleProps(kind)
+            },
+            geometry: { type: "Point", coordinates: [uLon, uLat] }
+        });
+    };
+
+    if (isMoving) {
+        if (isDriving) {
+            // Kørende lastbil-kolonne langs vejen (op til 6 synlige vogne i kolonne)
+            const nVis = Math.min(trucks, 6);
+            const spacing = howitzers > 0 ? 14.2 : 10.2;
+            const headOff = Math.min(10, (nVis - 1) * spacing * 0.35);
+            for (let i = 0; i < nVis; i++) {
+                const pt = pointAlongMarchByMeters(marchObj, now, headOff - i * spacing);
+                const { facingLeft, rot } = vehicleTiltDeg(pt.ux, pt.uy);
+                const hasGun = i < howitzers;
+                const img = hasGun
+                    ? (facingLeft ? "st-truck-h-l" : "st-truck-h")
+                    : (facingLeft ? "st-truck-l" : "st-truck");
+                pushUnit(pt.lat, pt.lon, img, hasGun ? "truck-h" : "truck", rot);
+            }
+        } else {
+            // Soldater på march i 2-geleds gadekolonne langs ruten (drejer pænt rundt om hushjørner!)
+            const nSol = visibleSoldierCount(group.count);
+            const rows = Math.ceil(nSol / 2);
+            const headOff = Math.min(8, (rows - 1) * 1.4);
+            for (let i = 0; i < nSol; i++) {
+                const row = Math.floor(i / 2);
+                const side = (i % 2 === 0) ? -1 : 1;
+                const pt = pointAlongMarchByMeters(marchObj, now, headOff - row * 2.85);
+                const nx = -pt.uy, ny = pt.ux;
+                const jitter = (((i * 73 + (Number(group.id) || 1) * 19) % 11) - 5) * 0.05;
+                let latS = pt.lat + (ny * side * 1.3 + pt.uy * jitter) * invLat;
+                let lonS = pt.lon + (nx * side * 1.3 + pt.ux * jitter) * invLon;
+                if (pointInsideMapBuilding(latS, lonS, 0.55)) {
+                    latS = pt.lat;
+                    lonS = pt.lon;
+                }
+                const faceL = pt.ux < -0.05;
+                pushUnit(latS, lonS, faceL ? `st-sol-${solKey}-l` : `st-sol-${solKey}`, "sol", 0);
+            }
+            // Eventuelle medfølgende lastbiler i gåtempo bagerst i kolonnen
+            const nTr = Math.min(trucks, 3);
+            for (let t = 0; t < nTr; t++) {
+                const pt = pointAlongMarchByMeters(marchObj, now, headOff - rows * 2.9 - 5.5 - t * 10.5);
+                const { facingLeft, rot } = vehicleTiltDeg(pt.ux, pt.uy);
+                const hasGun = t < howitzers;
+                pushUnit(pt.lat, pt.lon, hasGun ? (facingLeft ? "st-truck-h-l" : "st-truck-h") : (facingLeft ? "st-truck-l" : "st-truck"), hasGun ? "truck-h" : "truck", rot);
+            }
+        }
+    } else {
+        // Stående vagtstyrke / stoppet enhed: ret ind langs nærmeste gade og undgå hustage!
+        const rd = nearestRoadDirection(lat, lon);
+        const nx = -rd.uy, ny = rd.ux;
+        const baseLat = lat + (rd.uy * shiftMeters) * invLat;
+        const baseLon = lon + (rd.ux * shiftMeters) * invLon;
+
+        if (trucks > 0) {
+            const nVis = Math.min(trucks, 5);
+            const spacing = howitzers > 0 ? 13.8 : 9.8;
+            const startOff = ((nVis - 1) * spacing) * 0.5;
+            const { facingLeft, rot } = vehicleTiltDeg(rd.ux, rd.uy);
+            for (let i = 0; i < nVis; i++) {
+                const along = startOff - i * spacing;
+                let tLat = baseLat + (rd.uy * along + ny * 1.1) * invLat;
+                let tLon = baseLon + (rd.ux * along + nx * 1.1) * invLon;
+                if (pointInsideMapBuilding(tLat, tLon, 0.9)) {
+                    tLat = baseLat + (rd.uy * along) * invLat;
+                    tLon = baseLon + (rd.ux * along) * invLon;
+                }
+                const hasGun = i < howitzers;
+                pushUnit(tLat, tLon, hasGun ? (facingLeft ? "st-truck-h-l" : "st-truck-h") : (facingLeft ? "st-truck-l" : "st-truck"), hasGun ? "truck-h" : "truck", rot);
+            }
+            // 2-4 vagtsoldater stående ved siden af de holdende lastbiler
+            const nGuards = Math.min(group.count, 4);
+            for (let gIdx = 0; gIdx < nGuards; gIdx++) {
+                const along = (gIdx - (nGuards - 1) * 0.5) * 3.2;
+                let gLat = baseLat + (rd.uy * along - ny * 2.2) * invLat;
+                let gLon = baseLon + (rd.ux * along - nx * 2.2) * invLon;
+                if (pointInsideMapBuilding(gLat, gLon, 0.6)) {
+                    gLat = baseLat + (rd.uy * along) * invLat;
+                    gLon = baseLon + (rd.ux * along) * invLon;
+                }
+                pushUnit(gLat, gLon, (gIdx & 1) ? `st-sol-${solKey}-l` : `st-sol-${solKey}`, "sol", 0);
+            }
+        } else {
+            // Opstillede haubitser (uden lastbil) + besætning og soldater i gadeformation
+            const nGuns = Math.min(howitzers, 3);
+            for (let hIdx = 0; hIdx < nGuns; hIdx++) {
+                const along = (hIdx - (nGuns - 1) * 0.5) * 5.2;
+                pushUnit(baseLat + rd.uy * along * invLat, baseLon + rd.ux * along * invLon, "st-howitzer", "gun", 0);
+            }
+
+            const nSol = visibleSoldierCount(group.count);
+            if (nSol === 1 && nGuns === 0) {
+                let sLat = baseLat, sLon = baseLon;
+                if (pointInsideMapBuilding(sLat, sLon, 0.7)) [sLat, sLon] = snapOutsideMapBuilding(sLat, sLon, 1.8);
+                pushUnit(sLat, sLon, `st-sol-${solKey}`, "sol", 0);
+            } else {
+                // Kandidat-pladser langs gaden og fortovet (prioriteret så soldater spreder sig langs gaden mellem husene)
+                const slots = [];
+                const seed = (Number(group.id) || 3) * 31;
+                for (let ring = 0; ring < 5 && slots.length < nSol + 12; ring++) {
+                    const alongStep = 2.6;
+                    const alongIdx = ring === 0 ? [0] : [-ring, ring];
+                    const crossOffsets = [1.4, -1.4, 0, 2.9, -2.9];
+                    for (const aI of alongIdx) {
+                        for (const cM of crossOffsets) {
+                            if (nGuns > 0 && Math.abs(aI) <= 1 && Math.abs(cM) < 1.8) continue;
+                            const jA = (((slots.length * 17 + seed) % 7) - 3) * 0.14;
+                            const jC = (((slots.length * 29 + seed) % 7) - 3) * 0.12;
+                            const candLat = baseLat + (rd.uy * (aI * alongStep + jA) + ny * (cM + jC)) * invLat;
+                            const candLon = baseLon + (rd.ux * (aI * alongStep + jA) + nx * (cM + jC)) * invLon;
+                            slots.push([candLat, candLon]);
+                        }
+                    }
+                }
+                let placed = 0;
+                for (let s = 0; s < slots.length && placed < nSol; s++) {
+                    const [cLat, cLon] = slots[s];
+                    if (pointInsideMapBuilding(cLat, cLon, 0.65) || isWaterAt(cLat, cLon)) continue;
+                    const faceL = ((placed + seed) & 1) === 1;
+                    pushUnit(cLat, cLon, faceL ? `st-sol-${solKey}-l` : `st-sol-${solKey}`, "sol", 0);
+                    placed++;
+                }
+                while (placed < nSol) {
+                    const [cLat, cLon] = slots[placed % Math.max(1, slots.length)] || [baseLat, baseLon];
+                    pushUnit(cLat, cLon, `st-sol-${solKey}`, "sol", 0);
+                    placed++;
+                }
+            }
+        }
+    }
+
+    activeStreetFormations.set(groupKey, positions);
+
+    const stroke = troopStatusStrokeColor(style, status);
+    const pct = energyPct(group);
+    const tag = trucks > 0 ? `${trucks}L` : (howitzers > 0 ? `${howitzers}H` : "");
+    const badgeImg = ensureStreetBadge(group.count, stroke, pct, tag);
+    const labelLat = lat + (shiftMeters ? (nearestRoadDirection(lat, lon).uy * shiftMeters) * invLat : 0);
+    const labelLon = lon + (shiftMeters ? (nearestRoadDirection(lat, lon).ux * shiftMeters) * invLon : 0);
+
+    const badgeFeat = {
+        type: "Feature",
+        properties: { img: badgeImg, off: [0, -13] },
+        geometry: { type: "Point", coordinates: [labelLon, labelLat] }
+    };
+
+    const ringFeat = (isSelected || status === "combat")
+        ? groundCircleFeature(labelLat, labelLon, Math.max(4.8, Math.min(13, 3.5 + Math.sqrt(group.count) * 1.1)), {
+            c: isSelected ? "#FFD54F" : stroke,
+            sel: !!isSelected
+        })
+        : null;
+
+    return { unitFeats, badgeFeat, ringFeat };
+}
+
 async function renderTroopsOnMap() {
     if (!mapReady) return;
+    syncVectorTilesToChunks();
     const now = serverNow();
     const troopFeatures = [];
     const lineFeatures = [];
+    const streetUnits = [];
+    const streetBadges = [];
+    const streetRings = [];
+
+    activeStreetFormations.clear();
+    await Promise.all([
+        ensureStreetUnitSprites("own"),
+        ensureStreetUnitSprites("enemy")
+    ]);
 
     // Patruljerne går jævnt videre mellem opdateringerne (strækning + tider fra serveren).
     const npcs = state.enemies.npcs.map(n => ({ n, pos: npcCurrentPos(n, now) }));
+
+    // Kun kamp hvis fjenden er inden for skudafstand OG har fri skudlinje uden bygninger imellem!
     const isFightingNear = (lat, lon) => {
         for (const { n, pos } of npcs) {
-            if (Geo.distanceM(pos[0], pos[1], lat, lon) <= GAME_CONFIG.FIRE_RANGE_M) return true;
+            if (Geo.distanceM(pos[0], pos[1], lat, lon) <= GAME_CONFIG.FIRE_RANGE_M &&
+                hasLineOfSight(pos[0], pos[1], lat, lon)) {
+                return true;
+            }
         }
         return false;
     };
 
-    const addTroop = async (group, lat, lon, style, status = "guard", facingLeft = false, shiftX = 0) => {
+    const addTroop = async (groupKey, group, lat, lon, style, status = "guard", facingLeft = false, shiftX = 0, marchObj = null, isSelected = false) => {
+        if (style.startsWith("ally-")) await ensureStreetUnitSprites(style);
         const pct = energyPct(group);
         const truck = truckCount(group) > 0;
         const hasHowitzer = (group.howitzers || 0) > 0;
@@ -3356,63 +4408,88 @@ async function renderTroopsOnMap() {
             properties: { img: troopBadgeId(group.count, style, pct, status, truck, facingLeft, hasHowitzer), off: [shiftX, 0] },
             geometry: { type: "Point", coordinates: [lon, lat] }
         });
+
+        const shiftMeters = shiftX < 0 ? -9.5 : 0;
+        const st = buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marchObj, now, isSelected, shiftMeters);
+        for (let i = 0; i < st.unitFeats.length; i++) streetUnits.push(st.unitFeats[i]);
+        streetBadges.push(st.badgeFeat);
+        if (st.ringFeat) streetRings.push(st.ringFeat);
     };
 
-    // Fjender, som du kan se lige nu (positionen er et øjebliksbillede fra serveren)
+    const enemyPositions = [];
+
+    // Fjender, som du kan se lige nu
     for (const g of state.enemies.garrisons) {
-        await addTroop(g, g.lat, g.lon, "enemy", "enemy");
+        enemyPositions.push([g.lat, g.lon]);
+        const sel = state.groupModal?.kind === "enemy-garrison" && String(state.groupModal.id) === String(g.id);
+        await addTroop(`enemy-garrison:${g.id}`, g, g.lat, g.lon, "enemy", "enemy", false, 0, null, sel);
     }
     for (const m of state.enemies.marches) {
+        enemyPositions.push([m.lat, m.lon]);
         const facingLeft = truckCount(m) > 0 && m.to_lon != null && m.lon != null && m.to_lon < m.lon;
-        await addTroop(m, m.lat, m.lon, "enemy", "enemy", facingLeft);
+        const sel = state.groupModal?.kind === "enemy-march" && String(state.groupModal.id) === String(m.id);
+        await addTroop(`enemy-march:${m.id}`, m, m.lat, m.lon, "enemy", "enemy", facingLeft, 0, null, sel);
     }
     for (const { n, pos } of npcs) {
-        const status = n.fighting ? "combat" : "npc";
-        const facingLeft = truckCount(n) > 0 && marchFacingLeft({
+        enemyPositions.push(pos);
+        const npcMarch = {
             path: n.path,
+            startLat: n.path?.[0]?.[0] ?? pos[0],
+            startLon: n.path?.[0]?.[1] ?? pos[1],
+            toLat: n.path?.at(-1)?.[0] ?? pos[0],
+            toLon: n.path?.at(-1)?.[1] ?? pos[1],
+            driving: n.driving !== false && truckCanDrive(n.count, truckCount(n)),
             startedAtMillis: Date.parse(n.started_at),
             arrivesAtMillis: Date.parse(n.arrives_at)
-        }, now);
-        await addTroop(n, pos[0], pos[1], "npc", status, facingLeft);
+        };
+        const facingLeft = truckCount(n) > 0 && marchFacingLeft(npcMarch, now);
+        const sel = state.groupModal?.kind === "npc" && String(state.groupModal.id) === String(n.id);
+        const status = n.fighting ? "combat" : "npc";
+        await addTroop(`npc:${n.id}`, n, pos[0], pos[1], "npc", status, facingLeft, 0, npcMarch, sel);
     }
 
     // Allierede: altid synlige, i deres egen farve.
     for (const g of state.allies.garrisons) {
         if (g.count <= 0) continue;
-        await addTroop(g, g.lat, g.lon, "ally-" + allyColor(g.owner_id).slice(1), "guard");
+        const sel = state.groupModal?.kind === "ally-garrison" && String(state.groupModal.id) === String(g.id);
+        await addTroop(`ally-garrison:${g.id}`, g, g.lat, g.lon, "ally-" + allyColor(g.owner_id).slice(1), "guard", false, 0, null, sel);
     }
     for (const m of state.allies.marches) {
         if (m.count <= 0) continue;
         const [lat, lon] = marchCurrentPos(m, now);
         const facingLeft = truckCount(m) > 0 && marchFacingLeft(m, now);
-        await addTroop(m, lat, lon, "ally-" + allyColor(m.owner_id).slice(1), "march", facingLeft);
+        const sel = state.groupModal?.kind === "ally-march" && String(state.groupModal.id) === String(m.id);
+        await addTroop(`ally-march:${m.id}`, m, lat, lon, "ally-" + allyColor(m.owner_id).slice(1), "march", facingLeft, 0, m, sel);
     }
 
     const own = [];
+    const ownPositions = [];
     for (const g of state.garrisons) {
         if (g.count <= 0) continue;
-        own.push([g.lat, g.lon]);
+        own.push({ key: `garrison:${g.id}`, lat: g.lat, lon: g.lon });
+        ownPositions.push([g.lat, g.lon]);
         const inCombat = (g.wounded && g.wounded.length > 0) || energyPct(g) < 100 || isFightingNear(g.lat, g.lon);
         const status = inCombat ? "combat" : "guard";
-        await addTroop(g, g.lat, g.lon, "own", status, false, garrisonShiftPx(g));
+        const isSelected = state.highlight?.garrisons?.has(String(g.id))
+            || (state.groupModal?.kind === "garrison" && String(state.groupModal.id) === String(g.id));
+        await addTroop(`garrison:${g.id}`, g, g.lat, g.lon, "own", status, false, garrisonShiftPx(g), null, isSelected);
     }
 
     for (const m of state.marches) {
         if (m.count <= 0) continue;
         const [lat, lon] = marchCurrentPos(m, now);
-        own.push([lat, lon]);
+        own.push({ key: `march:${m.id}`, lat, lon });
+        ownPositions.push([lat, lon]);
         const inCombat = (m.wounded && m.wounded.length > 0) || energyPct(m) < 100 || isFightingNear(lat, lon);
         const isPatrol = !!m.patrolPath;
         const status = inCombat ? "combat" : (isPatrol ? "patrol" : "march");
         const facingLeft = truckCount(m) > 0 && marchFacingLeft(m, now);
-        await addTroop(m, lat, lon, "own", status, facingLeft);
-
-        const rem = marchRemainingPath(m, now);
         const isSelected = state.highlight?.marches?.has(String(m.id))
             || (state.groupModal?.kind === "march" && String(state.groupModal.id) === String(m.id));
+        await addTroop(`march:${m.id}`, m, lat, lon, "own", status, facingLeft, 0, m, isSelected);
 
+        const rem = marchRemainingPath(m, now);
         if (isPatrol) {
-            // Vis KUN den blå patruljerute, når man trykker på den gruppe, der går ruten
             if (isSelected) {
                 lineFeatures.push({
                     type: "Feature",
@@ -3422,28 +4499,19 @@ async function renderTroopsOnMap() {
                 lineFeatures.push({
                     type: "Feature",
                     properties: { patrol: true },
-                    geometry: {
-                        type: "LineString",
-                        coordinates: rem.map(pt => [pt[1], pt[0]])
-                    }
+                    geometry: { type: "LineString", coordinates: rem.map(pt => [pt[1], pt[0]]) }
                 });
             }
         } else {
-            // Almindelig march på vej til sit mål
             lineFeatures.push({
                 type: "Feature",
                 properties: { patrol: false },
-                geometry: {
-                    type: "LineString",
-                    coordinates: rem.map(pt => [pt[1], pt[0]])
-                }
+                geometry: { type: "LineString", coordinates: rem.map(pt => [pt[1], pt[0]]) }
             });
         }
     }
 
-    map.getSource("src-troops")?.setData({ type: "FeatureCollection", features: troopFeatures });
-    // Flere tomme lastbiler samme sted står lidt forskudt, så man kan se, hvor mange der er.
-    // Haubitserne hænger bag de første lastbiler (1 haubits pr. lastbil).
+    // Parkerede tomme lastbiler: overblik under zoom 16, rigtig gadestørrelse langs vejen fra zoom 16+
     const parkedFeatures = state.parkedTrucks.flatMap(p => (p.trucks || []).map((_, i) => ({
         type: "Feature",
         properties: {
@@ -3452,10 +4520,50 @@ async function renderTroopsOnMap() {
         },
         geometry: { type: "Point", coordinates: [p.lon, p.lat] }
     })));
+
+    for (const p of state.parkedTrucks) {
+        const list = p.trucks || [];
+        if (!list.length) continue;
+        const rd = nearestRoadDirection(p.lat, p.lon);
+        const nx = -rd.uy, ny = rd.ux;
+        const cosL = Math.max(Math.cos(p.lat * RAD_PER_DEG), MIN_COS);
+        const invLon = 1 / (111320 * cosL), invLat = 1 / 111320;
+        const { rot } = vehicleTiltDeg(rd.ux, rd.uy);
+        const spacing = (p.howitzers || 0) > 0 ? 13.5 : 9.4;
+        const pPositions = [];
+        for (let i = 0; i < Math.min(list.length, 6); i++) {
+            const along = 6.5 + i * spacing;
+            const hasGun = i < (p.howitzers || 0);
+            const tLat = p.lat + (rd.uy * along + ny * 2.0) * invLat;
+            const tLon = p.lon + (rd.ux * along + nx * 2.0) * invLon;
+            pPositions.push([tLat, tLon]);
+            streetUnits.push({
+                type: "Feature",
+                properties: {
+                    img: hasGun ? "st-parked-h" : "st-parked",
+                    rot,
+                    sort: -tLat,
+                    ...streetUnitScaleProps(hasGun ? "truck-h" : "truck")
+                },
+                geometry: { type: "Point", coordinates: [tLon, tLat] }
+            });
+        }
+        activeStreetFormations.set(`parked:${p.id}`, pPositions);
+    }
+
+    map.getSource("src-troops")?.setData({ type: "FeatureCollection", features: troopFeatures });
     map.getSource("src-parked-trucks")?.setData({ type: "FeatureCollection", features: parkedFeatures });
     map.getSource("src-march-lines")?.setData({ type: "FeatureCollection", features: lineFeatures });
-    shotPairs = findShotPairs(npcs, own);
+    map.getSource("src-street-units")?.setData({ type: "FeatureCollection", features: streetUnits });
+    map.getSource("src-street-badges")?.setData({ type: "FeatureCollection", features: streetBadges });
+    map.getSource("src-street-rings")?.setData({ type: "FeatureCollection", features: streetRings });
+
+    const { activeShots, blockedFeatures } = findShotPairs(npcs, own);
+    shotPairs = activeShots;
+    map.getSource("src-los-blocked")?.setData({ type: "FeatureCollection", features: blockedFeatures });
     renderShots();
+
+    syncCombatBuildingsToServer(ownPositions, enemyPositions);
 }
 
 // Hvor en patrulje er nu. Serverens ur bruges, så den står samme sted som på serveren.
@@ -3483,7 +4591,32 @@ function npcGear(n) {
     return parts.join(" · ");
 }
 
+function isBlockedInRifleRangeOfOwn(lat, lon) {
+    const now = serverNow();
+    let blockedNear = false;
+    for (const g of state.garrisons) {
+        if (g.count <= 0) continue;
+        if (Geo.distanceM(lat, lon, g.lat, g.lon) <= GAME_CONFIG.FIRE_RANGE_M) {
+            if (hasLineOfSight(lat, lon, g.lat, g.lon)) return false;
+            blockedNear = true;
+        }
+    }
+    for (const m of state.marches) {
+        if (m.count <= 0) continue;
+        const [mLat, mLon] = marchCurrentPos(m, now);
+        if (Geo.distanceM(lat, lon, mLat, mLon) <= GAME_CONFIG.FIRE_RANGE_M) {
+            if (hasLineOfSight(lat, lon, mLat, mLon)) return false;
+            blockedNear = true;
+        }
+    }
+    return blockedNear;
+}
+
 function npcAbout(n) {
+    const pos = npcCurrentPos(n);
+    if (isBlockedInRifleRangeOfOwn(pos[0], pos[1])) {
+        return "🧱 Inden for skudafstand, men en bygning dækker skudlinjen (ryk rundt om hjørnet eller brug morter).";
+    }
     if (n.fighting) return "💥 i kamp med dine soldater";
     if (n.unit_kind === "trucks") return `Den svenske hær: lastbiler, der har sat soldaterne af. ${npcGear(n)}.`;
     if (n.unit_kind) {
@@ -3493,39 +4626,80 @@ function npcAbout(n) {
     return n.is_invasion ? "Invasionsstyrke fra Malmø." : "Computerstyret. Går rundt i området og angriber soldater, den får øje på.";
 }
 
-// Geværild mellem patruljer i kamp og dine soldater inden for skudafstand. Kampen afgøres
-// på serveren; det her er kun til at se, hvem der skyder på hvem. Begge sider skyder på én gang.
+// Geværild mellem patruljer og dine soldater inden for skudafstand MED fri skudlinje (ingen skud gennem bygninger!).
 let shotPairs = [];
 let shotTimer = null;
 
-function findShotPairs(npcs, own) {
-    const out = [];
+function findShotPairs(npcs, ownList) {
+    const activeShots = [];
+    const blockedFeatures = [];
     for (const { n, pos } of npcs) {
-        for (const [lat, lon] of own) {
-            if (Geo.distanceM(pos[0], pos[1], lat, lon) > GAME_CONFIG.FIRE_RANGE_M) continue;
-            out.push({ own: [lon, lat], npc: [pos[1], pos[0]], seed: (Number(n.id) || 0) * 0.37 });
+        const npcKey = `npc:${n.id}`;
+        const npcUnits = activeStreetFormations.get(npcKey) || [pos];
+        for (const o of ownList) {
+            if (Geo.distanceM(pos[0], pos[1], o.lat, o.lon) > GAME_CONFIG.FIRE_RANGE_M) continue;
+            const hit = firstBuildingHitOnSegment(o.lat, o.lon, pos[0], pos[1], 0.2, false);
+            if (hit) {
+                blockedFeatures.push({
+                    type: "Feature",
+                    properties: {},
+                    geometry: { type: "LineString", coordinates: [[o.lon, o.lat], [hit.hitLon, hit.hitLat]] }
+                });
+                blockedFeatures.push({
+                    type: "Feature",
+                    properties: {},
+                    geometry: { type: "Point", coordinates: [hit.hitLon, hit.hitLat] }
+                });
+                continue;
+            }
+            const ownUnits = activeStreetFormations.get(o.key) || [[o.lat, o.lon]];
+            const lanes = [];
+            for (let k = 0; k < 3; k++) {
+                const ou = ownUnits[k % ownUnits.length];
+                const nu = npcUnits[(k * 2) % npcUnits.length];
+                if (hasLineOfSight(ou[0], ou[1], nu[0], nu[1])) {
+                    lanes.push({ own: [ou[1], ou[0]], npc: [nu[1], nu[0]] });
+                } else {
+                    lanes.push({ own: [o.lon, o.lat], npc: [pos[1], pos[0]] });
+                }
+            }
+            activeShots.push({
+                own: [o.lon, o.lat],
+                npc: [pos[1], pos[0]],
+                lanes,
+                seed: (Number(n.id) || 0) * 0.37
+            });
         }
     }
-    return out;
+    return { activeShots, blockedFeatures };
 }
 
 function pointAlong(a, b, t) {
     return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
 }
 
-// Tre lysspor pr. side flyver fra skytten mod målet; der blinker et glimt ved geværet, når et skud går af.
+// Tre lysspor pr. side flyver mellem de enkelte små soldater på gaden (eller gruppecentret zoomet ud).
 function shotFeatures(now) {
     const out = [];
+    const streetMode = mapReady && map && map.getZoom() >= STREET_TACTICAL_ZOOM;
     for (const p of shotPairs) {
-        for (const [from, a, b, offset] of [["own", p.own, p.npc, 0], ["npc", p.npc, p.own, 0.5]]) {
-            for (let k = 0; k < 3; k++) {
+        for (let k = 0; k < 3; k++) {
+            const lane = (streetMode && p.lanes && p.lanes[k]) ? p.lanes[k] : p;
+            for (const [from, a, b, offset] of [["own", lane.own, lane.npc, 0], ["npc", lane.npc, lane.own, 0.5]]) {
                 const t = (now / 450 + p.seed + offset + k / 3 + Math.sin(k * 7.1 + p.seed) * 0.08) % 1;
                 const t0 = Math.max(0, t - 0.15);
-                out.push({ type: "Feature", properties: { from },
-                    geometry: { type: "LineString", coordinates: [pointAlong(a, b, t0), pointAlong(a, b, t)] } });
+                out.push({
+                    type: "Feature",
+                    properties: { from },
+                    geometry: { type: "LineString", coordinates: [pointAlong(a, b, t0), pointAlong(a, b, t)] }
+                });
                 if (t < 0.12) {
-                    out.push({ type: "Feature", properties: { from, r: 5 - t * 25 },
-                        geometry: { type: "Point", coordinates: a } });
+                    const baseR = streetMode ? 3.6 : 5;
+                    out.push({
+                        type: "Feature",
+                        properties: { from, r: Math.max(1.2, baseR - t * (streetMode ? 18 : 25)) },
+                        geometry: { type: "Point", coordinates: a }
+                    });
                 }
             }
         }
@@ -3729,12 +4903,33 @@ function garrisonShiftPx(g) {
     return byTruck ? DISMOUNTED_OFFSET_X : 0;
 }
 
-// Tomme lastbiler under et tryk på kortet: deres billede ved siden af soldaterne.
+function hitActiveStreetFormation(groupKey, lat, lon, pt, centerLat, centerLon, hitRadiusM = 6.5) {
+    const units = activeStreetFormations.get(groupKey);
+    if (units && units.length) {
+        for (let i = 0; i < units.length; i++) {
+            if (Geo.distanceM(lat, lon, units[i][0], units[i][1]) <= hitRadiusM) return true;
+        }
+    }
+    if (Geo.distanceM(lat, lon, centerLat, centerLon) <= Math.max(7.5, hitRadiusM)) return true;
+    if (pt && mapReady) {
+        const cp = map.project([centerLon, centerLat]);
+        if (Math.abs(pt.x - cp.x) <= 24 && pt.y >= cp.y - 42 && pt.y <= cp.y + 10) return true;
+    }
+    return false;
+}
+
+// Tomme lastbiler under et tryk på kortet: overbliks-billede (< zoom 16) eller parkerede gadelastbiler (zoom 16+)
 function parkedTrucksNear(lat, lon) {
     if (!mapReady) return [];
     const pt = map.project([lon, lat]);
+    const streetMode = map.getZoom() >= STREET_TACTICAL_ZOOM;
     return state.parkedTrucks.filter(p => {
         const n = (p.trucks || []).length;
+        if (!n) return false;
+        if (streetMode) {
+            const units = activeStreetFormations.get(`parked:${p.id}`) || [];
+            return units.some(u => Geo.distanceM(lat, lon, u[0], u[1]) <= 6.2);
+        }
         const pp = map.project([p.lon, p.lat]);
         const w = (p.howitzers || 0) > 0 ? 124 : 80;
         return pt.x >= pp.x + PARKED_OFFSET_X && pt.x <= pp.x + PARKED_OFFSET_X + w + 24 * (n - 1)
@@ -3747,10 +4942,18 @@ function garrisonsByParked(p) {
     return state.garrisons.filter(g => g.count > 0 && Geo.distanceM(g.lat, g.lon, p.lat, p.lon) <= GAME_CONFIG.TRUCK.boardM);
 }
 
-function garrisonsNear(list, lat, lon) {
+function garrisonsNear(list, lat, lon, mergeSnap = false) {
     const pt = mapReady ? map.project([lon, lat]) : null;
+    const streetMode = !mergeSnap && mapReady && map.getZoom() >= STREET_TACTICAL_ZOOM;
+    const keyPrefix = list === state.garrisons ? "garrison"
+        : list === state.allies?.garrisons ? "ally-garrison"
+        : list === state.enemies?.garrisons ? "enemy-garrison" : null;
+
     return list.filter(g => {
         if (g.count <= 0) return false;
+        if (streetMode && keyPrefix) {
+            return hitActiveStreetFormation(`${keyPrefix}:${g.id}`, lat, lon, pt, g.lat, g.lon, truckCount(g) > 0 ? 7.5 : 5.8);
+        }
         if (Geo.distanceM(lat, lon, g.lat, g.lon) <= GAME_CONFIG.GARRISON_MERGE_M) return true;
         if (!pt) return false;
         const gp = map.project([g.lon, g.lat]);
@@ -3759,11 +4962,18 @@ function garrisonsNear(list, lat, lon) {
     });
 }
 
-// Patruljer ved et klik på kortet (samme slør som for soldater: ikonet står over punktet).
+// Patruljer ved et klik på kortet (både overbliks-ikon og de små soldater/køretøjer på gaden).
 function npcsNear(lat, lon) {
+    const pt = mapReady ? map.project([lon, lat]) : null;
+    const streetMode = mapReady && map.getZoom() >= STREET_TACTICAL_ZOOM;
     return state.enemies.npcs
         .map(n => ({ n, pos: npcCurrentPos(n) }))
-        .filter(({ pos }) => garrisonsNear([{ lat: pos[0], lon: pos[1], count: 1 }], lat, lon).length > 0);
+        .filter(({ n, pos }) => {
+            if (streetMode) {
+                return hitActiveStreetFormation(`npc:${n.id}`, lat, lon, pt, pos[0], pos[1], truckCount(n) > 0 ? 7.5 : 5.8);
+            }
+            return garrisonsNear([{ lat: pos[0], lon: pos[1], count: 1 }], lat, lon, true).length > 0;
+        });
 }
 
 // Byggeret (samme regler som build_right_problem i SQL): testkonto, byggepladsbogmærke eller
@@ -3794,7 +5004,7 @@ function onMapClicked(lat, lon) {
     }
     if (state.pendingMarchOrder) {
         // Tjek om der er klikket på en anden egne vagtstyrke (snapper præcist til dens koordinater)
-        const nearGar = garrisonsNear(state.garrisons, lat, lon).find(g => {
+        const nearGar = garrisonsNear(state.garrisons, lat, lon, true).find(g => {
             return !(state.pendingMarchOrder.from.type === "garrison" && String(state.pendingMarchOrder.from.id) === String(g.id));
         });
         const bld = buildingAt(lat, lon);
@@ -3808,7 +5018,9 @@ function onMapClicked(lat, lon) {
                 showToast("Stedet ligger ude i vandet! Vælg et sted på land.");
                 return;
             }
-            target = { lat, lon, label: formatPos(lat, lon) };
+            // Hvis man klikker oven på et af kortets huse, stiller soldaterne sig på fortovet/gaden lige uden for huset
+            const [sLat, sLon] = snapOutsideMapBuilding(lat, lon, 2.2);
+            target = { lat: sLat, lon: sLon, label: formatPos(sLat, sLon) };
         }
         addRoutePoint(target);
         return;
@@ -3827,14 +5039,22 @@ function selectPoint(lat, lon) {
     document.querySelector(".command-sidebar")?.scrollTo({ top: 0, behavior: "auto" });
 }
 
-// Egne delinger på march, man har klikket på (deres ikon står oven over positionen).
+// Delinger på march, man har klikket på (både overbliks-ikon og hele gadekolonnen ved zoom 16+).
 function marchesNear(lat, lon, list = state.marches) {
     if (!mapReady) return [];
     const pt = map.project([lon, lat]);
     const now = serverNow();
+    const streetMode = map.getZoom() >= STREET_TACTICAL_ZOOM;
+    const keyPrefix = list === state.marches ? "march"
+        : list === state.allies?.marches ? "ally-march"
+        : list === state.enemies?.marches ? "enemy-march" : "march";
+
     return list.filter(m => {
         if (m.count <= 0) return false;
         const [mLat, mLon] = marchCurrentPos(m, now);
+        if (streetMode) {
+            return hitActiveStreetFormation(`${keyPrefix}:${m.id}`, lat, lon, pt, mLat, mLon, truckCount(m) > 0 ? 7.5 : 5.8);
+        }
         const mp = map.project([mLon, mLat]);
         return Math.abs(pt.x - mp.x) <= 30 && pt.y >= mp.y - 85 && pt.y <= mp.y + 15;
     });
@@ -4266,9 +5486,10 @@ window.deleteBookmark = async function(id) {
 // Ligger punktet i en bygning, er bygningen målet.
 window.sendSoldiersTo = function(lat, lon) {
     const bld = buildingAt(lat, lon);
+    const [sLat, sLon] = bld ? [bld.lat, bld.lon] : snapOutsideMapBuilding(lat, lon, 2.2);
     const target = bld
         ? { lat: bld.lat, lon: bld.lon, label: buildingLabel(bld) }
-        : { lat, lon, label: formatPos(lat, lon) };
+        : { lat: sLat, lon: sLon, label: formatPos(sLat, sLon) };
 
     // Hvem kan angribe: alle dine vagtstyrker med soldater, og din nærmeste barrak med ledige soldater.
     const choices = state.garrisons
@@ -5115,18 +6336,34 @@ const GROUP_MODAL_MAX_TILES = 60; // større grupper: de sårede enkeltvis, de r
 
 // Har man klikket på præcis én gruppe, åbnes dens popup. Flere grupper: se listen i sidepanelet.
 function openGroupModalAt(lat, lon) {
+    const now = serverNow();
     const hits = [
-        ...garrisonsNear(state.garrisons, lat, lon).map(g => ({ kind: "garrison", id: g.id })),
-        ...marchesNear(lat, lon).map(m => ({ kind: "march", id: m.id })),
-        ...garrisonsNear(state.allies.garrisons, lat, lon).map(g => ({ kind: "ally-garrison", id: g.id })),
-        ...marchesNear(lat, lon, state.allies.marches).map(m => ({ kind: "ally-march", id: m.id })),
-        ...garrisonsNear(state.enemies.garrisons, lat, lon).map(g => ({ kind: "enemy-garrison", id: g.id })),
-        ...npcsNear(lat, lon).map(({ n }) => ({ kind: "npc", id: n.id }))
+        ...garrisonsNear(state.garrisons, lat, lon).map(g => ({ kind: "garrison", id: g.id, pos: [g.lat, g.lon] })),
+        ...marchesNear(lat, lon).map(m => ({ kind: "march", id: m.id, pos: marchCurrentPos(m, now) })),
+        ...garrisonsNear(state.allies.garrisons, lat, lon).map(g => ({ kind: "ally-garrison", id: g.id, pos: [g.lat, g.lon] })),
+        ...marchesNear(lat, lon, state.allies.marches).map(m => ({ kind: "ally-march", id: m.id, pos: marchCurrentPos(m, now) })),
+        ...garrisonsNear(state.enemies.garrisons, lat, lon).map(g => ({ kind: "enemy-garrison", id: g.id, pos: [g.lat, g.lon] })),
+        ...marchesNear(lat, lon, state.enemies.marches).map(m => ({ kind: "enemy-march", id: m.id, pos: [m.lat, m.lon] })),
+        ...npcsNear(lat, lon).map(({ n, pos }) => ({ kind: "npc", id: n.id, pos }))
     ];
-    // Lastbilen står ved siden af soldaterne, så et tryk på den vinder over soldaterne.
     const p = parkedTrucksNear(lat, lon)[0];
-    if (p) openGroupModal("parked", p.id);
-    else if (hits.length === 1) openGroupModal(hits[0].kind, hits[0].id);
+    if (p) {
+        openGroupModal("parked", p.id);
+        return;
+    }
+    if (hits.length === 1) {
+        openGroupModal(hits[0].kind, hits[0].id);
+    } else if (hits.length > 1 && mapReady && map.getZoom() >= STREET_TACTICAL_ZOOM) {
+        // På gadezoom: åbn den gruppe, hvis nærmeste soldat/køretøj er tættest på klikket
+        hits.sort((a, b) => {
+            const ua = activeStreetFormations.get(`${a.kind}:${a.id}`) || [a.pos];
+            const ub = activeStreetFormations.get(`${b.kind}:${b.id}`) || [b.pos];
+            const da = Math.min(...ua.map(u => Geo.distanceM(lat, lon, u[0], u[1])));
+            const db = Math.min(...ub.map(u => Geo.distanceM(lat, lon, u[0], u[1])));
+            return da - db;
+        });
+        openGroupModal(hits[0].kind, hits[0].id);
+    }
 }
 
 function findGroup(kind, id) {
