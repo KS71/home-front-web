@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 119;
+const APP_VERSION = 120;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -9656,27 +9656,24 @@ function flagImageId(color) {
     const id = "img-flag-" + color.replace("#", "");
     if (!flagImageIds.has(id) && map && !map.hasImage(id)) {
         const art = [
-            "PDDDDDDDD.....",
-            "PDFFFFFFFD....",
-            "PDFFFFFFFFFD..",
-            "PDFFFFFFFFFFFD",
-            "PDFFFFFFFFFFFD",
-            "PDFFFFFFFFFD..",
-            "PDFFFFFFFD....",
-            "PDDDDDDDD.....",
-            "P.............",
-            "P.............",
-            "P.............",
-            "P.............",
-            "P.............",
-            "P.............",
-            "P.............",
-            "P.............",
-            "PP............",
-            "SSS..........."
+            "PDDDDDDDDDDD....",
+            "PDFFFFFFFFFFD...",
+            "PDFFFFFFFFFFFFD.",
+            "PDFFFFFFFFFFFFFD",
+            "PDFFFFFFFFFFFFFD",
+            "PDFFFFFFFFFFFFFD",
+            "PDFFFFFFFFFFFFD.",
+            "PDFFFFFFFFFFD...",
+            "PDDDDDDDDDDD....",
+            "P...............",
+            "P...............",
+            "P...............",
+            "P...............",
+            "PP..............",
+            "SSS............."
         ];
         const colors = { P: "#5D4037", D: "#1a1208", F: color, S: "#3e2a1a" };
-        const px = 3, pad = 1, w = 14 * px + pad * 2, h = 18 * px + pad * 2;
+        const px = 3, pad = 1, w = 16 * px + pad * 2, h = 15 * px + pad * 2;
         const canvas = document.createElement("canvas");
         canvas.width = w; canvas.height = h;
         const ctx = canvas.getContext("2d");
@@ -9730,6 +9727,21 @@ function installFlagLayers() {
             "circle-stroke-width": 2
         }
     }, before);
+    // Ejede flag får en farvet plet bagved, så ejerskabet kan ses selv zoomet langt ud.
+    map.addLayer({
+        id: "lyr-flag-owned",
+        type: "circle",
+        source: "src-flags",
+        minzoom: 9,
+        filter: ["==", ["get", "owned"], 1],
+        paint: {
+            "circle-radius": ["interpolate", ["linear"], ["zoom"], 9, 5, 13, 8, 16, 13],
+            "circle-color": ["get", "c"],
+            "circle-opacity": 0.75,
+            "circle-stroke-color": "#1a1208",
+            "circle-stroke-width": 1.5
+        }
+    }, before);
     map.addLayer({
         id: "lyr-flags",
         type: "symbol",
@@ -9738,7 +9750,7 @@ function installFlagLayers() {
         layout: {
             "icon-image": ["get", "img"],
             "icon-anchor": "bottom",
-            "icon-size": ["interpolate", ["linear"], ["zoom"], 9, 0.35, 13, 0.6, 16, 1.0],
+            "icon-size": ["interpolate", ["linear"], ["zoom"], 9, 0.5, 13, 0.75, 16, 1.0],
             "icon-allow-overlap": true,
             "icon-ignore-placement": true,
             "text-field": ["step", ["zoom"], "", 14.5, ["get", "label"]],
@@ -9780,7 +9792,7 @@ function renderFlagsOnMap() {
         points.push({
             type: "Feature",
             properties: {
-                id: f.id, c: color, img: flagImageId(color), cand: f.cand_id ? 1 : 0,
+                id: f.id, c: color, img: flagImageId(color), cand: f.cand_id ? 1 : 0, owned: f.owner_id ? 1 : 0,
                 label: town && (town.flags || 1) > 1 ? `${town.name}: ${f.name}` : (town ? town.name : f.name)
             },
             geometry: { type: "Point", coordinates: [f.lon, f.lat] }
@@ -10076,6 +10088,27 @@ function codexTownsHtml() {
 }
 
 document.getElementById("btn-towns")?.addEventListener("click", () => openTownsModal());
+
+// "Kun flag": skjuler soldater, køretøjer, ruter, skud, vrag og træfninger, så flagene kan ses.
+const FLAGS_ONLY_LAYERS = ["lyr-troops", "lyr-street-units", "lyr-street-badges", "lyr-street-rings", "lyr-parked-trucks",
+    "lyr-march-lines", "lyr-shots", "lyr-shot-flash", "lyr-los-blocked", "lyr-los-blocked-dot",
+    "lyr-wrecks", "lyr-wrecks-street", "lyr-battles"];
+let flagsOnly = false;
+window.toggleFlagsOnly = function() {
+    flagsOnly = !flagsOnly;
+    if (mapReady) {
+        for (const id of FLAGS_ONLY_LAYERS) {
+            if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", flagsOnly ? "none" : "visible");
+        }
+    }
+    const btn = document.getElementById("btn-flags-only");
+    if (btn) {
+        btn.textContent = flagsOnly ? "🪖 Vis soldater" : "🚩 Kun flag";
+        btn.classList.toggle("btn-primary", flagsOnly);
+    }
+    showToast(flagsOnly ? "Soldater og køretøjer er skjult – kun flagene vises." : "Soldater og køretøjer vises igen.");
+};
+document.getElementById("btn-flags-only")?.addEventListener("click", () => toggleFlagsOnly());
 setInterval(pollFlagStates, FLAG_POLL_MS);
 
 showAppVersion();
