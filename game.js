@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 118;
+const APP_VERSION = 119;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -3073,6 +3073,12 @@ function installGameLayers() {
         },
         paint: { "icon-opacity": ["get", "op"] }
     });
+
+    try {
+        installFlagLayers();
+    } catch (err) {
+        console.warn("Flag-lagene kunne ikke tilføjes:", err);
+    }
 }
 
 // ============================================================================
@@ -5257,6 +5263,7 @@ async function syncAllFromSupabase() {
     renderBookmarksSidebar();
     await refreshViewportData();
     await loadHospitals();
+    loadFlags();
 }
 
 // Bogmærker, hvis firkant (byggeplads 50×50 m, mål 20×20 m) indeholder punktet.
@@ -5433,6 +5440,7 @@ function onMapClicked(lat, lon) {
         addRoutePoint(target);
         return;
     }
+    if (openFlagModalNear(lat, lon)) return;
     selectPoint(lat, lon);
     openGroupModalAt(lat, lon);
 }
@@ -7955,6 +7963,10 @@ const REPORT_TEXT = {
     engaged:    r => `⚔️ Dine ${r.count} soldater er stødt på en anden spillers soldater og har taget stilling.`,
     skirmish_won:  r => `🏅 Dine soldater nedkæmpede en fjendtlig spillers gruppe på ${r.enemy_losses} soldater.`,
     skirmish_lost: r => `💀 En anden spillers soldater nedkæmpede ${r.count} af dine soldater.`,
+    flag_taken: r => `🚩 Dine soldater har taget flaget ${r.note || ""}.`,
+    flag_lost:  r => `🏳️ Du har mistet flaget ${r.note || ""}.`,
+    town_taken: r => `🏙️ ${r.note || "En by"} er nu under din kontrol!`,
+    town_lost:  r => `💔 Du har mistet kontrollen over ${r.note || "en by"}.`,
     shelled: r => r.survivors <= 0
         ? `💥 En granat ramte dine ${r.count} soldater — ingen overlevede.`
         : `💥 En granat ramte dine soldater: ${r.enemy_losses} træffere${r.losses ? `, ${r.losses} faldt` : ""}.`,
@@ -8131,7 +8143,7 @@ function explosionImage(selected = false) {
 async function loadReports() {
     if (!state.user) return;
     const { data } = await sb.from("march_reports")
-        .select("id,kind,lat,lon,count,survivors,losses,enemy_losses")
+        .select("*")
         .eq("seen", false)
         .order("id", { ascending: true });
     if (!data || data.length === 0) return;
@@ -8142,6 +8154,7 @@ async function loadReports() {
     await sb.from("march_reports").update({ seen: true }).in("id", data.map(r => r.id));
     // Kamp mod patruljer ændrer antallet af soldater; hjemkomne sårede lægges på hospitalet.
     if (data.some(r => r.kind !== "returned" && r.kind !== "arrived" && r.kind !== "stopped")) loadBattles();
+    if (data.some(r => r.kind.startsWith("flag_") || r.kind.startsWith("town_"))) pollFlagStates();
     if (data.some(r => r.kind.startsWith("patrol_") || r.kind.startsWith("truck_") || r.kind === "returned" || r.kind === "shelled" || r.kind === "stopped")) {
         await loadArmy();
         await syncAllFromSupabase();
@@ -8639,6 +8652,7 @@ const RULE_GROUPS = [
     ["mapfire", "Brændende bygninger på kortet"],
     ["npc", "Fjendtlige patruljer"],
     ["sweden", "Den svenske hær (invasion)"],
+    ["flags", "Byer og flag"],
     ["build", "Bygninger og byggeri"],
     ["economy", "Skridt og økonomi"],
     ["gps", "Telefon og GPS"],
@@ -8735,6 +8749,8 @@ const RULE_INFO = {
     sweden_column_gap_s:        ["sweden", "Tid mellem to enheder, der kører ud fra Lernacken", "s"],
     sweden_salvo_per_gun:       ["sweden", "Granater pr. kanon pr. salve", "stk."],
     sweden_fire_pause_s:        ["sweden", "Mindst så lang tid mellem to salver fra samme enhed", "s"],
+    flag_radius_m:              ["flags", "Cirkel om flaget", "m"],
+    flag_hold_s:                ["flags", "Så længe skal man stå alene i cirklen for at tage flaget", "s"],
     sweden_vision_m:            ["sweden", "Så langt hærens enheder ser (hele hæren deler det)", "m"],
     sweden_dismount_m:          ["sweden", "Lastbiler stopper og sætter soldaterne af, når fjenden er så tæt på", "m"],
     sweden_attack_range_m:      ["sweden", "Så langt infanteriet går for at angribe", "m"],
@@ -8949,6 +8965,7 @@ window.closeModal = function() {
     document.querySelector(".modal-box")?.classList.remove("modal-wide");
     state.groupModal = null;
     state.hospitalModal = null;
+    state.flagModal = null;
     document.getElementById("modal-overlay").classList.add("hidden");
     renderTroopsOnMap();
 };
@@ -9510,7 +9527,7 @@ function codexEnemiesHtml() {
 
 window.openCodex = function() {
     document.getElementById("codex-body").innerHTML =
-        codexSoldierHtml() + codexBuildingsHtml() + codexWeaponsHtml() + codexVehiclesHtml() + codexEnemiesHtml();
+        codexSoldierHtml() + codexBuildingsHtml() + codexWeaponsHtml() + codexVehiclesHtml() + codexTownsHtml() + codexEnemiesHtml();
     document.getElementById("codex-overlay").classList.remove("hidden");
     document.getElementById("codex-body").scrollTop = 0;
 };
@@ -9592,6 +9609,474 @@ function showAppVersion() {
         }
     });
 }
+
+// ============================================================================
+// Byer og flag (0048_byer_og_flag.sql): kontrol over byer
+// Hvert flag har en cirkel. Den side, der står alene i cirklen længe nok, ejer flaget; byen ejes af
+// den side med flest flag. Alt afgøres på serveren (flags_tick); her tegnes og vises det kun.
+// Virker uden fejl, før 0048 er kørt (knappen "Byer" forklarer så, hvad der mangler).
+// ============================================================================
+const FLAG_POLL_MS = 20000;
+const flagData = {
+    towns: new Map(),      // id -> { id, name, kind, lat, lon, owner_id, owner_name, owned_at, flags }
+    flags: new Map(),      // id -> { id, town_id, name, lat, lon, owner_id, owner_name, owned_at, cand_id, cand_name, cand_since }
+    rules: { radius_m: 50, hold_s: 60 },
+    loaded: false,
+    supported: true,
+    loading: false
+};
+const FLAG_COLORS = { own: "#39FF14", ally: "#B388FF", enemy: "#FF5252", none: "#B0BEC5" };
+const TOWN_KIND_LABEL = { storby: "storby", by: "by", bydel: "bydel", kvarter: "kvarter", nabolag: "nabolag", landsby: "landsby" };
+
+// Hvem ejeren er set fra dig: dig selv, en allieret, en fjende eller ingen.
+function flagSideOf(ownerId) {
+    if (!ownerId) return "none";
+    if (state.user && ownerId === state.user.id) return "own";
+    if (isAlly(ownerId)) return "ally";
+    return "enemy";
+}
+
+function flagSideColor(ownerId) {
+    const side = flagSideOf(ownerId);
+    if (side === "ally") return allyColor(ownerId);
+    return FLAG_COLORS[side];
+}
+
+function flagOwnerLabel(ownerId, ownerName) {
+    const side = flagSideOf(ownerId);
+    if (side === "none") return "ingen";
+    if (side === "own") return "dig";
+    if (side === "ally") return `${ownerName || allyName(ownerId)} (allieret)`;
+    return `${ownerName || "en anden spiller"} (fjende)`;
+}
+
+// Et lille flag i pixel-stil i ejerens farve (tegnes én gang pr. farve).
+const flagImageIds = new Set();
+function flagImageId(color) {
+    const id = "img-flag-" + color.replace("#", "");
+    if (!flagImageIds.has(id) && map && !map.hasImage(id)) {
+        const art = [
+            "PDDDDDDDD.....",
+            "PDFFFFFFFD....",
+            "PDFFFFFFFFFD..",
+            "PDFFFFFFFFFFFD",
+            "PDFFFFFFFFFFFD",
+            "PDFFFFFFFFFD..",
+            "PDFFFFFFFD....",
+            "PDDDDDDDD.....",
+            "P.............",
+            "P.............",
+            "P.............",
+            "P.............",
+            "P.............",
+            "P.............",
+            "P.............",
+            "P.............",
+            "PP............",
+            "SSS..........."
+        ];
+        const colors = { P: "#5D4037", D: "#1a1208", F: color, S: "#3e2a1a" };
+        const px = 3, pad = 1, w = 14 * px + pad * 2, h = 18 * px + pad * 2;
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        art.forEach((row, y) => [...row].forEach((c, x) => {
+            if (!colors[c]) return;
+            ctx.fillStyle = colors[c];
+            ctx.fillRect(pad + x * px, pad + y * px, px, px);
+        }));
+        map.addImage(id, ctx.getImageData(0, 0, w, h), { pixelRatio: 1 });
+        flagImageIds.add(id);
+    }
+    return id;
+}
+
+function installFlagLayers() {
+    if (map.getSource("src-flags")) return;
+    const empty = { type: "FeatureCollection", features: [] };
+    map.addSource("src-flag-circles", { type: "geojson", data: empty });
+    map.addSource("src-flags", { type: "geojson", data: empty });
+    const before = map.getLayer("lyr-troops") ? "lyr-troops" : undefined;
+
+    map.addLayer({
+        id: "lyr-flag-circle-fill",
+        type: "fill",
+        source: "src-flag-circles",
+        minzoom: 12,
+        paint: { "fill-color": ["get", "c"], "fill-opacity": ["interpolate", ["linear"], ["zoom"], 12, 0.08, 15, 0.16] }
+    }, before);
+    map.addLayer({
+        id: "lyr-flag-circle-line",
+        type: "line",
+        source: "src-flag-circles",
+        minzoom: 12,
+        paint: {
+            "line-color": ["get", "c"],
+            "line-width": ["interpolate", ["linear"], ["zoom"], 12, 1, 16, 2],
+            "line-dasharray": [2, 1.5],
+            "line-opacity": 0.8
+        }
+    }, before);
+    map.addLayer({
+        id: "lyr-flag-cand",
+        type: "circle",
+        source: "src-flags",
+        filter: ["==", ["get", "cand"], 1],
+        paint: {
+            "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 7, 16, 16],
+            "circle-color": "#FFD54F",
+            "circle-opacity": 0.25,
+            "circle-stroke-color": "#FFD54F",
+            "circle-stroke-width": 2
+        }
+    }, before);
+    map.addLayer({
+        id: "lyr-flags",
+        type: "symbol",
+        source: "src-flags",
+        minzoom: 9,
+        layout: {
+            "icon-image": ["get", "img"],
+            "icon-anchor": "bottom",
+            "icon-size": ["interpolate", ["linear"], ["zoom"], 9, 0.35, 13, 0.6, 16, 1.0],
+            "icon-allow-overlap": true,
+            "icon-ignore-placement": true,
+            "text-field": ["step", ["zoom"], "", 14.5, ["get", "label"]],
+            "text-font": ["Noto Sans Bold"],
+            "text-size": 11,
+            "text-anchor": "top",
+            "text-offset": [0, 0.4],
+            "text-optional": true
+        },
+        paint: {
+            "text-color": ["get", "c"],
+            "text-halo-color": "#241a10",
+            "text-halo-width": 1.6
+        }
+    }, before);
+}
+
+// Cirkel som polygon (radius i meter), så den har samme størrelse som på serveren uanset zoom.
+function circlePolygon(lat, lon, radiusM, n = 32) {
+    const mPerLat = 111320;
+    const mPerLon = 111320 * Math.max(Math.cos(lat * RAD_PER_DEG), MIN_COS);
+    const ring = [];
+    for (let i = 0; i <= n; i++) {
+        const a = (i / n) * Math.PI * 2;
+        ring.push([lon + Math.cos(a) * radiusM / mPerLon, lat + Math.sin(a) * radiusM / mPerLat]);
+    }
+    return { type: "Polygon", coordinates: [ring] };
+}
+
+function renderFlagsOnMap() {
+    if (!mapReady || !map.getSource("src-flags")) return;
+    const r = flagData.rules.radius_m;
+    const circles = [];
+    const points = [];
+    for (const f of flagData.flags.values()) {
+        const color = flagSideColor(f.owner_id);
+        const town = flagData.towns.get(f.town_id);
+        circles.push({ type: "Feature", properties: { c: color }, geometry: circlePolygon(f.lat, f.lon, r) });
+        points.push({
+            type: "Feature",
+            properties: {
+                id: f.id, c: color, img: flagImageId(color), cand: f.cand_id ? 1 : 0,
+                label: town && (town.flags || 1) > 1 ? `${town.name}: ${f.name}` : (town ? town.name : f.name)
+            },
+            geometry: { type: "Point", coordinates: [f.lon, f.lat] }
+        });
+    }
+    map.getSource("src-flag-circles").setData({ type: "FeatureCollection", features: circles });
+    map.getSource("src-flags").setData({ type: "FeatureCollection", features: points });
+    applyTownLabelColors();
+}
+
+// Bynavnene på kortet får ejerens farve (grøn = din side, lilla = allieret, rød = fjende).
+function applyTownLabelColors() {
+    if (!mapReady) return;
+    const own = [], ally = [], enemy = [];
+    for (const t of flagData.towns.values()) {
+        if (!t.owner_id) continue;
+        const side = flagSideOf(t.owner_id);
+        if (side === "own") own.push(t.name);
+        else if (side === "ally") ally.push(t.name);
+        else enemy.push(t.name);
+    }
+    const nameExpr = ["coalesce", ["get", "name:latin"], ["get", "name"]];
+    const expr = ["case",
+        ["in", nameExpr, ["literal", own]], "#8CFF4D",
+        ["in", nameExpr, ["literal", ally]], "#D1B3FF",
+        ["in", nameExpr, ["literal", enemy]], "#FF8A80",
+        "#f6e9c4"];
+    for (const id of ["label_city", "label_city_capital", "label_town", "label_village"]) {
+        if (map.getLayer(id)) map.setPaintProperty(id, "text-color", expr);
+    }
+}
+
+function flagsUnsupported(error) {
+    return error && (error.code === "PGRST202" || String(error.message || "").includes("list_flag"));
+}
+
+async function loadFlags() {
+    if (!state.user || !flagData.supported || flagData.loading) return;
+    flagData.loading = true;
+    try {
+        const { data, error } = await sb.rpc("list_flags");
+        if (error) {
+            if (flagsUnsupported(error)) flagData.supported = false;
+            else console.warn("list_flags fejlede:", error.message || error);
+            return;
+        }
+        flagData.towns.clear();
+        flagData.flags.clear();
+        for (const t of data?.towns || []) flagData.towns.set(t.id, t);
+        for (const f of data?.flags || []) flagData.flags.set(f.id, f);
+        if (data?.rules) flagData.rules = { radius_m: Number(data.rules.radius_m) || 50, hold_s: Number(data.rules.hold_s) || 60 };
+        flagData.loaded = true;
+        renderFlagsOnMap();
+        updateTownsBadge();
+        if (state.flagModal) renderFlagModal();
+    } finally {
+        flagData.loading = false;
+    }
+}
+
+async function pollFlagStates() {
+    if (!state.user || !flagData.supported || !flagData.loaded) return;
+    const { data, error } = await sb.rpc("list_flag_states");
+    if (error || !data) return;
+    const ownedTowns = new Set();
+    for (const t of data.towns || []) {
+        ownedTowns.add(t.id);
+        const cur = flagData.towns.get(t.id);
+        if (cur) Object.assign(cur, t);
+    }
+    for (const t of flagData.towns.values()) {
+        if (t.owner_id && !ownedTowns.has(t.id)) { t.owner_id = null; t.owner_name = null; t.owned_at = null; }
+    }
+    const active = new Set();
+    for (const f of data.flags || []) {
+        active.add(f.id);
+        const cur = flagData.flags.get(f.id);
+        if (cur) Object.assign(cur, f);
+    }
+    for (const f of flagData.flags.values()) {
+        if ((f.owner_id || f.cand_id) && !active.has(f.id)) {
+            f.owner_id = null; f.owner_name = null; f.owned_at = null; f.cand_id = null; f.cand_name = null; f.cand_since = null;
+        }
+    }
+    renderFlagsOnMap();
+    updateTownsBadge();
+    if (state.flagModal) renderFlagModal();
+}
+
+function updateTownsBadge() {
+    const btn = document.getElementById("btn-towns");
+    if (!btn) return;
+    let mine = 0;
+    for (const t of flagData.towns.values()) {
+        if (t.owner_id && flagSideOf(t.owner_id) !== "enemy") mine++;
+    }
+    btn.textContent = mine > 0 ? `🏙️ Byer (${mine})` : "🏙️ Byer";
+}
+
+// Klik på kortet tæt ved et flag åbner flagets infoboks.
+function openFlagModalNear(lat, lon) {
+    if (!mapReady || !flagData.loaded || map.getZoom() < 9) return false;
+    const p = map.project([lon, lat]);
+    let best = null, bestD = 22;
+    for (const f of flagData.flags.values()) {
+        const q = map.project([f.lon, f.lat]);
+        const d = Math.hypot(q.x - p.x, q.y - (p.y + 20));  // flaget står oven på punktet (anker i bunden)
+        const d2 = Math.hypot(q.x - p.x, q.y - p.y);
+        const dd = Math.min(d, d2);
+        if (dd < bestD) { bestD = dd; best = f; }
+    }
+    if (!best) return false;
+    openFlagModal(best.id);
+    return true;
+}
+
+window.openFlagModal = function(id) {
+    state.groupModal = null;
+    state.hospitalModal = null;
+    state.flagModal = id;
+    renderFlagModal();
+    document.getElementById("modal-overlay").classList.remove("hidden");
+};
+
+// Soldater i cirklen lige nu, set fra dig (egne, allierede og fjender du kan se).
+function soldiersInFlagCircle(f) {
+    const r = flagData.rules.radius_m;
+    const now = serverNow();
+    const near = (lat, lon) => Geo.distanceM(lat, lon, f.lat, f.lon) <= r;
+    let own = 0, ally = 0, enemy = 0;
+    for (const g of state.garrisons) if (g.count > 0 && near(g.lat, g.lon)) own += g.count;
+    for (const m of state.marches) {
+        if (m.count <= 0) continue;
+        const [la, lo] = marchCurrentPos(m, now);
+        if (near(la, lo)) own += m.count;
+    }
+    for (const g of state.allies.garrisons) if (near(g.lat, g.lon)) ally += g.count;
+    for (const m of state.allies.marches) {
+        const [la, lo] = marchCurrentPos(m, now);
+        if (near(la, lo)) ally += m.count;
+    }
+    for (const g of state.enemies.garrisons) if (near(g.lat, g.lon)) enemy += g.count;
+    for (const m of state.enemies.marches) if (near(m.lat, m.lon)) enemy += m.count;
+    return { own, ally, enemy };
+}
+
+function fmtWhen(iso) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return d.toLocaleString("da-DK", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+function renderFlagModal() {
+    const f = flagData.flags.get(state.flagModal);
+    const title = document.getElementById("modal-title");
+    const body = document.getElementById("modal-body");
+    const actions = document.getElementById("modal-actions");
+    if (!f) {
+        title.textContent = "Flag";
+        body.innerHTML = `<p class="muted-hint">Flaget findes ikke længere.</p>`;
+        actions.innerHTML = `<button class="btn" onclick="closeModal()">Luk</button>`;
+        return;
+    }
+    const town = flagData.towns.get(f.town_id);
+    const townFlags = [...flagData.flags.values()].filter(x => x.town_id === f.town_id);
+    const sideColor = flagSideColor(f.owner_id);
+    const inCircle = soldiersInFlagCircle(f);
+    title.textContent = `🚩 ${f.name}${town ? ` · ${town.name}` : ""}`;
+
+    let cand = "";
+    if (f.cand_id && f.cand_since) {
+        const left = Math.max(0, Math.round(flagData.rules.hold_s - (serverNow() - Date.parse(f.cand_since)) / 1000));
+        const who = flagSideOf(f.cand_id) === "own" ? "Dine soldater" : `${f.cand_name || "En anden spiller"}s soldater`;
+        cand = `<p>⏳ <strong>${who}</strong> står alene i cirklen og tager flaget om <strong>${left} s</strong>.</p>`;
+    }
+    const townLine = town
+        ? `<p>🏙️ <strong>${town.name}</strong> (${TOWN_KIND_LABEL[town.kind] || town.kind}) har ${townFlags.length} ${townFlags.length === 1 ? "flag" : "flag"} og ejes af <strong style="color:${flagSideColor(town.owner_id)}">${flagOwnerLabel(town.owner_id, town.owner_name)}</strong>${town.owner_id ? ` siden ${fmtWhen(town.owned_at)}` : ""}.</p>`
+        : "";
+    const flagList = townFlags.length > 1
+        ? `<div class="muted-hint" style="margin-top:6px;">Byens flag: ${townFlags.map(x =>
+            `<a href="#" onclick="openFlagModal(${x.id}); return false;" style="color:${flagSideColor(x.owner_id)}">${x.id === f.id ? "<strong>" : ""}${x.name}${x.id === f.id ? "</strong>" : ""}</a>`).join(" · ")}</div>`
+        : "";
+    body.innerHTML = `
+        <p>Ejes af <strong style="color:${sideColor}">${flagOwnerLabel(f.owner_id, f.owner_name)}</strong>${f.owner_id ? ` siden ${fmtWhen(f.owned_at)}` : ""}.</p>
+        ${cand}
+        <p>I cirklen (${formatDistance(flagData.rules.radius_m)}) lige nu: 🪖 dine ${inCircle.own}${inCircle.ally ? ` · allierede ${inCircle.ally}` : ""} · fjender ${inCircle.enemy}</p>
+        ${townLine}
+        ${flagList}
+        <p class="muted-hint" style="margin-top:8px;">Den side, der står alene i cirklen i ${fmtNum(flagData.rules.hold_s)} sekunder, tager flaget. Ejeren beholder det, så længe mindst én af ejerens soldater står i cirklen. Byen ejes af den side med flest flag.</p>`;
+    actions.innerHTML = `
+        <button class="btn" onclick="closeModal(); jumpToPoint(${f.lat}, ${f.lon})">🎯 Hop til</button>
+        <button class="btn btn-primary" onclick="closeModal(); sendSoldiersTo(${f.lat}, ${f.lon})">🪖 Send soldater hertil</button>
+        <button class="btn" onclick="closeModal()">Luk</button>`;
+}
+
+// Siden "Byer": hvilke byer er besat, og hvem ejer dem.
+window.openTownsModal = function() {
+    state.groupModal = null;
+    state.hospitalModal = null;
+    state.flagModal = null;
+    const title = document.getElementById("modal-title");
+    const body = document.getElementById("modal-body");
+    const actions = document.getElementById("modal-actions");
+    document.querySelector(".modal-box")?.classList.add("modal-wide");
+    title.textContent = "🏙️ Byer under kontrol";
+
+    if (!flagData.supported) {
+        body.innerHTML = `<p class="muted-hint">Byer og flag kræver, at <strong>0048_byer_og_flag.sql</strong> og <strong>0049_byer_danmark_data.sql</strong> er kørt i Supabase.</p>`;
+    } else if (!flagData.loaded) {
+        body.innerHTML = `<p class="muted-hint">Henter byer …</p>`;
+        loadFlags().then(() => { if (!document.getElementById("modal-overlay").classList.contains("hidden")) openTownsModal(); });
+    } else {
+        const owned = [...flagData.towns.values()].filter(t => t.owner_id);
+        const flagsByTown = new Map();
+        for (const f of flagData.flags.values()) {
+            if (!flagsByTown.has(f.town_id)) flagsByTown.set(f.town_id, []);
+            flagsByTown.get(f.town_id).push(f);
+        }
+        const sideRank = { own: 0, ally: 1, enemy: 2, none: 3 };
+        owned.sort((a, b) => sideRank[flagSideOf(a.owner_id)] - sideRank[flagSideOf(b.owner_id)]
+            || String(a.owner_name || "").localeCompare(String(b.owner_name || ""), "da")
+            || a.name.localeCompare(b.name, "da"));
+
+        const perOwner = new Map();
+        for (const t of owned) {
+            const key = t.owner_id;
+            if (!perOwner.has(key)) perOwner.set(key, { name: flagOwnerLabel(t.owner_id, t.owner_name), color: flagSideColor(t.owner_id), n: 0 });
+            perOwner.get(key).n++;
+        }
+        const summary = [...perOwner.values()].map(o => `<span class="badge" style="border-color:${o.color}; color:${o.color}">${o.name}: ${o.n}</span>`).join(" ");
+        const contested = [...flagData.flags.values()].filter(f => f.cand_id).length;
+
+        const rows = owned.map(t => {
+            const fl = flagsByTown.get(t.id) || [];
+            const heldBySide = fl.filter(f => f.owner_id && sameSide(f.owner_id, t.owner_id)).length;
+            const taking = fl.some(f => f.cand_id) ? " ⏳" : "";
+            return `<div class="item-row" style="cursor:pointer" onclick="closeModal(); jumpToPoint(${t.lat}, ${t.lon})">
+                <div class="item-row-top">
+                    <strong style="color:${flagSideColor(t.owner_id)}">${t.name}</strong>
+                    <span class="muted-hint">${TOWN_KIND_LABEL[t.kind] || t.kind}${taking}</span>
+                </div>
+                <div class="muted-hint">Ejer: ${flagOwnerLabel(t.owner_id, t.owner_name)} · flag ${heldBySide}/${fl.length} · siden ${fmtWhen(t.owned_at)}</div>
+            </div>`;
+        }).join("");
+
+        body.innerHTML = `
+            <p class="muted-hint">${flagData.towns.size} byer, bydele og landsbyer med ${flagData.flags.size} flag i alt. ${owned.length} ${owned.length === 1 ? "er" : "er"} under kontrol${contested ? `, ${contested} flag er ved at skifte hænder` : ""}.</p>
+            ${summary ? `<p>${summary}</p>` : ""}
+            ${rows ? `<div class="list-stack">${rows}</div>` : `<p class="muted-hint">Ingen byer er besat endnu. Send soldater ind i en bys flagcirkel og lad dem stå der alene i ${fmtNum(flagData.rules.hold_s)} sekunder.</p>`}`;
+    }
+    actions.innerHTML = `<button class="btn" onclick="closeModal()">Luk</button>`;
+    document.getElementById("modal-overlay").classList.remove("hidden");
+};
+
+// Samme side = samme spiller eller allierede (set fra dig kan vi kun afgøre: dig+allierede er én side).
+function sameSide(a, b) {
+    if (a === b) return true;
+    const sa = flagSideOf(a), sb2 = flagSideOf(b);
+    if ((sa === "own" || sa === "ally") && (sb2 === "own" || sb2 === "ally")) return true;
+    return false;
+}
+
+function codexTownsHtml() {
+    const kinds = new Map();
+    for (const t of flagData.towns.values()) kinds.set(t.kind, (kinds.get(t.kind) || 0) + 1);
+    const kindRows = [["storby", 7], ["by", 5], ["bydel", 3], ["kvarter", 1], ["nabolag", 1], ["landsby", 1]]
+        .map(([k, n]) => [`${TOWN_KIND_LABEL[k]}${kinds.has(k) ? ` (${fmtNum(kinds.get(k))} i Danmark)` : ""}`, `op til ${n} flag`]);
+    return `
+        <details class="codex-section">
+            <summary><span class="codex-sum-title">🚩 Byer og flag</span><span class="codex-sum-sub">kontrol over byer, bydele og landsbyer</span></summary>
+            <p class="muted-hint" style="margin-bottom: 12px;">Hver by har et ulige antal flag på steder, folk kender: bymidten, stationen, rådhuset, kirken, idrætsanlægget og skolen. Flagene kan kun tages af soldater, der står i flagets cirkel. Granater, morterer og haubitser kan dræbe dem, der står der, men aldrig selv tage et flag.</p>
+            <div class="codex-grid codex-grid-3">
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Sådan tages et flag</h3><span class="badge">regler</span></div>
+                    <p class="muted-hint">Den side (spiller eller alliance), der står <strong>alene</strong> i cirklen i ${fmtNum(codexRule("flag_hold_s", 60))} sekunder, ejer flaget. Ejeren beholder flaget, så længe mindst én af ejerens soldater står i cirklen, uanset hvor mange fjender der er. Et tomt flag beholder sin ejer.</p>
+                    ${codexStats([
+                        ["Cirkel om flaget", formatDistance(codexRule("flag_radius_m", 50))],
+                        ["Tid alene i cirklen", `${fmtNum(codexRule("flag_hold_s", 60))} s`]
+                    ])}
+                </div>
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Sådan ejes en by</h3><span class="badge">flest flag</span></div>
+                    <p class="muted-hint">Byen ejes af den side, der holder flest af byens flag. Ved lige mange beholder den hidtidige ejer byen. Bynavnet på kortet får ejerens farve, og byen står på siden 🏙️ Byer.</p>
+                    ${codexStats(kindRows)}
+                </div>
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Farver på kortet</h3><span class="badge">overblik</span></div>
+                    <p class="muted-hint"><span style="color:${FLAG_COLORS.own}">■</span> dine flag og byer · <span style="color:${FLAG_COLORS.ally}">■</span> allierede · <span style="color:${FLAG_COLORS.enemy}">■</span> fjender · <span style="color:${FLAG_COLORS.none}">■</span> ingen ejer. En gul ring om flaget betyder, at nogen står alene i cirklen og er ved at tage det.</p>
+                    <p class="muted-hint">Point og stål for byer kommer i næste trin.</p>
+                </div>
+            </div>
+        </details>`;
+}
+
+document.getElementById("btn-towns")?.addEventListener("click", () => openTownsModal());
+setInterval(pollFlagStates, FLAG_POLL_MS);
 
 showAppVersion();
 initCollapsibleSections();
