@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 125;
+const APP_VERSION = 126;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -9236,7 +9236,7 @@ function codexSoldierHtml() {
             <summary><span class="codex-sum-title">🪖 Soldater</span><span class="codex-sum-sub">infanteri i brug + 5 kommende specialsoldater</span></summary>
             
             <p class="muted-hint" style="margin-bottom: 12px;">Infanteriet er i brug nu. De øvrige specialiserede soldaterroller er under forberedelse. De kan ikke uddannes endnu, men deres egenskaber, våben og taktiske roller i spillet er fastlagt herunder.</p>
-            <p class="muted-hint" style="margin-bottom: 12px;">🎖️ <strong>Navngivne soldater og rang:</strong> En såret soldat, der heles på felthospitalet, får navn og bliver korporal. Hver heling derefter giver næste rang: sergent, oversergent, seniorsergent, løjtnant, premierløjtnant, kaptajn og major. De navngivne følger med grupperne: ved deling fordeles de jævnt, ved sammenlægning følger alle med, og i kamp falder de i forhold til deres andel af gruppen. De ses i gruppens popup. <strong>I kampen</strong> giver hver rang ${fmtPct(codexRule("rank_fire_bonus", 0.10))} mere ildkraft (højst +${fmtPct(codexRule("rank_fire_max", 1.0))} pr. soldat) og ${fmtPct(codexRule("rank_survive_bonus", 0.08))} mindre chance pr. rang for at falde (højst ${fmtPct(codexRule("rank_survive_max", 0.6))}). Siden med alle dine soldater kommer i næste trin.</p>
+            <p class="muted-hint" style="margin-bottom: 12px;">🎖️ <strong>Navngivne soldater og rang:</strong> En såret soldat, der heles på felthospitalet, får navn og bliver korporal. Hver heling derefter giver næste rang: sergent, oversergent, seniorsergent, løjtnant, premierløjtnant, kaptajn og major. De navngivne følger med grupperne: ved deling fordeles de jævnt, ved sammenlægning følger alle med, og i kamp falder de i forhold til deres andel af gruppen. De ses i gruppens popup. <strong>I kampen</strong> giver hver rang ${fmtPct(codexRule("rank_fire_bonus", 0.10))} mere ildkraft (højst +${fmtPct(codexRule("rank_fire_max", 1.0))} pr. soldat) og ${fmtPct(codexRule("rank_survive_bonus", 0.08))} mindre chance pr. rang for at falde (højst ${fmtPct(codexRule("rank_survive_max", 0.6))}). Siden <strong>🎖️ Mine soldater</strong> i toppen viser alle navngivne, hvor de er, og mindelisten over de faldne.</p>
 
             <div class="codex-grid codex-grid-3">
                 <div class="codex-card">
@@ -9675,6 +9675,99 @@ function namedLineHtml(kind, g) {
     const pct = g.count > 0 ? Math.round(bonus / g.count * 100) : 0;
     return `<p class="muted-hint">🎖️ ${list.length} ${list.length === 1 ? "navngiven soldat" : "navngivne soldater"}${pct > 0 ? ` (+${pct} % ildkraft)` : ""}: ${shown}${more}.</p>`;
 }
+
+// Nærmeste by til et punkt (til "vagt i Glostrup"), hvis byerne er hentet.
+function nearestTownName(lat, lon, maxM = 2500) {
+    if (!flagData.loaded) return null;
+    let best = null, bestD = maxM;
+    for (const t of flagData.towns.values()) {
+        const d = Geo.distanceM(lat, lon, t.lat, t.lon);
+        if (d < bestD) { bestD = d; best = t; }
+    }
+    return best ? best.name : null;
+}
+
+// Hvor en navngiven soldat er lige nu, som tekst + sted at hoppe til.
+function namedWhere(n) {
+    if (n.place === "home") return { text: "🏠 i barakken", lat: null, lon: null, kind: null, id: null };
+    if (n.place === "hospital") return { text: "🏥 på hospitalet", lat: null, lon: null, kind: null, id: null };
+    if (n.place === "garrison") {
+        const g = state.garrisons.find(x => String(x.id) === String(n.group_id));
+        if (!g) return { text: "🪖 på vagt", lat: null, lon: null, kind: null, id: null };
+        const town = nearestTownName(g.lat, g.lon);
+        return { text: `🪖 på vagt${town ? ` i ${town}` : ""} (${g.count} soldater)`, lat: g.lat, lon: g.lon, kind: "garrison", id: g.id };
+    }
+    const m = state.marches.find(x => String(x.id) === String(n.group_id));
+    if (!m) return { text: "🚶 på march", lat: null, lon: null, kind: null, id: null };
+    const [lat, lon] = marchCurrentPos(m, serverNow());
+    const town = nearestTownName(m.toLat, m.toLon);
+    return { text: `🚶 på march${town ? ` mod ${town}` : ""} (${m.count} soldater)`, lat, lon, kind: "march", id: m.id };
+}
+
+// Siden "Mine soldater": alle navngivne efter rang, hvor de er, og mindelisten over de faldne.
+window.openSoldiersPage = async function(tab = "alive") {
+    state.groupModal = null;
+    state.hospitalModal = null;
+    state.flagModal = null;
+    const title = document.getElementById("modal-title");
+    const body = document.getElementById("modal-body");
+    const actions = document.getElementById("modal-actions");
+    document.querySelector(".modal-box")?.classList.add("modal-wide");
+    title.textContent = "🎖️ Mine soldater";
+    body.innerHTML = `<p class="muted-hint">Henter soldater …</p>`;
+    actions.innerHTML = `<button class="btn" onclick="closeModal()">Luk</button>`;
+    document.getElementById("modal-overlay").classList.remove("hidden");
+
+    await loadNamedSoldiers();
+    if (!namedData.supported) {
+        body.innerHTML = `<p class="muted-hint">Navngivne soldater kræver, at <strong>0050_navngivne_soldater.sql</strong> er kørt i Supabase.</p>`;
+        return;
+    }
+
+    const total = Number(state.soldiers || 0);
+    const alive = namedData.alive;
+    const fallen = namedData.fallen;
+    const byRank = new Map();
+    for (const n of alive) byRank.set(rankTitle(n.heals), (byRank.get(rankTitle(n.heals)) || 0) + 1);
+    const rankBadges = RANKS.map(([, t]) => t).filter(t => byRank.has(t)).map(t => `<span class="badge">${t}: ${byRank.get(t)}</span>`).join(" ");
+
+    const tabs = `<div class="item-actions" style="margin-bottom:8px;">
+        <button class="btn btn-small ${tab === "alive" ? "btn-primary" : ""}" onclick="openSoldiersPage('alive')">🎖️ Navngivne (${alive.length})</button>
+        <button class="btn btn-small ${tab === "fallen" ? "btn-primary" : ""}" onclick="openSoldiersPage('fallen')">🕯️ Mindeliste (${fallen.length})</button>
+    </div>`;
+
+    if (tab === "alive") {
+        const rows = alive.map(n => {
+            const w = namedWhere(n);
+            const click = w.kind ? `onclick="closeModal(); jumpToPoint(${w.lat}, ${w.lon}); openGroupModal('${w.kind}', ${JSON.stringify(String(w.id))})"` : "";
+            return `<div class="item-row" ${click ? `style="cursor:pointer" ${click}` : ""}>
+                <div class="item-row-top">
+                    <strong>${rankTitle(n.heals)} ${escapeHtml(n.name)}</strong>
+                    <span class="muted-hint">${n.heals} ${n.heals === 1 ? "heling" : "helinger"}</span>
+                </div>
+                <div class="muted-hint">${w.text} · navngivet ${fmtWhen(n.created_at)}</div>
+            </div>`;
+        }).join("");
+        body.innerHTML = `
+            ${tabs}
+            <p class="muted-hint">Du har <strong>${total.toLocaleString("da-DK")}</strong> soldater i alt, heraf <strong>${alive.length}</strong> navngivne med rang. Resten er menige uden navn. En såret soldat, der heles på felthospitalet, får navn og stiger i rang for hver heling.</p>
+            ${rankBadges ? `<p>${rankBadges}</p>` : ""}
+            ${rows ? `<div class="list-stack">${rows}</div>` : `<p class="muted-hint">Ingen navngivne soldater endnu. Send sårede soldater hjem til hospitalet, så får de navn, når de er raske.</p>`}`;
+    } else {
+        const rows = fallen.map(n => `<div class="item-row" ${n.died_lat != null ? `style="cursor:pointer" onclick="closeModal(); jumpToPoint(${n.died_lat}, ${n.died_lon})"` : ""}>
+                <div class="item-row-top">
+                    <strong>🕯️ ${rankTitle(n.heals)} ${escapeHtml(n.name)}</strong>
+                    <span class="muted-hint">${fmtWhen(n.died_at)}</span>
+                </div>
+                <div class="muted-hint">${escapeHtml(n.died_note || "faldet")}${n.died_lat != null ? ` · ${nearestTownName(n.died_lat, n.died_lon) ? `ved ${nearestTownName(n.died_lat, n.died_lon)}` : formatPos(n.died_lat, n.died_lon)}` : ""}</div>
+            </div>`).join("");
+        body.innerHTML = `
+            ${tabs}
+            <p class="muted-hint">Navngivne soldater, der er faldet. Tryk på en for at se stedet på kortet.</p>
+            ${rows ? `<div class="list-stack">${rows}</div>` : `<p class="muted-hint">Ingen faldne endnu.</p>`}`;
+    }
+};
+document.getElementById("btn-soldiers-page")?.addEventListener("click", () => openSoldiersPage());
 
 // ============================================================================
 // Byer og flag (0048_byer_og_flag.sql): kontrol over byer
