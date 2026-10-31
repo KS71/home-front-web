@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 110;
+const APP_VERSION = 111;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -2258,12 +2258,13 @@ function refreshHouses() { refreshLandscape3D(false); }
 function refreshTrees() { refreshLandscape3D(false); }
 
 // ============================================================================
-// Spillernes bygninger: tegnes som indhegnede anlæg i samme stil som kortets huse
+// Spillernes bygninger: tegnes direkte på græsset i samme stil som kortets huse
 // (sol fra nordvest, slagskygge mod sydøst, mur mod syd, valm-/sadel-/flade tage).
 // Alt tegnes i lokale meter fra pladsens nordvesthjørne (x mod øst, y mod syd) og
 // lægges i ét fill-lag, hvor "z" bestemmer rækkefølgen (jord → skygge → mur → tag → røg).
 // ============================================================================
 const CP_SHADOW = "#1a202e";
+const CP_APRON = "#cbc3b4";
 const CP_PAL = {
     olive: { light: "#a7ae76", midL: "#8f9862", midD: "#79814f", dark: "#5d643a", trim: "#e6e2d0", wallM: "#c4bea8" },
     tent:  { light: "#c2b98a", midL: "#aea574", midD: "#958d60", dark: "#7a7249", trim: "#d6cfae", wallM: "#9d9572" },
@@ -2302,8 +2303,11 @@ function makeCompoundPainter(k) {
             P.poly(2, [[x, y + h], [x, y], [x + w, y], [x + w + dx, y + dy], [x + w + dx, y + h + dy], [x + dx, y + h + dy]], CP_SHADOW, "", 0.62);
         },
         // Et hus: slagskygge, sydmur med døre, tagkant og tag (hip/gable/flat/saw).
+        // Belagt areal (som terrasserne ved kortets huse) – overlappende arealer flyder sammen.
+        apron(x, y, w, h) { P.rect(0, x, y, w, h, CP_APRON, "#948d80"); },
         box(x, y, w, h, opt) {
             const ht = opt.ht || 6, pal = opt.pal, wh = Math.min(ht * 0.3, 2.5);
+            if (!opt.bare) { const m = Math.min(2.5, Math.max(0.8, ht * 0.25)); P.apron(x - m, y - m, w + 2 * m, h + wh + 2 * m); }
             P.shadow(x, y, w, h, ht);
             P.rect(3, x, y + h, w, wh, pal.wallM, "#252934");
             for (let i = 0; i < (opt.doors || 0); i++) {
@@ -2361,17 +2365,20 @@ function makeCompoundPainter(k) {
         },
         tent(x, y, w, h, pal) { P.box(x, y, w, h, { ht: 2.2, pal: pal || CP_PAL.tent, roof: "gable" }); },
         crates(x, y, n, m) {
+            P.apron(x - 0.8, y - 0.8, n * 2.2 + 1.3, m * 2.2 + 1.3);
             for (let i = 0; i < n; i++) for (let j = 0; j < m; j++) {
-                P.box(x + i * 2.2, y + j * 2.2, 1.9, 1.9, { ht: 1.3, pal: CP_PAL.crate, roof: "flat" });
+                P.box(x + i * 2.2, y + j * 2.2, 1.9, 1.9, { ht: 1.3, pal: CP_PAL.crate, roof: "flat", bare: true });
             }
         },
         truck(x, y) {
+            P.apron(x - 0.8, y - 0.8, 8.6, 4.2);
             P.shadow(x, y, 7, 2.6, 1.6);
             P.rect(5, x, y, 5.2, 2.6, "#6d7646", "#2b2e22");
             P.rect(5, x + 5.2, y + 0.2, 1.8, 2.2, "#59613a", "#2b2e22");
             P.rect(6, x + 6.2, y + 0.4, 0.6, 1.8, "#8fb3cc");
         },
         pile(x, y, r, c) {
+            P.circ(0, x + 0.4, y + 0.4, r + 1.6, "#a89c80");
             P.circ(2, x + 1.2, y + 1.6, r, CP_SHADOW, "", 0.62);
             P.circ(5, x, y, r, c);
             P.circ(6, x - r * 0.3, y - r * 0.3, r * 0.5, "#ffffff", "", 0.18);
@@ -2392,17 +2399,6 @@ function makeCompoundPainter(k) {
             P.rect(7, x, y - 2.6, 2.6, 1.6, team, "#1e2a12");
             P.seg(7.5, [[x, y], [x, y - 2.6]], 0.25, "#e8e8e8");
             P.circ(7.5, x, y, 0.35, "#dddddd", "#333333");
-        },
-        // Grus-/betonplads med hegn og pæle.
-        plot(s) {
-            P.rect(0, 0, 0, s, s, "#bbb399");
-            P.rect(0.5, 2, 2, s - 4, s - 4, "#c3bca4");
-            for (const [x1, y1, x2, y2] of [[0.6, 0.6, s - 0.6, 0.6], [s - 0.6, 0.6, s - 0.6, s - 0.6], [s - 0.6, s - 0.6, 0.6, s - 0.6], [0.6, s - 0.6, 0.6, 0.6]]) {
-                P.seg(1, [[x1, y1], [x2, y2]], 0.3, "#55584c");
-            }
-            for (let t = 0.6; t <= s - 0.6; t += 3) {
-                for (const [x, y] of [[t, 0.6], [t, s - 0.6], [0.6, t], [s - 0.6, t]]) P.rect(1.5, x - 0.25, y - 0.25, 0.5, 0.5, "#3d4036");
-            }
         }
     };
     return P;
@@ -2410,7 +2406,6 @@ function makeCompoundPainter(k) {
 
 function drawBarracksCompound(P, lv, team) {
     const pal = CP_PAL.olive;
-    P.plot(30);
     if (lv <= 1) {
         P.tent(5, 6, 5, 3.6); P.tent(13, 6, 5, 3.6); P.tent(21, 6, 5, 3.6);
         P.circ(1.5, 15, 18, 1.1, "#5b4636"); P.circ(1.6, 15, 18, 0.6, "#f2a541");
@@ -2447,7 +2442,6 @@ function drawHelipad(P, cx, cy) {
 }
 
 function drawHospitalCompound(P, lv, team) {
-    P.plot(30);
     if (lv <= 2) {
         P.tent(4, 5, 9, 5.5, CP_PAL.wtent); drawRedCross(P, 8.5, 7.75, 2.6);
         P.tent(17, 5, 9, 5.5, CP_PAL.wtent); drawRedCross(P, 21.5, 7.75, 2.6);
@@ -2464,7 +2458,6 @@ function drawHospitalCompound(P, lv, team) {
 }
 
 function drawAcademyCompound(P, lv, team) {
-    P.plot(30);
     // Skydebane med baner, skiver og en jordvold bagved.
     P.rect(1, 3, 14, 24, 12, "#c9bf95");
     for (let i = 0; i < 4; i++) {
@@ -2487,7 +2480,6 @@ function drawAcademyCompound(P, lv, team) {
 }
 
 function drawSteelCompound(P, lv, team) {
-    P.plot(100);
     if (lv >= 4) {
         // Jernbanespor langs sydsiden
         P.rect(1, 3, 88, 94, 4, "#8a8478");
@@ -2525,7 +2517,6 @@ function drawSteelCompound(P, lv, team) {
 }
 
 function drawFactoryCompound(P, lv, team) {
-    P.plot(60);
     if (lv <= 1) {
         P.box(8, 8, 20, 12, { ht: 6, pal: CP_PAL.slate, doors: 2 });
         P.crates(32, 10, 3, 2);
@@ -2756,8 +2747,9 @@ function installGameLayers() {
         source: "src-footprints",
         paint: {
             "line-color": ["get", "c"],
-            "line-width": 1.5,
-            "line-opacity": 0.75
+            "line-width": ["interpolate", ["linear"], ["zoom"], 13, 1.5, 16, 1],
+            // Tydelig i overblikket, diskret tæt på, så bygningerne ikke ligner firkanter på kortet.
+            "line-opacity": ["interpolate", ["linear"], ["zoom"], 13, 0.75, 16, 0.3, 18, 0.2]
         }
     });
     // Det valgte sted: en bygning (gul) eller en byggeskitse (grøn = må bygges, rød = må ikke).
