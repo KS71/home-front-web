@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 109;
+const APP_VERSION = 110;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -1457,6 +1457,7 @@ function buildChunkBuildings(cx, cy) {
         for (let bIdx = 0; bIdx < rawCh.rawBlds.length; bIdx++) {
             const rb = rawCh.rawBlds[bIdx];
             const { raw, h, multi, minLon, maxLon, minLat, maxLat, lon0, lat0 } = rb;
+            if (bboxCleared(minLat, maxLat, minLon, maxLon)) continue; // revet ned: en spillers bygning står her
             const cosLat = Math.max(Math.cos(lat0 * RAD_PER_DEG), MIN_COS);
             const mPerLon = 111320 * cosLat;
             const mPerLat = 111320;
@@ -1985,6 +1986,7 @@ function buildFullChunk3D(cx, cy) {
                     if (!pointInRings(lon, lat, land.rings)) continue;
                     // Også i skov holdes alle veje, stier og bygninger helt fri for træer (med ekstra margin for store skovkroner)
                     if (hitsBuildingOrRoad(lon, lat, effectiveWood ? 1.35 : 1.0)) continue;
+                    if (bboxCleared(lat, lat, lon, lon)) continue;
                     if (!effectiveWood && tooCloseToTree(lon, lat, 160)) continue; // mindst ~12,6 m mellem by-/parktræer
                     seenGrid.add(key);
                     registerTreePos(lon, lat);
@@ -2025,7 +2027,7 @@ function buildFullChunk3D(cx, cy) {
             const lon = sb.lon0 + rx / mPerLon0;
             const lat = sb.lat0 + ry / 111320;
             if (lon < gWest || lon > gEast || lat < gSouth || lat > gNorth) continue;
-            if (hitsBuildingOrRoad(lon, lat)) continue;
+            if (hitsBuildingOrRoad(lon, lat) || bboxCleared(lat, lat, lon, lon)) continue;
             if (tooCloseToTree(lon, lat, 156)) continue; // mindst ~12,5 m mellem havetræer
             registerTreePos(lon, lat);
             const r = ((hk >>> 18) & 1023) / 1024;
@@ -2255,28 +2257,369 @@ function refreshLandscape3D(force) {
 function refreshHouses() { refreshLandscape3D(false); }
 function refreshTrees() { refreshLandscape3D(false); }
 
-// Bygnings-sprites er 56×56 px og indlæses med scale=4 → 224×224 px. Hver bygning har egenskaben
-// "m" = sidelængde i meter / cos(breddegrad), fordi én meter fylder 1/cos(lat) gange flere
-// pixels på Web Mercator-kortet, jo længere man kommer fra ækvator. Så fylder bygningen præcis
-// sin firkant overalt på jorden.
-function buildingIconSizeExpression() {
-    const texPx = 56 * 4;
-    const pxPerMeterAtZoom0 = 512 / (2 * Math.PI * EARTH_RADIUS_M);
-    const k = z => (pxPerMeterAtZoom0 * Math.pow(2, z)) / texPx;
-    return ["interpolate", ["exponential", 2], ["zoom"],
-        0, ["*", ["get", "m"], k(0)],
-        24, ["*", ["get", "m"], k(24)]];
+// ============================================================================
+// Spillernes bygninger: tegnes som indhegnede anlæg i samme stil som kortets huse
+// (sol fra nordvest, slagskygge mod sydøst, mur mod syd, valm-/sadel-/flade tage).
+// Alt tegnes i lokale meter fra pladsens nordvesthjørne (x mod øst, y mod syd) og
+// lægges i ét fill-lag, hvor "z" bestemmer rækkefølgen (jord → skygge → mur → tag → røg).
+// ============================================================================
+const CP_SHADOW = "#1a202e";
+const CP_PAL = {
+    olive: { light: "#a7ae76", midL: "#8f9862", midD: "#79814f", dark: "#5d643a", trim: "#e6e2d0", wallM: "#c4bea8" },
+    tent:  { light: "#c2b98a", midL: "#aea574", midD: "#958d60", dark: "#7a7249", trim: "#d6cfae", wallM: "#9d9572" },
+    wtent: { light: "#ecebe4", midL: "#dcd9ce", midD: "#c7c3b5", dark: "#ada899", trim: "#ffffff", wallM: "#bdb8a8" },
+    slate: { light: "#6f7484", midL: "#5d6270", midD: "#4b4f5d", dark: "#393c48", trim: "#ebe7df", wallM: "#d6cfc2" },
+    white: { deck: "#f1f2ef", inner: "#bfc3c0", trim: "#ffffff", wallM: "#d9dcd8" },
+    steel: { deck: "#7d8391", inner: "#5c616d", trim: "#cfd3d9", wallM: "#a7adb6" },
+    conc:  { deck: "#b3b8bf", inner: "#868c95", trim: "#e3e6ea", wallM: "#c1c6cc" },
+    crate: { deck: "#7b8450", inner: "#5f673b", trim: "#9aa36a", wallM: "#626a3d" }
+};
+
+// Tegneværktøj: k skalerer tegningens enheder (designet til 30/60/100 m) til bygningens rigtige størrelse.
+function makeCompoundPainter(k) {
+    const out = [];
+    const P = {
+        out,
+        poly(z, pts, c, o = "", a = 1) { out.push({ z, c, o, a, ring: pts.map(([x, y]) => [x * k, y * k]) }); },
+        rect(z, x, y, w, h, c, o, a) { P.poly(z, [[x, y], [x + w, y], [x + w, y + h], [x, y + h]], c, o, a); },
+        // En streg tegnes som smalle firkanter (så alt kan ligge i samme lag og rækkefølge).
+        seg(z, pts, w, c, a = 1) {
+            for (let i = 0; i + 1 < pts.length; i++) {
+                const [x1, y1] = pts[i], [x2, y2] = pts[i + 1];
+                const len = Math.hypot(x2 - x1, y2 - y1) || 1;
+                const nx = -(y2 - y1) / len * w / 2, ny = (x2 - x1) / len * w / 2;
+                P.poly(z, [[x1 + nx, y1 + ny], [x2 + nx, y2 + ny], [x2 - nx, y2 - ny], [x1 - nx, y1 - ny]], c, "", a);
+            }
+        },
+        circ(z, x, y, r, c, o, a, n = 18) {
+            const pts = [];
+            for (let i = 0; i < n; i++) { const t = i / n * 2 * Math.PI; pts.push([x + Math.cos(t) * r, y + Math.sin(t) * r]); }
+            P.poly(z, pts, c, o, a);
+        },
+        // Som kortets huse: murhøjde = 40 % af højden, skygge 1,15 × den mod øst og 1,8 × den mod syd.
+        shadow(x, y, w, h, ht) {
+            const wh = ht * 0.4, dx = wh * 1.15, dy = wh * 1.8;
+            P.poly(2, [[x, y + h], [x, y], [x + w, y], [x + w + dx, y + dy], [x + w + dx, y + h + dy], [x + dx, y + h + dy]], CP_SHADOW, "", 0.62);
+        },
+        // Et hus: slagskygge, sydmur med døre, tagkant og tag (hip/gable/flat/saw).
+        box(x, y, w, h, opt) {
+            const ht = opt.ht || 6, pal = opt.pal, wh = Math.min(ht * 0.3, 2.5);
+            P.shadow(x, y, w, h, ht);
+            P.rect(3, x, y + h, w, wh, pal.wallM, "#252934");
+            for (let i = 0; i < (opt.doors || 0); i++) {
+                const dx = x + w * (i + 0.5) / opt.doors;
+                P.rect(3.5, dx - 0.7, y + h + wh * 0.3, 1.4, wh * 0.7, "#4a4d55");
+            }
+            P.rect(4, x, y, w, h, pal.trim, "#262a34");
+            const t = 0.5, X0 = x + t, X1 = x + w - t, Y0 = y + t, Y1 = y + h - t;
+            if (opt.roof === "flat") {
+                P.rect(5, X0 + 0.4, Y0 + 0.4, X1 - X0 - 0.8, Y1 - Y0 - 0.8, pal.deck, "#555862");
+                P.rect(6, X0 + 0.4, Y0 + 0.4, X1 - X0 - 0.8, 0.7, pal.inner);
+                P.rect(6, X0 + 0.4, Y0 + 0.4, 0.7, Y1 - Y0 - 0.8, pal.inner);
+                if (opt.sky) {
+                    const n = Math.floor((X1 - X0 - 3) / 4);
+                    for (let i = 0; i < n; i++) P.rect(6, X0 + 2 + i * 4, (Y0 + Y1) / 2 - 1.2, 2.2, 2.4, "#7fa0b8", "#dce4ec");
+                }
+                return;
+            }
+            if (opt.roof === "saw") {
+                P.rect(5, X0, Y0, X1 - X0, Y1 - Y0, "#6b7080", "#3a3d46");
+                for (let yy = Y0; yy < Y1 - 0.5; yy += 3.6) {
+                    const hh = Math.min(2.8, Y1 - yy - 0.8);
+                    if (hh <= 0) break;
+                    P.rect(6, X0, yy + 0.8, X1 - X0, hh * 0.5, "#9096a3");
+                    P.rect(6, X0, yy + 0.8 + hh * 0.5, X1 - X0, hh * 0.5, "#6b7080");
+                    P.rect(6, X0, yy, X1 - X0, 0.8, "#8fb3cc");
+                    P.seg(6.5, [[X0, yy + 0.8], [X1, yy + 0.8]], 0.18, "#3a3d46");
+                }
+                return;
+            }
+            const gable = opt.roof === "gable";
+            if (w >= h) {
+                const cy = (Y0 + Y1) / 2, hip = gable ? 0.15 : (Y1 - Y0) / 2 * 0.9, R1 = X0 + hip, R2 = X1 - hip;
+                P.poly(5, [[X0, Y0], [X1, Y0], [R2, cy], [R1, cy]], pal.light);
+                P.poly(5, [[X0, Y1], [R1, cy], [R2, cy], [X1, Y1]], pal.midD);
+                P.poly(5, [[X0, Y0], [R1, cy], [X0, Y1]], pal.midL);
+                P.poly(5, [[X1, Y0], [X1, Y1], [R2, cy]], pal.dark);
+                P.seg(6, [[R1, cy], [R2, cy]], 0.35, pal.trim);
+                if (!gable) {
+                    P.seg(6, [[X0, Y0], [R1, cy], [X0, Y1]], 0.22, pal.trim);
+                    P.seg(6, [[X1, Y0], [R2, cy], [X1, Y1]], 0.22, pal.trim);
+                }
+            } else {
+                const cx = (X0 + X1) / 2, hip = gable ? 0.15 : (X1 - X0) / 2 * 0.9, R1 = Y0 + hip, R2 = Y1 - hip;
+                P.poly(5, [[X0, Y0], [cx, R1], [cx, R2], [X0, Y1]], pal.midL);
+                P.poly(5, [[X1, Y0], [X1, Y1], [cx, R2], [cx, R1]], pal.dark);
+                P.poly(5, [[X0, Y0], [X1, Y0], [cx, R1]], pal.light);
+                P.poly(5, [[X0, Y1], [cx, R2], [X1, Y1]], pal.midD);
+                P.seg(6, [[cx, R1], [cx, R2]], 0.35, pal.trim);
+                if (!gable) {
+                    P.seg(6, [[X0, Y0], [cx, R1], [X1, Y0]], 0.22, pal.trim);
+                    P.seg(6, [[X0, Y1], [cx, R2], [X1, Y1]], 0.22, pal.trim);
+                }
+            }
+        },
+        tent(x, y, w, h, pal) { P.box(x, y, w, h, { ht: 2.2, pal: pal || CP_PAL.tent, roof: "gable" }); },
+        crates(x, y, n, m) {
+            for (let i = 0; i < n; i++) for (let j = 0; j < m; j++) {
+                P.box(x + i * 2.2, y + j * 2.2, 1.9, 1.9, { ht: 1.3, pal: CP_PAL.crate, roof: "flat" });
+            }
+        },
+        truck(x, y) {
+            P.shadow(x, y, 7, 2.6, 1.6);
+            P.rect(5, x, y, 5.2, 2.6, "#6d7646", "#2b2e22");
+            P.rect(5, x + 5.2, y + 0.2, 1.8, 2.2, "#59613a", "#2b2e22");
+            P.rect(6, x + 6.2, y + 0.4, 0.6, 1.8, "#8fb3cc");
+        },
+        pile(x, y, r, c) {
+            P.circ(2, x + 1.2, y + 1.6, r, CP_SHADOW, "", 0.62);
+            P.circ(5, x, y, r, c);
+            P.circ(6, x - r * 0.3, y - r * 0.3, r * 0.5, "#ffffff", "", 0.18);
+        },
+        smoke(x, y, size) {
+            for (let i = 0; i < 4; i++) {
+                P.circ(8, x + (2 + i * 2.6) * size, y - (2 + i * 2.2) * size, (1.4 + i * 0.6) * size, "#eeeeee", "", 0.72 - i * 0.15);
+            }
+        },
+        chimney(x, y, r, ht) {
+            P.seg(2, [[x, y], [x + ht * 0.46, y + ht * 0.72]], r * 2, CP_SHADOW, 0.62);
+            P.circ(7, x, y, r, "#a0968a", "#3b3a38");
+            P.circ(7.5, x, y, r * 0.55, "#2a2a2a");
+            P.smoke(x, y, 1);
+        },
+        flag(x, y, team) {
+            P.seg(2, [[x, y], [x + 1.6, y + 2.2]], 0.35, CP_SHADOW, 0.62);
+            P.rect(7, x, y - 2.6, 2.6, 1.6, team, "#1e2a12");
+            P.seg(7.5, [[x, y], [x, y - 2.6]], 0.25, "#e8e8e8");
+            P.circ(7.5, x, y, 0.35, "#dddddd", "#333333");
+        },
+        // Grus-/betonplads med hegn og pæle.
+        plot(s) {
+            P.rect(0, 0, 0, s, s, "#bbb399");
+            P.rect(0.5, 2, 2, s - 4, s - 4, "#c3bca4");
+            for (const [x1, y1, x2, y2] of [[0.6, 0.6, s - 0.6, 0.6], [s - 0.6, 0.6, s - 0.6, s - 0.6], [s - 0.6, s - 0.6, 0.6, s - 0.6], [0.6, s - 0.6, 0.6, 0.6]]) {
+                P.seg(1, [[x1, y1], [x2, y2]], 0.3, "#55584c");
+            }
+            for (let t = 0.6; t <= s - 0.6; t += 3) {
+                for (const [x, y] of [[t, 0.6], [t, s - 0.6], [0.6, t], [s - 0.6, t]]) P.rect(1.5, x - 0.25, y - 0.25, 0.5, 0.5, "#3d4036");
+            }
+        }
+    };
+    return P;
 }
 
-function buildingFeature(b, extra = {}) {
-    const cfg = GAME_CONFIG.BUILDINGS[b.kind];
-    const sprite = cfg ? cfg.sprites[Math.min(b.level, cfg.sprites.length) - 1] : "barrak_1";
-    const m = buildingSize(b.kind) / Math.max(Math.cos(b.lat * RAD_PER_DEG), MIN_COS);
-    return {
-        type: "Feature",
-        properties: { sprite, m, ...extra },
-        geometry: { type: "Point", coordinates: [b.lon, b.lat] }
-    };
+function drawBarracksCompound(P, lv, team) {
+    const pal = CP_PAL.olive;
+    P.plot(30);
+    if (lv <= 1) {
+        P.tent(5, 6, 5, 3.6); P.tent(13, 6, 5, 3.6); P.tent(21, 6, 5, 3.6);
+        P.circ(1.5, 15, 18, 1.1, "#5b4636"); P.circ(1.6, 15, 18, 0.6, "#f2a541");
+        P.crates(5, 20, 2, 1);
+    } else if (lv === 2) {
+        for (let r = 0; r < 2; r++) for (let i = 0; i < 3; i++) P.tent(4 + i * 8, 5 + r * 10, 6.5, 4.5);
+        P.crates(5, 24, 3, 1); P.truck(17, 24);
+    } else if (lv === 3) {
+        P.box(4, 4, 22, 6.5, { ht: 5, pal, doors: 3 });
+        P.box(4, 16, 22, 6.5, { ht: 5, pal, doors: 3 });
+    } else if (lv === 4) {
+        P.box(3, 3, 24, 7, { ht: 6, pal, doors: 4 });
+        P.box(19, 11, 8, 15, { ht: 6, pal });
+        P.tent(4, 15, 6, 4); P.crates(4, 23, 3, 1);
+    } else {
+        P.rect(1, 11, 13, 8, 12, "#a6a08b");
+        P.box(3, 3, 24, 6.5, { ht: 7, pal, doors: 4 });
+        P.box(3, 10, 6.5, 16, { ht: 7, pal });
+        P.box(20.5, 10, 6.5, 16, { ht: 7, pal });
+    }
+    P.flag(3, 28.5, team);
+}
+
+function drawRedCross(P, cx, cy, s) {
+    P.rect(6.5, cx - s * 0.25, cy - s * 0.5, s * 0.5, s, "#d8322f");
+    P.rect(6.5, cx - s * 0.5, cy - s * 0.25, s, s * 0.5, "#d8322f");
+}
+
+function drawHelipad(P, cx, cy) {
+    P.circ(1, cx, cy, 4, "#8d8f8a", "#e8e8e8");
+    P.rect(1.5, cx - 1.4, cy - 1.6, 0.6, 3.2, "#f0f0f0");
+    P.rect(1.5, cx + 0.8, cy - 1.6, 0.6, 3.2, "#f0f0f0");
+    P.rect(1.5, cx - 0.8, cy - 0.3, 1.6, 0.6, "#f0f0f0");
+}
+
+function drawHospitalCompound(P, lv, team) {
+    P.plot(30);
+    if (lv <= 2) {
+        P.tent(4, 5, 9, 5.5, CP_PAL.wtent); drawRedCross(P, 8.5, 7.75, 2.6);
+        P.tent(17, 5, 9, 5.5, CP_PAL.wtent); drawRedCross(P, 21.5, 7.75, 2.6);
+        if (lv === 2) { P.tent(4, 16, 9, 5.5, CP_PAL.wtent); drawRedCross(P, 8.5, 18.75, 2.6); P.truck(17, 19); }
+    } else {
+        if (lv >= 4) P.box(4, 4, 22, 11, { ht: 7, pal: CP_PAL.white, roof: "flat", doors: 3 });
+        else P.box(4, 4, 22, 11, { ht: 6, pal: CP_PAL.white, roof: "flat", doors: 2 });
+        drawRedCross(P, 15, 9.5, 7);
+        if (lv >= 5) P.box(4, 18, 10, 8, { ht: 6, pal: CP_PAL.white, roof: "flat", doors: 1 });
+        else P.tent(4, 20, 7, 4.5, CP_PAL.wtent);
+        drawHelipad(P, 21, 23);
+    }
+    P.flag(3, 28.5, team);
+}
+
+function drawAcademyCompound(P, lv, team) {
+    P.plot(30);
+    // Skydebane med baner, skiver og en jordvold bagved.
+    P.rect(1, 3, 14, 24, 12, "#c9bf95");
+    for (let i = 0; i < 4; i++) {
+        P.seg(1.5, [[5, 15.5 + i * 3], [24, 15.5 + i * 3]], 0.2, "#f4efe0");
+        P.circ(6, 25, 15.5 + i * 3, 0.9, "#ffffff", "#cc3333");
+        P.circ(6.5, 25, 15.5 + i * 3, 0.35, "#cc3333");
+    }
+    P.rect(1.5, 26.3, 14, 0.9, 12, "#8a7550");
+    if (lv <= 1) {
+        P.tent(4, 4, 6, 4); P.crates(13, 4, 2, 1);
+    } else if (lv === 2) {
+        P.tent(4, 4, 6, 4); P.tent(12, 4, 6, 4); P.crates(21, 4, 2, 2);
+    } else {
+        P.box(4, 3, 15, 6, { ht: 5, pal: CP_PAL.olive, doors: 2 });
+        if (lv >= 4) P.box(21, 3, 6, 7, { ht: 5, pal: CP_PAL.slate, doors: 1 });
+        else P.box(21, 3, 6, 6, { ht: 3, pal: CP_PAL.tent, roof: "gable" });
+    }
+    if (lv >= 5) P.crates(4, 10.5, 4, 1);
+    P.flag(3, 28.5, team);
+}
+
+function drawSteelCompound(P, lv, team) {
+    P.plot(100);
+    if (lv >= 4) {
+        // Jernbanespor langs sydsiden
+        P.rect(1, 3, 88, 94, 4, "#8a8478");
+        for (let t = 4; t < 96; t += 1.6) P.seg(1.2, [[t, 88.3], [t, 91.7]], 0.4, "#5b4a3a");
+        P.seg(1.4, [[3, 89], [97, 89]], 0.3, "#3d3f44");
+        P.seg(1.4, [[3, 91], [97, 91]], 0.3, "#3d3f44");
+    }
+    if (lv <= 1) {
+        P.box(30, 30, 24, 16, { ht: 7, pal: CP_PAL.slate, doors: 2 });
+        P.chimney(56, 32, 1.2, 14);
+        P.pile(36, 62, 4, "#3a3a3d"); P.pile(48, 64, 3.5, "#5a4434");
+    } else {
+        P.box(8, 10, 44, 26, { ht: 12, pal: CP_PAL.steel, roof: "saw", doors: 3 });
+        P.chimney(56, 16, 1.6, 26);
+        if (lv >= 3) {
+            P.box(8, 46, 44, 22, { ht: 12, pal: CP_PAL.steel, roof: "saw", doors: 3 });
+            P.box(62, 12, 26, 16, { ht: 9, pal: CP_PAL.conc, roof: "flat", doors: 2 });
+            P.chimney(56, 52, 1.6, 22);
+        } else {
+            P.box(62, 14, 20, 12, { ht: 7, pal: CP_PAL.slate, doors: 1 });
+        }
+        P.pile(64, 75, 5, "#5a4434"); P.pile(75, 77, 4, "#3a3a3d");
+        if (lv >= 3) P.pile(86, 74, 4.5, "#8b5a3c");
+        if (lv >= 4) {
+            // Køletårn med damp
+            P.circ(2, 79, 49, 9.5, CP_SHADOW, "", 0.62);
+            P.circ(5, 77, 46, 9, "#c9c4ba", "#3b3a38");
+            P.circ(6, 77, 46, 6.5, "#9b968c");
+            P.smoke(76, 40, 1.8);
+        }
+        P.truck(20, 76);
+        if (lv >= 5) { P.truck(30, 76); P.chimney(56, 34, 1.4, 24); }
+    }
+    P.flag(3, 98, team);
+}
+
+function drawFactoryCompound(P, lv, team) {
+    P.plot(60);
+    if (lv <= 1) {
+        P.box(8, 8, 20, 12, { ht: 6, pal: CP_PAL.slate, doors: 2 });
+        P.crates(32, 10, 3, 2);
+    } else {
+        P.box(5, 5, lv >= 3 ? 40 : 28, 16, { ht: 9, pal: CP_PAL.conc, roof: "flat", sky: true, doors: lv >= 3 ? 4 : 3 });
+        P.box(5, 30, 18, 12, { ht: 6, pal: CP_PAL.slate, doors: 1 });
+    }
+    P.crates(28, 30, lv >= 3 ? 5 : 3, lv >= 2 ? 3 : 1);
+    if (lv >= 3) P.crates(28, 40, 3, 2);
+    if (lv >= 2) P.truck(44, 48);
+    if (lv >= 4) { P.truck(44, 42); P.box(48, 6, 8, 8, { ht: 5, pal: CP_PAL.olive }); }
+    if (lv >= 5) P.box(5, 46, 18, 10, { ht: 6, pal: CP_PAL.olive, doors: 2 });
+    P.flag(3, 58, team);
+}
+
+const COMPOUND_DRAW = {
+    barracks: [drawBarracksCompound, 30],
+    hospital: [drawHospitalCompound, 30],
+    academy: [drawAcademyCompound, 30],
+    steel_mill: [drawSteelCompound, 100],
+    weapons_factory: [drawFactoryCompound, 60]
+};
+
+// Tegningen afhænger kun af type, trin og farve: gem den i meter, og flyt den bare til hver bygning.
+const compoundShapeCache = new Map();
+function compoundShapes(kind, level, team, size) {
+    const key = kind + "|" + level + "|" + team + "|" + size;
+    let shapes = compoundShapeCache.get(key);
+    if (shapes) return shapes;
+    const [draw, base] = COMPOUND_DRAW[kind] || COMPOUND_DRAW.barracks;
+    const P = makeCompoundPainter(size / base);
+    draw(P, Math.max(1, Math.min(5, level || 1)), team);
+    shapes = P.out;
+    compoundShapeCache.set(key, shapes);
+    return shapes;
+}
+
+// Samler alle synlige bygningers figurer i få MultiPolygon-objekter (ét pr. lag/farve).
+function compoundFeatures(buildings, teamColor) {
+    const groups = new Map();
+    const mPerLat = EARTH_RADIUS_M * RAD_PER_DEG;
+    for (const b of buildings) {
+        const size = buildingSize(b.kind);
+        const mPerLon = mPerLat * Math.max(Math.cos(b.lat * RAD_PER_DEG), MIN_COS);
+        const half = size / 2;
+        const toLL = ([x, y]) => [b.lon + (x - half) / mPerLon, b.lat + (half - y) / mPerLat];
+        for (const s of compoundShapes(b.kind, b.level, teamColor(b), size)) {
+            const gk = s.z + "|" + s.c + "|" + s.o + "|" + s.a;
+            let g = groups.get(gk);
+            if (!g) { g = { s, polys: [] }; groups.set(gk, g); }
+            const ring = s.ring.map(toLL);
+            ring.push(ring[0]);
+            g.polys.push([ring]);
+        }
+    }
+    const features = [];
+    for (const { s, polys } of groups.values()) {
+        const props = { z: s.z, c: s.c, a: s.a };
+        if (s.o) props.o = s.o;
+        features.push({ type: "Feature", properties: props, geometry: { type: "MultiPolygon", coordinates: polys } });
+    }
+    return features;
+}
+
+// ----------------------------------------------------------------------------
+// Kortets huse og træer ryddes inden for spillernes bygninger.
+// ----------------------------------------------------------------------------
+let clearedSquares = [];          // [{ minLat, maxLat, minLon, maxLon }]
+let clearedSquaresSig = "";
+
+function bboxCleared(minLat, maxLat, minLon, maxLon) {
+    for (let i = 0; i < clearedSquares.length; i++) {
+        const q = clearedSquares[i];
+        if (maxLon >= q.minLon && minLon <= q.maxLon && maxLat >= q.minLat && minLat <= q.maxLat) return true;
+    }
+    return false;
+}
+
+function updateClearedSquares(buildings) {
+    const sig = buildings.map(b => b.kind + "@" + b.lat.toFixed(6) + "," + b.lon.toFixed(6)).sort().join(";");
+    if (sig === clearedSquaresSig) return;
+    const touched = [...clearedSquares];
+    clearedSquares = buildings.map(b => {
+        const ring = Geo.squareRing(b.lat, b.lon, buildingSize(b.kind));
+        return { minLon: ring[0][0], maxLon: ring[1][0], minLat: ring[0][1], maxLat: ring[2][1] };
+    });
+    clearedSquaresSig = sig;
+    touched.push(...clearedSquares);
+    for (const q of touched) {
+        const cx0 = Math.floor(q.minLon / CHUNK_LON) - 1, cx1 = Math.floor(q.maxLon / CHUNK_LON) + 1;
+        const cy0 = Math.floor(q.minLat / CHUNK_LAT) - 1, cy1 = Math.floor(q.maxLat / CHUNK_LAT) + 1;
+        for (let cy = cy0; cy <= cy1; cy++) for (let cx = cx0; cx <= cx1; cx++) invalidateChunkAndNeighbors(cx, cy);
+    }
+    if (mapReady) refreshLandscape3D(true);
 }
 
 function installGameLayers() {
@@ -2445,20 +2788,19 @@ function installGameLayers() {
             "line-dasharray": [2, 1.5]
         }
     });
+    // Spillernes bygninger: tegnet som anlæg i kortets egen stil (se compoundFeatures).
+    // Ligger under bogmærker og omrids, så de stadig kan ses oven på pladsen.
     map.addLayer({
         id: "lyr-buildings",
-        type: "symbol",
+        type: "fill",
         source: "src-buildings",
-        layout: {
-            "icon-image": ["concat", "img-b-", ["get", "sprite"]],
-            "icon-size": buildingIconSizeExpression(),
-            "icon-anchor": "center",
-            "icon-rotation-alignment": "map",
-            "icon-pitch-alignment": "map",
-            "icon-allow-overlap": true,
-            "icon-ignore-placement": true
+        layout: { "fill-sort-key": ["get", "z"] },
+        paint: {
+            "fill-color": ["get", "c"],
+            "fill-opacity": ["get", "a"],
+            "fill-outline-color": ["coalesce", ["get", "o"], ["get", "c"]]
         }
-    });
+    }, "lyr-bookmarks-fill");
     map.addLayer({
         id: "lyr-march-lines",
         type: "line",
@@ -2715,16 +3057,16 @@ function renderWorld() {
     const uid = state.user.id;
     state.visibleBuildings = [...state.myBuildings, ...state.allies.buildings, ...state.enemies.buildings];
 
+    const teamColor = b => b.owner_id === uid ? "#39FF14" : isAlly(b.owner_id) ? allyColor(b.owner_id) : "#FF2E88";
+    updateClearedSquares(state.visibleBuildings);
     map.getSource("src-buildings")?.setData({
         type: "FeatureCollection",
-        features: state.visibleBuildings.map(b => buildingFeature(b))
+        features: compoundFeatures(state.visibleBuildings, teamColor)
     });
     map.getSource("src-footprints")?.setData({
         type: "FeatureCollection",
         features: state.visibleBuildings.map(b =>
-            squareFeature(b.lat, b.lon, buildingSize(b.kind), {
-                c: b.owner_id === uid ? "#39FF14" : isAlly(b.owner_id) ? allyColor(b.owner_id) : "#FF2E88"
-            }))
+            squareFeature(b.lat, b.lon, buildingSize(b.kind), { c: teamColor(b) }))
     });
 
     if (state.selected) renderSelectedBox();
@@ -3056,6 +3398,7 @@ function forEachMapBuildingInBBox(minLat, maxLat, minLon, maxLon, cb) {
             for (let i = 0; i < ch.rawBlds.length; i++) {
                 const rb = ch.rawBlds[i];
                 if (rb.maxLon < minLon || rb.minLon > maxLon || rb.maxLat < minLat || rb.minLat > maxLat) continue;
+                if (bboxCleared(rb.minLat, rb.maxLat, rb.minLon, rb.maxLon)) continue;
                 if (cb(rb) === true) return true;
             }
         }
