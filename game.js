@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 122;
+const APP_VERSION = 123;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -8277,11 +8277,12 @@ function renderContactsSidebar() {
     }
 
     const who = o => o.by_soldiers ? "set af dine soldater" : (o.always_visible && !o.in_sight ? "synlig til test" : "set med telefonen");
-    const rows = [];
+    const rows = [];          // soldater og patruljer: øverst
+    const bldRows = [];       // bygninger: i en gruppe, der kan foldes sammen
     for (const b of e.buildings) {
         const cfg = GAME_CONFIG.BUILDINGS[b.kind];
         const sprite = buildingImageUrl(b.kind, b.level, buildingOwnerColor(b));
-        rows.push(`
+        bldRows.push(`
             <div class="item-row">
                 <div class="item-row-top">
                     <img src="${sprite}" class="item-sprite" alt="" />
@@ -8344,8 +8345,19 @@ function renderContactsSidebar() {
                 </div>
             </div>`);
     }
-    list.innerHTML = rows.join("");
+    let html = rows.join("");
+    if (!rows.length) html = `<p class="muted-hint">Ingen fjendtlige soldater i sigte.</p>`;
+    if (bldRows.length) {
+        html += `
+            <details class="sub-fold" ${contactsBuildingsOpen ? "open" : ""} ontoggle="contactsBuildingsOpen = this.open">
+                <summary>🏭 Fjendtlige bygninger <span class="badge">${bldRows.length}</span></summary>
+                <div class="list-stack">${bldRows.join("")}</div>
+            </details>`;
+    }
+    list.innerHTML = html;
 }
+// Husker, om gruppen med fjendtlige bygninger er foldet ud (listen tegnes om hele tiden).
+let contactsBuildingsOpen = false;
 
 // ============================================================================
 // Computerstyrede patruljer: nye sættes ud på land omkring din første bygning

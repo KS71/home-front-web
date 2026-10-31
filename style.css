@@ -1277,3 +1277,26 @@ body, html {
 .truck-card .progress-track {
     width: 60px;
 }
+
+/* Sammenfoldelig undergruppe i sidepanelet (fx fjendtlige bygninger under Fjender i sigte) */
+details.sub-fold {
+    border: 1px solid #37474F;
+    border-radius: 10px;
+    padding: 6px 10px;
+    background: rgba(255, 255, 255, 0.02);
+}
+details.sub-fold > summary {
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 700;
+    color: #CFD8DC;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+}
+details.sub-fold > summary::-webkit-details-marker { display: none; }
+details.sub-fold > summary::before { content: "▸"; color: #90A4AE; }
+details.sub-fold[open] > summary::before { content: "▾"; }
+details.sub-fold > .list-stack { margin-top: 8px; }
