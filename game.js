@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 105;
+const APP_VERSION = 106;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -438,17 +438,128 @@ function totalSoldierCapacity() {
 // ============================================================================
 // Kort & Pixel-Art Landskab (MapLibre GL JS)
 // ============================================================================
+const PIXEL_TEXTURE_LIST = [
+    ["img-ground", "assets/land_jord.png", 2],
+    ["img-town", "assets/land_by.png", 2],
+    ["img-farm-0", "assets/land_mark_1.png", 2],
+    ["img-farm-1", "assets/land_mark_2.png", 2],
+    ["img-farm-2", "assets/land_mark_3.png", 2],
+    ["img-farm-3", "assets/land_mark_4.png", 2],
+    ["img-grass", "assets/land_graes.png", 2],
+    ["img-wood", "assets/land_skov.png", 2],
+    ["img-sand", "assets/land_sand.png", 2],
+    ["img-water", "assets/land_vand.png", 2],
+    ["img-b-barrak_1", "assets/barrak_1.png", 4],
+    ["img-b-barrak_2", "assets/barrak_2.png", 4],
+    ["img-b-barrak_3", "assets/barrak_3.png", 4],
+    ["img-b-barrak_4", "assets/barrak_4.png", 4],
+    ["img-b-barrak_5", "assets/barrak_5.png", 4],
+    ["img-b-skole_1", "assets/skole_1.png", 4],
+    ["img-b-skole_2", "assets/skole_2.png", 4],
+    ["img-b-skole_3", "assets/skole_3.png", 4],
+    ["img-b-skole_4", "assets/skole_4.png", 4],
+    ["img-b-skole_5", "assets/skole_5.png", 4],
+    ["img-b-hospital_1", "assets/hospital_1.png", 4],
+    ["img-b-hospital_2", "assets/hospital_2.png", 4],
+    ["img-b-hospital_3", "assets/hospital_3.png", 4],
+    ["img-b-hospital_4", "assets/hospital_4.png", 4],
+    ["img-b-hospital_5", "assets/hospital_5.png", 4],
+    ["img-b-staalvaerk_1", "assets/staalvaerk_1.png", 2],
+    ["img-b-staalvaerk_2", "assets/staalvaerk_2.png", 2],
+    ["img-b-staalvaerk_3", "assets/staalvaerk_3.png", 2],
+    ["img-b-staalvaerk_4", "assets/staalvaerk_4.png", 2],
+    ["img-b-staalvaerk_5", "assets/staalvaerk_5.png", 2],
+    ["img-b-vaabenfabrik_1", "assets/vaabenfabrik_1.png", 4],
+    ["img-b-vaabenfabrik_2", "assets/vaabenfabrik_2.png", 4],
+    ["img-b-vaabenfabrik_3", "assets/vaabenfabrik_3.png", 4],
+    ["img-b-vaabenfabrik_4", "assets/vaabenfabrik_4.png", 4],
+    ["img-b-vaabenfabrik_5", "assets/vaabenfabrik_5.png", 4],
+    ["img-roof-red", "assets/tag_roed.png", 1],
+    ["img-roof-darkred", "assets/tag_moerkroed.png", 1],
+    ["img-roof-yellow", "assets/tag_gul.png", 1],
+    ["img-roof-brown", "assets/tag_brun.png", 1],
+    ["img-roof-grey", "assets/tag_graa.png", 1],
+    ["img-roof-flat", "assets/tag_flad.png", 1],
+    ["img-wall-light", "assets/mur_lys.png", 2],
+    ["img-wall-grey", "assets/mur_graa.png", 2],
+    ["img-wood-floor", "assets/land_skovbund.png", 2],
+    ["img-tree-1", "assets/trae_1.png", 2],
+    ["img-tree-2", "assets/trae_2.png", 2],
+    ["img-tree-3", "assets/trae_3.png", 2],
+    ["img-pine-1", "assets/gran_1.png", 2],
+    ["img-pine-2", "assets/gran_2.png", 2],
+    ["img-bush-1", "assets/busk_1.png", 2],
+    ["img-bush-2", "assets/busk_2.png", 2],
+    ["img-chimney", "assets/skorsten.png", 2],
+    ["img-road-cobble", "assets/vej_brosten.png", 1],
+    ["img-road-cobble-light", "assets/vej_brosten_lys.png", 1],
+    ["img-road-gravel", "assets/vej_grus.png", 1],
+    ["img-road-path", "assets/vej_sti.png", 1],
+    ["img-crater", "assets/krater.png", 2],
+    ["img-wreck", "assets/lastbil_vrag.png", 2],
+    ["img-parked-truck", "assets/lastbil.png", 2],
+    ["img-parked-truck-h", "assets/lastbil_haubits.png", 2],
+    ["img-flame-0", "assets/flamme_1.png", 2],
+    ["img-flame-1", "assets/flamme_2.png", 2],
+    ["img-flame-2", "assets/flamme_3.png", 2],
+    ["img-ruin", "assets/ruin.png", 2],
+    ["img-ruin-glow", "assets/ruin_glod.png", 2],
+    ["img-shell", "assets/granat.png", 1]
+];
+
+let pixelTexturesPromise = null;
+
+function preloadPixelTextures() {
+    if (!pixelTexturesPromise) {
+        pixelTexturesPromise = Promise.all(
+            PIXEL_TEXTURE_LIST.map(([id, url, scale]) =>
+                loadPixelTexture(url, scale).then(tex => [id, tex])
+            )
+        );
+    }
+    return pixelTexturesPromise;
+}
+
+function getInitialMapView() {
+    try {
+        const raw = localStorage.getItem("hf_start_pos");
+        if (raw) {
+            const p = JSON.parse(raw);
+            if (typeof p?.lon === "number" && typeof p?.lat === "number") {
+                return { center: [p.lon, p.lat], zoom: 16.5 };
+            }
+        }
+    } catch (_) {}
+    return { center: [12.43, 55.65], zoom: 16.2 };
+}
+
 function initMap() {
+    // Start hentning af alle 66 pixel-teksturer parallelt med det samme (i stedet for én ad gangen efter 'load')
+    preloadPixelTextures();
+    const startView = getInitialMapView();
+
     map = new maplibregl.Map({
         container: "map",
         style: STYLE_URL,
-        center: [12.43, 55.65], // Brøndby / Storkøbenhavn som udgangspunkt
-        zoom: 16.2,
+        center: startView.center,
+        zoom: startView.zoom,
         pitchWithRotate: false,
         dragRotate: false
     });
 
-    map.on("load", async () => {
+    // 'style.load' kører straks stil-JSON er hentet — FØR første hvide Positron-frame tegnes på skærmen!
+    map.once("style.load", async () => {
+        // Sæt grøn græs-baggrund, veje, fortove og bygninger synkront med det samme, så kortet aldrig blinker hvidt
+        if (map.getLayer("background")) {
+            map.setPaintProperty("background", "background-color", "#739e48");
+        }
+        if (map.getLayer("water")) {
+            map.setPaintProperty("water", "fill-color", "#3f7fb5");
+        }
+        styleWorldLikeGame();
+        styleBuildingsLikeGame();
+        installHouseLayer();
+
         await installPixelLandscape();
         installGameLayers();
         mapReady = true;
@@ -511,90 +622,17 @@ function loadPixelTexture(url, scale = 2) {
 }
 
 async function installPixelLandscape() {
-    const texList = [
-        ["img-ground", "assets/land_jord.png", 2],
-        ["img-town", "assets/land_by.png", 2],
-        ["img-farm-0", "assets/land_mark_1.png", 2],
-        ["img-farm-1", "assets/land_mark_2.png", 2],
-        ["img-farm-2", "assets/land_mark_3.png", 2],
-        ["img-farm-3", "assets/land_mark_4.png", 2],
-        ["img-grass", "assets/land_graes.png", 2],
-        ["img-wood", "assets/land_skov.png", 2],
-        ["img-sand", "assets/land_sand.png", 2],
-        ["img-water", "assets/land_vand.png", 2],
-        ["img-b-barrak_1", "assets/barrak_1.png", 4],
-        ["img-b-barrak_2", "assets/barrak_2.png", 4],
-        ["img-b-barrak_3", "assets/barrak_3.png", 4],
-        ["img-b-barrak_4", "assets/barrak_4.png", 4],
-        ["img-b-barrak_5", "assets/barrak_5.png", 4],
-        ["img-b-skole_1", "assets/skole_1.png", 4],
-        ["img-b-skole_2", "assets/skole_2.png", 4],
-        ["img-b-skole_3", "assets/skole_3.png", 4],
-        ["img-b-skole_4", "assets/skole_4.png", 4],
-        ["img-b-skole_5", "assets/skole_5.png", 4],
-        ["img-b-hospital_1", "assets/hospital_1.png", 4],
-        ["img-b-hospital_2", "assets/hospital_2.png", 4],
-        ["img-b-hospital_3", "assets/hospital_3.png", 4],
-        ["img-b-hospital_4", "assets/hospital_4.png", 4],
-        ["img-b-hospital_5", "assets/hospital_5.png", 4],
-        ["img-b-staalvaerk_1", "assets/staalvaerk_1.png", 2],
-        ["img-b-staalvaerk_2", "assets/staalvaerk_2.png", 2],
-        ["img-b-staalvaerk_3", "assets/staalvaerk_3.png", 2],
-        ["img-b-staalvaerk_4", "assets/staalvaerk_4.png", 2],
-        ["img-b-staalvaerk_5", "assets/staalvaerk_5.png", 2],
-        ["img-b-vaabenfabrik_1", "assets/vaabenfabrik_1.png", 4],
-        ["img-b-vaabenfabrik_2", "assets/vaabenfabrik_2.png", 4],
-        ["img-b-vaabenfabrik_3", "assets/vaabenfabrik_3.png", 4],
-        ["img-b-vaabenfabrik_4", "assets/vaabenfabrik_4.png", 4],
-        ["img-b-vaabenfabrik_5", "assets/vaabenfabrik_5.png", 4],
-        ["img-roof-red", "assets/tag_roed.png", 1],
-        ["img-roof-darkred", "assets/tag_moerkroed.png", 1],
-        ["img-roof-yellow", "assets/tag_gul.png", 1],
-        ["img-roof-brown", "assets/tag_brun.png", 1],
-        ["img-roof-grey", "assets/tag_graa.png", 1],
-        ["img-roof-flat", "assets/tag_flad.png", 1],
-        ["img-wall-light", "assets/mur_lys.png", 2],
-        ["img-wall-grey", "assets/mur_graa.png", 2],
-        ["img-wood-floor", "assets/land_skovbund.png", 2],
-        ["img-tree-1", "assets/trae_1.png", 2],
-        ["img-tree-2", "assets/trae_2.png", 2],
-        ["img-tree-3", "assets/trae_3.png", 2],
-        ["img-pine-1", "assets/gran_1.png", 2],
-        ["img-pine-2", "assets/gran_2.png", 2],
-        ["img-bush-1", "assets/busk_1.png", 2],
-        ["img-bush-2", "assets/busk_2.png", 2],
-        ["img-chimney", "assets/skorsten.png", 2],
-        ["img-road-cobble", "assets/vej_brosten.png", 1],
-        ["img-road-cobble-light", "assets/vej_brosten_lys.png", 1],
-        ["img-road-gravel", "assets/vej_grus.png", 1],
-        ["img-road-path", "assets/vej_sti.png", 1],
-        ["img-crater", "assets/krater.png", 2],
-        ["img-wreck", "assets/lastbil_vrag.png", 2],
-        ["img-parked-truck", "assets/lastbil.png", 2],
-        ["img-parked-truck-h", "assets/lastbil_haubits.png", 2],
-        ["img-flame-0", "assets/flamme_1.png", 2],
-        ["img-flame-1", "assets/flamme_2.png", 2],
-        ["img-flame-2", "assets/flamme_3.png", 2],
-        ["img-ruin", "assets/ruin.png", 2],
-        ["img-ruin-glow", "assets/ruin_glod.png", 2],
-        ["img-shell", "assets/granat.png", 1]
-    ];
-
-    
-
-    for (const [id, url, scale] of texList) {
-        const tex = await loadPixelTexture(url, scale);
+    const loaded = await preloadPixelTextures();
+    for (let i = 0; i < loaded.length; i++) {
+        const [id, tex] = loaded[i];
         if (tex && !map.hasImage(id)) {
             map.addImage(id, tex);
         }
     }
 
-    if (map.getLayer("background")) {
+    if (map.getLayer("background") && map.hasImage("img-ground")) {
         map.setPaintProperty("background", "background-pattern", "img-ground");
     }
-    styleWorldLikeGame();
-    styleBuildingsLikeGame();
-    installHouseLayer();
     installTreeLayer();
 
     const beforeLayer = map.getLayer("waterway") ? "waterway" : undefined;
@@ -3616,10 +3654,13 @@ async function syncAllFromSupabase() {
     }
     if (myBldRes.data) {
         state.myBuildings = myBldRes.data;
-        if (!state.hasCenteredOnce && myBldRes.data.length > 0 && map) {
-            state.hasCenteredOnce = true;
+        if (myBldRes.data.length > 0) {
             const first = myBldRes.data[0];
-            map.jumpTo({ center: [first.lon, first.lat], zoom: 16.5 });
+            try { localStorage.setItem("hf_start_pos", JSON.stringify({ lon: first.lon, lat: first.lat })); } catch (_) {}
+            if (!state.hasCenteredOnce && map) {
+                state.hasCenteredOnce = true;
+                map.jumpTo({ center: [first.lon, first.lat], zoom: 16.5 });
+            }
         }
     }
 
@@ -7414,6 +7455,8 @@ document.getElementById("btn-signup").onclick = async () => {
 
 document.getElementById("btn-logout").onclick = async () => {
     await sb.auth.signOut();
+    try { localStorage.removeItem("hf_start_pos"); } catch (_) {}
+    state.hasCenteredOnce = false;
     state.user = null;
     state.scoutAlerts = [];
     state.isAdmin = false;
