@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 114;
+const APP_VERSION = 115;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -7967,6 +7967,18 @@ try { battleWindowH = Number(localStorage.getItem(BATTLE_WINDOW_KEY)) || 24; } c
 let battles = [];
 let battlesMissing = false;  // databasen har ikke fået 0018 endnu
 let selectedBattleId = null;
+// Eksplosionerne fra gamle træfninger på kortet kan slås til og fra (slået fra som standard).
+// En kamp, man klikker på i listen, vises dog altid.
+const BATTLES_ON_MAP_KEY = "hf_battles_on_map";
+let battlesOnMap = false;
+try { battlesOnMap = localStorage.getItem(BATTLES_ON_MAP_KEY) === "1"; } catch (_) {}
+
+function toggleBattlesOnMap() {
+    battlesOnMap = !battlesOnMap;
+    try { localStorage.setItem(BATTLES_ON_MAP_KEY, battlesOnMap ? "1" : "0"); } catch (_) {}
+    renderBattlesSidebar();
+    renderBattlesOnMap();
+}
 
 async function loadBattles() {
     if (!state.user) return;
@@ -8024,7 +8036,9 @@ function renderBattlesSidebar() {
     const buttons = BATTLE_WINDOWS.map(w =>
         `<button class="btn btn-small ${w.h === battleWindowH ? "btn-primary" : ""}" onclick="setBattleWindow(${w.h})">${w.label}</button>`
     ).join("");
-    let html = `<div class="item-actions" style="margin-bottom:8px;">${buttons}</div>`;
+    const toggle = `<button class="btn btn-small ${battlesOnMap ? "btn-primary" : ""}" onclick="toggleBattlesOnMap()" title="Vis eller skjul eksplosionerne fra gamle træfninger på kortet">${battlesOnMap ? "💥 Skjul træfninger" : "💥 Se træfninger"}</button>`;
+    let html = `<div class="item-actions" style="margin-bottom:8px;">${buttons}</div>
+        <div class="item-actions" style="margin-bottom:8px;">${toggle}</div>`;
 
     if (battlesMissing) {
         html += `<p class="muted-hint">Kamprapporterne kræver, at <strong>0018_kamprapporter.sql</strong> er kørt i Supabase.</p>`;
@@ -8058,7 +8072,7 @@ function renderBattlesOnMap() {
     if (!mapReady) return;
     map.getSource("src-battles")?.setData({
         type: "FeatureCollection",
-        features: battles.map(b => ({
+        features: battles.filter(b => battlesOnMap || String(b.id) === String(selectedBattleId)).map(b => ({
             type: "Feature",
             properties: { id: b.id, selected: String(b.id) === String(selectedBattleId) },
             geometry: { type: "Point", coordinates: [b.lon, b.lat] }
