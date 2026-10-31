@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 115;
+const APP_VERSION = 116;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -895,6 +895,7 @@ function styleWorldLikeGame() {
 // i hver bygnings præcise placering og vinkel — samt fodgængerfelter ved vejkryds.
 // ---------------------------------------------------------------------------
 const HOUSE_MIN_ZOOM = 15;
+const LANDSCAPE_TILE_ZOOM = 14; // kortets fineste vektorfliser; kun dem indekseres til felter
 const HOUSE_MIN_AREA = 28; // m² (små skure og drivhuse under 28 m² udelades)
 
 const BUILDING_PALETTES = [
@@ -1212,6 +1213,10 @@ function resetLandscapeCachesIfHuge() {
 
 function syncVectorTilesToChunks() {
     if (!map || !map.getSource("openmaptiles")) return false;
+    // Zoomet langt ud bruges felterne ikke (huse og træer tegnes først fra zoom 15), og de grove
+    // oversigtsfliser indeholder skove og marker på mange kilometer, som ville fylde titusindvis
+    // af felter og få kortet til at hakke. Spring over.
+    if (map.getZoom() < HOUSE_MIN_ZOOM - 1) return false;
     resetLandscapeCachesIfHuge();
 
     let addedAny = false;
@@ -1227,6 +1232,8 @@ function syncVectorTilesToChunks() {
             const f = feats[i];
             const vtf = f._vectorTileFeature;
             if (vtf && vtf._z !== undefined) {
+                // Kun de fine fliser (zoom 14) – aldrig grove oversigtsfliser fra lavere zoom.
+                if (vtf._z < LANDSCAPE_TILE_ZOOM) continue;
                 const tid = sourceLayer + ":" + vtf._z + "/" + vtf._x + "/" + vtf._y;
                 if (indexedSourceTiles.has(tid)) continue;
                 newTileIds.add(tid);
@@ -2057,6 +2064,7 @@ function buildFullChunk3D(cx, cy) {
 
 function scheduleLandscapeTileSync() {
     if (landscapeTileTimer) return;
+    if (map && map.getZoom() < HOUSE_MIN_ZOOM - 1) return;
     landscapeTileTimer = setTimeout(() => {
         landscapeTileTimer = null;
         if (!mapReady) return;
