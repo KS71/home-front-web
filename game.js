@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 120;
+const APP_VERSION = 121;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -10089,24 +10089,33 @@ function codexTownsHtml() {
 
 document.getElementById("btn-towns")?.addEventListener("click", () => openTownsModal());
 
-// "Kun flag": skjuler soldater, køretøjer, ruter, skud, vrag og træfninger, så flagene kan ses.
-const FLAGS_ONLY_LAYERS = ["lyr-troops", "lyr-street-units", "lyr-street-badges", "lyr-street-rings", "lyr-parked-trucks",
+// Visningsknap med tre trin: soldater + flag → kun flag → kun soldater → forfra.
+const TROOP_LAYERS = ["lyr-troops", "lyr-street-units", "lyr-street-badges", "lyr-street-rings", "lyr-parked-trucks",
     "lyr-march-lines", "lyr-shots", "lyr-shot-flash", "lyr-los-blocked", "lyr-los-blocked-dot",
     "lyr-wrecks", "lyr-wrecks-street", "lyr-battles"];
-let flagsOnly = false;
-window.toggleFlagsOnly = function() {
-    flagsOnly = !flagsOnly;
+const FLAG_LAYERS = ["lyr-flag-circle-fill", "lyr-flag-circle-line", "lyr-flag-cand", "lyr-flag-owned", "lyr-flags"];
+const VIEW_MODES = [
+    { troops: true,  flags: true,  label: "🪖🚩 Soldater + flag", toast: "Soldater og flag vises." },
+    { troops: false, flags: true,  label: "🚩 Kun flag",          toast: "Kun flagene vises – soldater og køretøjer er skjult." },
+    { troops: true,  flags: false, label: "🪖 Kun soldater",      toast: "Kun soldater og køretøjer vises – flagene er skjult." }
+];
+let viewMode = 0;
+function applyViewMode() {
+    const m = VIEW_MODES[viewMode];
     if (mapReady) {
-        for (const id of FLAGS_ONLY_LAYERS) {
-            if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", flagsOnly ? "none" : "visible");
-        }
+        for (const id of TROOP_LAYERS) if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", m.troops ? "visible" : "none");
+        for (const id of FLAG_LAYERS) if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", m.flags ? "visible" : "none");
     }
     const btn = document.getElementById("btn-flags-only");
     if (btn) {
-        btn.textContent = flagsOnly ? "🪖 Vis soldater" : "🚩 Kun flag";
-        btn.classList.toggle("btn-primary", flagsOnly);
+        btn.textContent = m.label;
+        btn.classList.toggle("btn-primary", viewMode !== 0);
     }
-    showToast(flagsOnly ? "Soldater og køretøjer er skjult – kun flagene vises." : "Soldater og køretøjer vises igen.");
+}
+window.toggleFlagsOnly = function() {
+    viewMode = (viewMode + 1) % VIEW_MODES.length;
+    applyViewMode();
+    showToast(VIEW_MODES[viewMode].toast);
 };
 document.getElementById("btn-flags-only")?.addEventListener("click", () => toggleFlagsOnly());
 setInterval(pollFlagStates, FLAG_POLL_MS);
