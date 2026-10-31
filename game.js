@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 123;
+const APP_VERSION = 124;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -325,6 +325,7 @@ async function loadArmy() {
     if (mRes.data) state.marches = mRes.data.map(marchFromRow);
     if (gRes.data) state.garrisons = gRes.data;
     if (pRes.data) state.parkedTrucks = pRes.data;
+    await loadNamedSoldiers();
     renderGroupModal();
     renderTroopsSidebar();
     renderBuildingsSidebar();
@@ -6878,6 +6879,7 @@ function renderGroupModal() {
         title.textContent = gm.kind === "march" ? `Deling på march: ${g.count} soldater` : `Vagtstyrke: ${g.count} soldater`;
         body.innerHTML = `
             <p class="muted-hint">${where} · ${g.count - hurt} raske, ${hurt} ${hurt === 1 ? "såret" : "sårede"}. Sårede heles kun på et felthospital.</p>
+            ${namedLineHtml(gm.kind, g)}
             ${mortarLineHtml(gm.kind, g)}
             ${howitzerLineHtml(gm.kind, g)}
             ${truckLineHtml(gm.kind, g)}
@@ -9229,6 +9231,7 @@ function codexSoldierHtml() {
             <summary><span class="codex-sum-title">🪖 Soldater</span><span class="codex-sum-sub">infanteri i brug + 5 kommende specialsoldater</span></summary>
             
             <p class="muted-hint" style="margin-bottom: 12px;">Infanteriet er i brug nu. De øvrige specialiserede soldaterroller er under forberedelse. De kan ikke uddannes endnu, men deres egenskaber, våben og taktiske roller i spillet er fastlagt herunder.</p>
+            <p class="muted-hint" style="margin-bottom: 12px;">🎖️ <strong>Navngivne soldater og rang:</strong> En såret soldat, der heles på felthospitalet, får navn og bliver korporal. Hver heling derefter giver næste rang: sergent, oversergent, seniorsergent, løjtnant, premierløjtnant, kaptajn og major. De navngivne følger med grupperne: ved deling fordeles de jævnt, ved sammenlægning følger alle med, og i kamp falder de i forhold til deres andel af gruppen. De ses i gruppens popup. Rangens virkning i kampen og siden med alle dine soldater kommer i næste trin.</p>
 
             <div class="codex-grid codex-grid-3">
                 <div class="codex-card">
@@ -9620,6 +9623,49 @@ function showAppVersion() {
             el.onclick = () => location.reload();
         }
     });
+}
+
+// ============================================================================
+// Navngivne soldater med rang (0050_navngivne_soldater.sql) — del 1
+// En såret soldat, der heles på felthospitalet, får navn og rang. Hver heling derefter giver
+// næste rang. De følger med grupperne (serveren holder styr på det); her vises de kun.
+// ============================================================================
+const namedData = { alive: [], fallen: [], loaded: false, supported: true };
+const RANKS = [
+    [10, "Major"], [8, "Kaptajn"], [6, "Premierløjtnant"], [5, "Løjtnant"],
+    [4, "Seniorsergent"], [3, "Oversergent"], [2, "Sergent"], [1, "Korporal"]
+];
+
+function rankTitle(heals) {
+    for (const [min, title] of RANKS) if (heals >= min) return title;
+    return "Menig";
+}
+
+async function loadNamedSoldiers() {
+    if (!state.user || !namedData.supported) return;
+    const { data, error } = await sb.rpc("my_named_soldiers");
+    if (error) {
+        if (error.code === "PGRST202" || String(error.message || "").includes("my_named_soldiers")) namedData.supported = false;
+        return;
+    }
+    namedData.alive = data?.alive || [];
+    namedData.fallen = data?.fallen || [];
+    namedData.loaded = true;
+}
+
+// De navngivne i en bestemt gruppe (vagtstyrke eller deling).
+function namedInGroup(kind, id) {
+    const place = kind === "march" ? "march" : "garrison";
+    return namedData.alive.filter(n => n.place === place && String(n.group_id) === String(id));
+}
+
+function namedLineHtml(kind, g) {
+    if (!namedData.loaded) return "";
+    const list = namedInGroup(kind, g.id);
+    if (!list.length) return "";
+    const shown = list.slice(0, 8).map(n => `<span title="${n.heals} ${n.heals === 1 ? "heling" : "helinger"}">${rankTitle(n.heals)} ${escapeHtml(n.name)}</span>`).join(", ");
+    const more = list.length > 8 ? ` og ${list.length - 8} til` : "";
+    return `<p class="muted-hint">🎖️ ${list.length} ${list.length === 1 ? "navngiven soldat" : "navngivne soldater"}: ${shown}${more}.</p>`;
 }
 
 // ============================================================================
