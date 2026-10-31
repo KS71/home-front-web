@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 124;
+const APP_VERSION = 125;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -8667,6 +8667,7 @@ const RULE_GROUPS = [
     ["npc", "Fjendtlige patruljer"],
     ["sweden", "Den svenske hær (invasion)"],
     ["flags", "Byer og flag"],
+    ["rank", "Navngivne soldater og rang"],
     ["build", "Bygninger og byggeri"],
     ["economy", "Skridt og økonomi"],
     ["gps", "Telefon og GPS"],
@@ -8763,6 +8764,10 @@ const RULE_INFO = {
     sweden_column_gap_s:        ["sweden", "Tid mellem to enheder, der kører ud fra Lernacken", "s"],
     sweden_salvo_per_gun:       ["sweden", "Granater pr. kanon pr. salve", "stk."],
     sweden_fire_pause_s:        ["sweden", "Mindst så lang tid mellem to salver fra samme enhed", "s"],
+    rank_fire_bonus:            ["rank", "Mere ildkraft pr. rang (0,10 = 10 %)", "0–1"],
+    rank_fire_max:              ["rank", "Højeste ildkraftbonus pr. soldat (1,0 = +100 %)", "0–2"],
+    rank_survive_bonus:         ["rank", "Mindre chance for at falde pr. rang (0,08 = 8 %)", "0–1"],
+    rank_survive_max:           ["rank", "Højeste overlevelsesbonus (0,6 = 60 %)", "0–1"],
     flag_radius_m:              ["flags", "Cirkel om flaget", "m"],
     flag_hold_s:                ["flags", "Så længe skal man stå alene i cirklen for at tage flaget", "s"],
     sweden_vision_m:            ["sweden", "Så langt hærens enheder ser (hele hæren deler det)", "m"],
@@ -9231,7 +9236,7 @@ function codexSoldierHtml() {
             <summary><span class="codex-sum-title">🪖 Soldater</span><span class="codex-sum-sub">infanteri i brug + 5 kommende specialsoldater</span></summary>
             
             <p class="muted-hint" style="margin-bottom: 12px;">Infanteriet er i brug nu. De øvrige specialiserede soldaterroller er under forberedelse. De kan ikke uddannes endnu, men deres egenskaber, våben og taktiske roller i spillet er fastlagt herunder.</p>
-            <p class="muted-hint" style="margin-bottom: 12px;">🎖️ <strong>Navngivne soldater og rang:</strong> En såret soldat, der heles på felthospitalet, får navn og bliver korporal. Hver heling derefter giver næste rang: sergent, oversergent, seniorsergent, løjtnant, premierløjtnant, kaptajn og major. De navngivne følger med grupperne: ved deling fordeles de jævnt, ved sammenlægning følger alle med, og i kamp falder de i forhold til deres andel af gruppen. De ses i gruppens popup. Rangens virkning i kampen og siden med alle dine soldater kommer i næste trin.</p>
+            <p class="muted-hint" style="margin-bottom: 12px;">🎖️ <strong>Navngivne soldater og rang:</strong> En såret soldat, der heles på felthospitalet, får navn og bliver korporal. Hver heling derefter giver næste rang: sergent, oversergent, seniorsergent, løjtnant, premierløjtnant, kaptajn og major. De navngivne følger med grupperne: ved deling fordeles de jævnt, ved sammenlægning følger alle med, og i kamp falder de i forhold til deres andel af gruppen. De ses i gruppens popup. <strong>I kampen</strong> giver hver rang ${fmtPct(codexRule("rank_fire_bonus", 0.10))} mere ildkraft (højst +${fmtPct(codexRule("rank_fire_max", 1.0))} pr. soldat) og ${fmtPct(codexRule("rank_survive_bonus", 0.08))} mindre chance pr. rang for at falde (højst ${fmtPct(codexRule("rank_survive_max", 0.6))}). Siden med alle dine soldater kommer i næste trin.</p>
 
             <div class="codex-grid codex-grid-3">
                 <div class="codex-card">
@@ -9665,7 +9670,10 @@ function namedLineHtml(kind, g) {
     if (!list.length) return "";
     const shown = list.slice(0, 8).map(n => `<span title="${n.heals} ${n.heals === 1 ? "heling" : "helinger"}">${rankTitle(n.heals)} ${escapeHtml(n.name)}</span>`).join(", ");
     const more = list.length > 8 ? ` og ${list.length - 8} til` : "";
-    return `<p class="muted-hint">🎖️ ${list.length} ${list.length === 1 ? "navngiven soldat" : "navngivne soldater"}: ${shown}${more}.</p>`;
+    const fb = codexRule("rank_fire_bonus", 0.10), fmax = codexRule("rank_fire_max", 1.0);
+    const bonus = list.reduce((sum, n) => sum + Math.min(n.heals * fb, fmax), 0);
+    const pct = g.count > 0 ? Math.round(bonus / g.count * 100) : 0;
+    return `<p class="muted-hint">🎖️ ${list.length} ${list.length === 1 ? "navngiven soldat" : "navngivne soldater"}${pct > 0 ? ` (+${pct} % ildkraft)` : ""}: ${shown}${more}.</p>`;
 }
 
 // ============================================================================
