@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 97;
+const APP_VERSION = 98;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -462,13 +462,17 @@ function initMap() {
 
     map.on("moveend", () => {
         if (!mapReady) return;
+        treesDirty = true;
         refreshViewportData();
         loadCratersSoon();
     });
 
-    // Når kortet er færdigt med at tegne, ses der efter kratere i kortets bygninger.
+    // Når kortet er færdigt med at tegne, ses der efter kratere i kortets bygninger,
+    // og træerne drysses ud i de skove, der nu er på skærmen.
     map.on("idle", () => {
-        if (mapReady) checkCraterFires();
+        if (!mapReady) return;
+        if (treesDirty) { treesDirty = false; refreshTrees(); }
+        checkCraterFires();
     });
 
     map.on("click", (e) => onMapClicked(e.lngLat.lat, e.lngLat.lng));
@@ -542,6 +546,15 @@ async function installPixelLandscape() {
         ["img-roof-flat", "assets/tag_flad.png", 2],
         ["img-wall-light", "assets/mur_lys.png", 2],
         ["img-wall-grey", "assets/mur_graa.png", 2],
+        ["img-wood-floor", "assets/land_skovbund.png", 2],
+        ["img-tree-1", "assets/trae_1.png", 2],
+        ["img-tree-2", "assets/trae_2.png", 2],
+        ["img-tree-3", "assets/trae_3.png", 2],
+        ["img-pine-1", "assets/gran_1.png", 2],
+        ["img-pine-2", "assets/gran_2.png", 2],
+        ["img-bush-1", "assets/busk_1.png", 2],
+        ["img-bush-2", "assets/busk_2.png", 2],
+        ["img-chimney", "assets/skorsten.png", 2],
         ["img-road-cobble", "assets/vej_brosten.png", 1],
         ["img-road-cobble-light", "assets/vej_brosten_lys.png", 1],
         ["img-road-gravel", "assets/vej_grus.png", 1],
@@ -570,6 +583,8 @@ async function installPixelLandscape() {
     }
     styleWorldLikeGame();
     styleBuildingsLikeGame();
+    installChimneys();
+    installTreeLayer();
 
     const beforeLayer = map.getLayer("waterway") ? "waterway" : undefined;
     const surfaces = [
@@ -578,7 +593,8 @@ async function installPixelLandscape() {
         { id: "land-farm", sourceLayer: "landcover", filter: ["==", ["get", "class"], "farmland"], pattern: ["step", ["zoom"], "img-farm-1", 14, "img-farm-0"] },
         { id: "land-park", sourceLayer: "park", filter: null, pattern: "img-grass" },
         { id: "land-grass", sourceLayer: "landcover", filter: ["==", ["get", "class"], "grass"], pattern: "img-grass" },
-        { id: "land-wood", sourceLayer: "landcover", filter: ["==", ["get", "class"], "wood"], pattern: "img-wood" },
+        // Skov: trækrone-tekstur langt væk, skovbund med rigtige træer (sprites) tæt på.
+        { id: "land-wood", sourceLayer: "landcover", filter: ["==", ["get", "class"], "wood"], pattern: ["step", ["zoom"], "img-wood", TREE_MIN_ZOOM, "img-wood-floor"] },
         { id: "land-sand", sourceLayer: "landcover", filter: ["==", ["get", "class"], "sand"], pattern: "img-sand" },
         { id: "land-water", sourceLayer: "water", filter: ["!=", ["get", "brunnel"], "tunnel"], pattern: "img-water" }
     ];
@@ -668,13 +684,15 @@ function styleWorldLikeGame() {
         }, "highway_minor");
     }
 
-    // Veje som brosten og grus, når man er tæt nok på til at se det. Motorveje forbliver asfalt.
+    // Alle veje er brosten (motorveje og store veje mørk, små veje lys); stier er jordstier.
+    setPaint("highway_motorway_inner", { "line-pattern": "img-road-cobble" });
+    setPaint("highway_motorway_bridge_inner", { "line-pattern": "img-road-cobble" });
     setPaint("highway_major_inner", { "line-pattern": "img-road-cobble" });
     setPaint("highway_minor", { "line-pattern": "img-road-cobble-light" });
     setPaint("highway_path", { "line-pattern": "img-road-path", "line-dasharray": undefined });
 
-    // Gul midterstribe på motorveje, når man er tæt nok på.
-    if (map.getLayer("highway_motorway_inner") && !map.getLayer("hf-road-stripe")) {
+    // Gul midterstribe på motorveje (slået fra: alle veje er brosten).
+    if (false && map.getLayer("highway_motorway_inner") && !map.getLayer("hf-road-stripe")) {
         map.addLayer({
             id: "hf-road-stripe",
             type: "line",
@@ -768,6 +786,131 @@ function styleBuildingsLikeGame() {
             paint: { "line-color": "#3a2616", "line-width": ["interpolate", ["linear"], ["zoom"], 15, 0.6, 18, 1.4], "line-opacity": 0.9 }
         }, next ? next.id : undefined);
     }
+}
+
+// Størrelse for en sprite, der skal fylde ["get","m"] (meter/cos(lat)) på kortet, når
+// teksturen er texPx pixels bred. Aldrig mindre end minSize, så små ting stadig kan ses.
+function metreIconSize(texPx, minSize) {
+    const pxPerMeterAtZoom0 = 512 / (2 * Math.PI * EARTH_RADIUS_M);
+    const k = z => (pxPerMeterAtZoom0 * Math.pow(2, z)) / texPx;
+    // (minSize lægges til i stoppene, for "zoom" må kun stå øverst i udtrykket.)
+    const lo = minSize ? ["+", ["*", ["get", "m"], k(0)], minSize] : ["*", ["get", "m"], k(0)];
+    const hi = minSize ? ["+", ["*", ["get", "m"], k(24)], minSize] : ["*", ["get", "m"], k(24)];
+    return ["interpolate", ["exponential", 2], ["zoom"], 0, lo, 24, hi];
+}
+
+// Skorstene på ca. halvdelen af de lave huse, så gaden ser "bygget" ud.
+function installChimneys() {
+    if (!map.getLayer("building") || map.getLayer("hf-chimneys")) return;
+    const h = ["coalesce", ["get", "render_height"], 6];
+    const pick = ["%", ["floor", ["/", ["coalesce", ["id"], 0], 4]], 4];
+    map.addLayer({
+        id: "hf-chimneys", type: "symbol", source: "openmaptiles", "source-layer": "building", minzoom: 16,
+        filter: ["all", ["<", h, 10], ["match", pick, [0, 2], true, false]],
+        layout: {
+            "icon-image": "img-chimney", "icon-allow-overlap": true, "icon-ignore-placement": true,
+            "icon-size": ["interpolate", ["exponential", 2], ["zoom"], 16, 0.35, 20, 1.6],
+            "icon-offset": [6, -8]
+        }
+    }, map.getLayer("waterway_line_label") ? "waterway_line_label" : undefined);
+}
+
+// ---------------------------------------------------------------------------
+// Rigtige træer i skove og parker. Kortet kender kun skovens omrids, så vi drysser selv træer
+// ud i et fast verdensgitter (9 m) med lidt tilfældig forskydning, udregnet fra gitterfeltet,
+// så det samme træ altid står samme sted. Langt væk vises kun hvert 2. eller 3. træ.
+// ---------------------------------------------------------------------------
+const TREE_MIN_ZOOM = 15;
+const TREE_GRID_M = 9;
+const TREE_MAX = 9000;
+let treesDirty = true;
+
+function hash2(i, j) {
+    let h = (i * 374761393 + j * 668265263) | 0;
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return (h ^ (h >>> 16)) >>> 0;
+}
+
+function pointInRings(lon, lat, rings) {
+    let inside = false;
+    for (const ring of rings) {
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+            const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+            if ((yi > lat) !== (yj > lat) && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) inside = !inside;
+        }
+    }
+    return inside;
+}
+
+const TREE_KINDS = {
+    wood: { density: 1.0, pick: r => r < 0.28 ? "img-pine-1" : r < 0.45 ? "img-pine-2" : r < 0.65 ? "img-tree-1" : r < 0.85 ? "img-tree-2" : r < 0.95 ? "img-tree-3" : "img-bush-1" },
+    park: { density: 0.22, pick: r => r < 0.4 ? "img-tree-1" : r < 0.7 ? "img-tree-2" : r < 0.85 ? "img-tree-3" : "img-bush-2" },
+    grass: { density: 0.08, pick: r => r < 0.5 ? "img-tree-2" : r < 0.75 ? "img-bush-1" : "img-bush-2" }
+};
+
+function installTreeLayer() {
+    if (map.getSource("src-trees")) return;
+    map.addSource("src-trees", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+    map.addLayer({
+        id: "lyr-trees", type: "symbol", source: "src-trees", minzoom: TREE_MIN_ZOOM,
+        layout: {
+            "icon-image": ["get", "sprite"], "icon-anchor": "bottom",
+            "icon-allow-overlap": true, "icon-ignore-placement": true,
+            "icon-size": metreIconSize(32, 0.3),
+            "symbol-sort-key": ["get", "sort"]
+        }
+    }, map.getLayer("waterway_line_label") ? "waterway_line_label" : undefined);
+}
+
+function refreshTrees() {
+    if (!mapReady || !map.getSource("src-trees")) return;
+    const z = map.getZoom();
+    const empty = { type: "FeatureCollection", features: [] };
+    if (z < TREE_MIN_ZOOM) { map.getSource("src-trees").setData(empty); return; }
+    const step = z < 16 ? 2 : 1;                      // hvert 2. træ eller hvert træ
+    const b = map.getBounds();
+    const feats = map.queryRenderedFeatures({ layers: ["land-wood", "land-park", "land-grass"] });
+    const seen = new Set();
+    const out = [];
+    const dLat = TREE_GRID_M / 111320;
+    for (const f of feats) {
+        if (out.length >= TREE_MAX) break;
+        const kind = f.layer.id === "land-wood" ? TREE_KINDS.wood : f.layer.id === "land-park" ? TREE_KINDS.park : TREE_KINDS.grass;
+        const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.type === "MultiPolygon" ? f.geometry.coordinates : [];
+        for (const rings of polys) {
+            let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
+            for (const [x, y] of rings[0]) { if (x < minLon) minLon = x; if (x > maxLon) maxLon = x; if (y < minLat) minLat = y; if (y > maxLat) maxLat = y; }
+            minLon = Math.max(minLon, b.getWest()); maxLon = Math.min(maxLon, b.getEast());
+            minLat = Math.max(minLat, b.getSouth()); maxLat = Math.min(maxLat, b.getNorth());
+            if (minLon > maxLon || minLat > maxLat) continue;
+            const cosLat = Math.max(Math.cos(((minLat + maxLat) / 2) * RAD_PER_DEG), MIN_COS);
+            const dLon = dLat / cosLat;
+            const i0 = Math.floor(minLat / dLat), i1 = Math.floor(maxLat / dLat);
+            const j0 = Math.floor(minLon / dLon), j1 = Math.floor(maxLon / dLon);
+            for (let i = i0; i <= i1; i++) {
+                if (i % step) continue;
+                for (let j = j0; j <= j1; j++) {
+                    if (j % step) continue;
+                    const key = i * 4000000 + j;
+                    if (seen.has(key)) continue;
+                    const h = hash2(i, j);
+                    if ((h & 1023) / 1024 > kind.density) continue;
+                    const lat = (i + 0.2 + ((h >>> 10) & 63) / 100) * dLat;
+                    const lon = (j + 0.2 + ((h >>> 16) & 63) / 100) * dLon;
+                    if (!pointInRings(lon, lat, rings)) continue;
+                    seen.add(key);
+                    const r = ((h >>> 22) & 1023) / 1024;
+                    const sprite = kind.pick(r);
+                    const size = sprite.startsWith("img-bush") ? 4 : sprite.startsWith("img-pine") ? 9 : 8;
+                    out.push({ type: "Feature", properties: { sprite, m: size / cosLat, sort: -lat },
+                               geometry: { type: "Point", coordinates: [lon, lat] } });
+                    if (out.length >= TREE_MAX) break;
+                }
+                if (out.length >= TREE_MAX) break;
+            }
+        }
+    }
+    map.getSource("src-trees").setData({ type: "FeatureCollection", features: out });
 }
 
 // Bygnings-sprites er 56×56 px og indlæses med scale=4 → 224×224 px. Hver bygning har egenskaben
