@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 113;
+const APP_VERSION = 114;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -20,7 +20,8 @@ const GAME_CONFIG = {
     GARRISON_MERGE_M: 25,    // soldater inden for 25 m af hinanden er én vagtstyrke
     SOLDIER_SPEED_MPS: 30 / 18,
     SOLDIER_VISION_M: 250,
-    FIRE_RANGE_M: 75,        // skudafstand mellem soldater og fjendtlige patruljer
+    FIRE_RANGE_M: 75,        // skudafstand mellem soldater og fjender (patruljer og andre spillere)
+    FIRE_CLOSE_M: 60,        // nærkamp: så tæt på skydes der altid, også uden fri skudlinje
     SOLDIER_HP: 100,         // energi pr. soldat
     NPC_SPAWN_CHECK_MS: 5 * 60 * 1000, // så tit browseren ser efter, om der mangler patruljer
     WORLD_POLL_MS: 15000,
@@ -3582,8 +3583,16 @@ function segmentCrossesBuilding(lat1, lon1, lat2, lon2, padM = 1.15, allowEndpoi
     return firstBuildingHitOnSegment(lat1, lon1, lat2, lon2, padM, allowEndpointMapBlds) !== null;
 }
 
+// Hvor et skud stoppes af et hus — eller null, hvis der er frit skud (0047_spiller_mod_spiller.sql).
+// Samme regler som serverens has_line_of_sight: inden for FIRE_CLOSE_M skydes der altid (nærkamp om
+// hjørner og gennem haver), og et hus, som skytten eller målet selv står inde i, tæller ikke som dækning.
+function shotBlockedAt(lat1, lon1, lat2, lon2) {
+    if (Geo.distanceM(lat1, lon1, lat2, lon2) <= GAME_CONFIG.FIRE_CLOSE_M) return null;
+    return firstBuildingHitOnSegment(lat1, lon1, lat2, lon2, 0.2, true);
+}
+
 function hasLineOfSight(lat1, lon1, lat2, lon2) {
-    return firstBuildingHitOnSegment(lat1, lon1, lat2, lon2, 0.2, false) === null;
+    return shotBlockedAt(lat1, lon1, lat2, lon2) === null;
 }
 
 function isNearRoadFast(lat, lon, maxDistM = 7.5) {
@@ -4752,11 +4761,31 @@ async function renderTroopsOnMap() {
     // Patruljerne går jævnt videre mellem opdateringerne (strækning + tider fra serveren).
     const npcs = state.enemies.npcs.map(n => ({ n, pos: npcCurrentPos(n, now) }));
 
-    // Kun kamp hvis fjenden er inden for skudafstand OG har fri skudlinje uden bygninger imellem!
+    // Alle fjender, der kan skyde og blive skudt på: computerens patruljer og andre spilleres soldater.
+    const foes = [
+        ...npcs.map(({ n, pos }) => ({ key: `npc:${n.id}`, pos, seed: (Number(n.id) || 0) * 0.37 })),
+        ...state.enemies.garrisons.map(g => ({ key: `enemy-garrison:${g.id}`, pos: [g.lat, g.lon], seed: (Number(g.id) || 0) * 0.53 + 0.11 })),
+        ...state.enemies.marches.map(m => ({ key: `enemy-march:${m.id}`, pos: [m.lat, m.lon], seed: (Number(m.id) || 0) * 0.71 + 0.23 }))
+    ];
+
+    // Egne grupper lige nu (til at afgøre, om en fjende er i kamp med dine soldater)
+    const ownQuick = [];
+    for (const g of state.garrisons) if (g.count > 0) ownQuick.push([g.lat, g.lon]);
+    for (const m of state.marches) if (m.count > 0) ownQuick.push(marchCurrentPos(m, now));
+
+    // Kun kamp hvis parterne er inden for skudafstand OG har fri skudlinje uden bygninger imellem!
     const isFightingNear = (lat, lon) => {
-        for (const { n, pos } of npcs) {
-            if (Geo.distanceM(pos[0], pos[1], lat, lon) <= GAME_CONFIG.FIRE_RANGE_M &&
-                hasLineOfSight(pos[0], pos[1], lat, lon)) {
+        for (const f of foes) {
+            if (Geo.distanceM(f.pos[0], f.pos[1], lat, lon) <= GAME_CONFIG.FIRE_RANGE_M &&
+                hasLineOfSight(f.pos[0], f.pos[1], lat, lon)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const isFightingOwn = (lat, lon) => {
+        for (const p of ownQuick) {
+            if (Geo.distanceM(p[0], p[1], lat, lon) <= GAME_CONFIG.FIRE_RANGE_M && hasLineOfSight(p[0], p[1], lat, lon)) {
                 return true;
             }
         }
@@ -4788,13 +4817,15 @@ async function renderTroopsOnMap() {
     for (const g of state.enemies.garrisons) {
         enemyPositions.push([g.lat, g.lon]);
         const sel = state.groupModal?.kind === "enemy-garrison" && String(state.groupModal.id) === String(g.id);
-        await addTroop(`enemy-garrison:${g.id}`, g, g.lat, g.lon, "enemy", "enemy", false, 0, null, sel);
+        const status = isFightingOwn(g.lat, g.lon) ? "combat" : "enemy";
+        await addTroop(`enemy-garrison:${g.id}`, g, g.lat, g.lon, "enemy", status, false, 0, null, sel);
     }
     for (const m of state.enemies.marches) {
         enemyPositions.push([m.lat, m.lon]);
         const facingLeft = truckCount(m) > 0 && m.to_lon != null && m.lon != null && m.to_lon < m.lon;
         const sel = state.groupModal?.kind === "enemy-march" && String(state.groupModal.id) === String(m.id);
-        await addTroop(`enemy-march:${m.id}`, m, m.lat, m.lon, "enemy", "enemy", facingLeft, 0, null, sel);
+        const status = isFightingOwn(m.lat, m.lon) ? "combat" : "enemy";
+        await addTroop(`enemy-march:${m.id}`, m, m.lat, m.lon, "enemy", status, facingLeft, 0, null, sel);
     }
     for (const { n, pos } of npcs) {
         enemyPositions.push(pos);
@@ -4924,7 +4955,7 @@ async function renderTroopsOnMap() {
     map.getSource("src-street-badges")?.setData({ type: "FeatureCollection", features: streetBadges });
     map.getSource("src-street-rings")?.setData({ type: "FeatureCollection", features: streetRings });
 
-    const { activeShots, blockedFeatures } = findShotPairs(npcs, own);
+    const { activeShots, blockedFeatures } = findShotPairs(foes, own);
     shotPairs = activeShots;
     map.getSource("src-los-blocked")?.setData({ type: "FeatureCollection", features: blockedFeatures });
     renderShots();
@@ -4992,19 +5023,20 @@ function npcAbout(n) {
     return n.is_invasion ? "Invasionsstyrke fra Malmø." : "Computerstyret. Går rundt i området og angriber soldater, den får øje på.";
 }
 
-// Geværild mellem patruljer og dine soldater inden for skudafstand MED fri skudlinje (ingen skud gennem bygninger!).
+// Geværild mellem fjender (patruljer og andre spilleres soldater) og dine soldater inden for skudafstand
+// MED fri skudlinje (ingen lange skud gennem bygninger; nærkamp inden for FIRE_CLOSE_M skydes altid).
 let shotPairs = [];
 let shotTimer = null;
 
-function findShotPairs(npcs, ownList) {
+function findShotPairs(foes, ownList) {
     const activeShots = [];
     const blockedFeatures = [];
-    for (const { n, pos } of npcs) {
-        const npcKey = `npc:${n.id}`;
-        const npcUnits = activeStreetFormations.get(npcKey) || [pos];
+    for (const f of foes) {
+        const pos = f.pos;
+        const npcUnits = activeStreetFormations.get(f.key) || [pos];
         for (const o of ownList) {
             if (Geo.distanceM(pos[0], pos[1], o.lat, o.lon) > GAME_CONFIG.FIRE_RANGE_M) continue;
-            const hit = firstBuildingHitOnSegment(o.lat, o.lon, pos[0], pos[1], 0.2, false);
+            const hit = shotBlockedAt(o.lat, o.lon, pos[0], pos[1]);
             if (hit) {
                 blockedFeatures.push({
                     type: "Feature",
@@ -5033,7 +5065,7 @@ function findShotPairs(npcs, ownList) {
                 own: [o.lon, o.lat],
                 npc: [pos[1], pos[0]],
                 lanes,
-                seed: (Number(n.id) || 0) * 0.37
+                seed: f.seed || 0
             });
         }
     }
@@ -5114,6 +5146,7 @@ async function syncAllFromSupabase() {
                 if (r.vision_m) GAME_CONFIG.VISION_RADIUS_M = Number(r.vision_m);
                 if (r.soldier_vision_m) GAME_CONFIG.SOLDIER_VISION_M = Number(r.soldier_vision_m);
                 if (r.fire_range_m) GAME_CONFIG.FIRE_RANGE_M = Number(r.fire_range_m);
+                if (r.fire_close_m != null) GAME_CONFIG.FIRE_CLOSE_M = Number(r.fire_close_m);
                 if (r.soldier_hp) GAME_CONFIG.SOLDIER_HP = Number(r.soldier_hp);
                 if (r.soldier_speed_mps) GAME_CONFIG.SOLDIER_SPEED_MPS = Number(r.soldier_speed_mps);
                 if (r.building_defense_per_level) GAME_CONFIG.BUILDING_DEFENSE_PER_LEVEL = Number(r.building_defense_per_level);
@@ -6872,7 +6905,7 @@ function renderGroupModal() {
     body.innerHTML = `
         <p class="muted-hint">${gm.kind === "npc"
             ? (g.fighting ? `💥 I kamp med dine soldater lige nu.${npcGear(g) ? ` ${npcGear(g)}.` : ""}` : npcAbout(g))
-            : `En anden spillers soldater.${truckCount(g) ? ` 🚚 ${truckCount(g)} ${truckCount(g) === 1 ? "lastbil" : "lastbiler"}${g.driving ? ", kører" : ""}.` : ""}`} Du kan ikke se den enkelte fjendes energi, kun gruppens samlede.</p>
+            : `${isBlockedInRifleRangeOfOwn(lat, lon) ? "🧱 Inden for skudafstand, men en bygning dækker skudlinjen (ryk rundt om hjørnet eller brug morter). " : ""}En anden spillers soldater.${truckCount(g) ? ` 🚚 ${truckCount(g)} ${truckCount(g) === 1 ? "lastbil" : "lastbiler"}${g.driving ? ", kører" : ""}.` : ""} Dine soldater skyder automatisk, når de har frit skud.`} Du kan ikke se den enkelte fjendes energi, kun gruppens samlede.</p>
         ${bar}`;
     actions.innerHTML = `
         <button class="btn" onclick="closeModal(); jumpToPoint(${lat}, ${lon})">🎯 Hop til</button>
@@ -7910,6 +7943,9 @@ const REPORT_TEXT = {
     lost:       r => `🔥 Du har tabt et slag. ${r.losses} vagter faldt, og en bygning kan være jævnet med jorden.`,
     patrol_defeated: r => `🏅 Dine soldater nedkæmpede en fjendtlig patrulje på ${r.enemy_losses} soldater.`,
     patrol_won: r => `💀 En fjendtlig patrulje nedkæmpede ${r.count} af dine soldater.`,
+    engaged:    r => `⚔️ Dine ${r.count} soldater er stødt på en anden spillers soldater og har taget stilling.`,
+    skirmish_won:  r => `🏅 Dine soldater nedkæmpede en fjendtlig spillers gruppe på ${r.enemy_losses} soldater.`,
+    skirmish_lost: r => `💀 En anden spillers soldater nedkæmpede ${r.count} af dine soldater.`,
     shelled: r => r.survivors <= 0
         ? `💥 En granat ramte dine ${r.count} soldater — ingen overlevede.`
         : `💥 En granat ramte dine soldater: ${r.enemy_losses} træffere${r.losses ? `, ${r.losses} faldt` : ""}.`,
@@ -8595,6 +8631,7 @@ const RULE_INFO = {
     march_snap_m:               ["vision", "Tilladt afvigelse for rutens ender", "m"],
     march_max_points:           ["vision", "Flest punkter i en rute", "stk."],
     fire_range_m:               ["fire", "Skudafstand", "m"],
+    fire_close_m:               ["fire", "Nærkamp: så tæt på skydes der altid, også om hushjørner", "m"],
     fire_round_s:               ["fire", "Sekunder pr. skudrunde", "s"],
     hit_chance_near:            ["fire", "Chance for at ramme helt tæt på (0,30 = 30 %)", "0–1"],
     hit_chance_far:             ["fire", "Chance for at ramme ved største skudafstand", "0–1"],
@@ -9294,9 +9331,10 @@ function codexWeaponsHtml() {
                 <div class="codex-card">
                     <div class="codex-card-head"><h3>Gevær</h3><span class="badge">alle soldater</span></div>
                     <div class="codex-weapon-img"><img src="assets/gevaer.png" class="pixel-img" alt="Gevær" /></div>
-                    <p class="muted-hint">Hver soldat har et gevær. Skud udveksles automatisk, når fjenden er inden for skudafstand.</p>
+                    <p class="muted-hint">Hver soldat har et gevær. Skud udveksles automatisk, når en fjende er inden for skudafstand med frit skud – både computerens patruljer og andre spilleres soldater. Huse spærrer for de lange skud, men i nærkamp skydes der altid, også rundt om hushjørner. Delinger på march standser og tager stilling, når de får frit skud til en fjende.</p>
                     ${codexStats([
                         ["Skudafstand", formatDistance(C.FIRE_RANGE_M)],
+                        ["Nærkamp trods huse", `inden for ${formatDistance(C.FIRE_CLOSE_M)}`],
                         ["Tid pr. skudrunde", `${fmtNum(codexRule("fire_round_s", 5))} s`],
                         ["Chance for at ramme", `${fmtPct(codexRule("hit_chance_near", 0.3))} tæt på → ${fmtPct(codexRule("hit_chance_far", 0.1))} ved ${formatDistance(C.FIRE_RANGE_M)}`],
                         ["Skade pr. træffer", `${fmtNum(codexRule("hit_damage_min", 15))}–${fmtNum(codexRule("hit_damage_max", 40))} energi`]
