@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 108;
+const APP_VERSION = 109;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -4098,11 +4098,12 @@ function ensureStreetBadge(count, strokeColor, pct, tag = "") {
 
 // Skaleringsprofil pr. enhedstype (zoom 16 -> 22): tydelige mini-enheder ved zoom 16, ægte gade-/hus-proportioner ved zoom 17-22
 function streetUnitScaleProps(kind) {
-    // v108: soldater ca. 35 % og køretøjer ca. 15 % større end den "ægte" skala, så de er til at se.
-    if (kind === "truck-h") return { s16: 0.21, s17: 0.25, s18: 0.46, s20: 1.78, s22: 7.13 }; // ~12,2 m vogntog (128 px bred)
-    if (kind === "truck")   return { s16: 0.21, s17: 0.25, s18: 0.46, s20: 1.78, s22: 7.13 }; // ~7,8 m lastbil (84 px bred -> samme førerhus-skala!)
-    if (kind === "gun")     return { s16: 0.17, s17: 0.22, s18: 0.37, s20: 1.40, s22: 5.61 }; // ~5,6 m haubits (76 px bred)
-    return                         { s16: 0.30, s17: 0.34, s18: 0.49, s20: 1.65, s22: 6.59 }; // ~3,1 m soldat (40 px bred inkl. pad)
+    // v109: ved zoom 16-18 er enhederne tegnet langt større end "ægte" skala (ellers er de prikker);
+    // fra zoom 20 passer de med husene. Soldater ca. 2× ved zoom 16-17, køretøjer ca. 1,7×.
+    if (kind === "truck-h") return { s16: 0.36, s17: 0.42, s18: 0.62, s20: 1.78, s22: 7.13 }; // ~12,2 m vogntog (128 px bred)
+    if (kind === "truck")   return { s16: 0.36, s17: 0.42, s18: 0.62, s20: 1.78, s22: 7.13 }; // ~7,8 m lastbil (84 px bred -> samme førerhus-skala!)
+    if (kind === "gun")     return { s16: 0.30, s17: 0.36, s18: 0.50, s20: 1.40, s22: 5.61 }; // ~5,6 m haubits (76 px bred)
+    return                         { s16: 0.58, s17: 0.66, s18: 0.80, s20: 1.65, s22: 6.59 }; // ~3,1 m soldat (40 px bred inkl. pad)
 }
 
 function visibleSoldierCount(count) {
