@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 116;
+const APP_VERSION = 117;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -4480,10 +4480,11 @@ function ensureStreetBadge(count, strokeColor, pct, tag = "") {
 // Skaleringsprofil pr. enhedstype (zoom 16 -> 22): tydelige mini-enheder ved zoom 16, ægte gade-/hus-proportioner ved zoom 17-22
 function streetUnitScaleProps(kind) {
     // v109: ved zoom 16-18 er enhederne tegnet langt større end "ægte" skala (ellers er de prikker);
-    // fra zoom 20 passer de med husene. Soldater ca. 2× ved zoom 16-17, køretøjer ca. 1,7×.
-    if (kind === "truck-h") return { s16: 0.36, s17: 0.42, s18: 0.62, s20: 1.78, s22: 7.13 }; // ~12,2 m vogntog (128 px bred)
-    if (kind === "truck")   return { s16: 0.36, s17: 0.42, s18: 0.62, s20: 1.78, s22: 7.13 }; // ~7,8 m lastbil (84 px bred -> samme førerhus-skala!)
-    if (kind === "gun")     return { s16: 0.30, s17: 0.36, s18: 0.50, s20: 1.40, s22: 5.61 }; // ~5,6 m haubits (76 px bred)
+    // fra zoom 20 passer de med husene. v117: køretøjer og haubitser følger soldaternes forstørrelse,
+    // så en lastbil altid er ca. 2,5 soldater lang (7,8 m mod 3,1 m) og en haubits ca. 1,8 – ved alle zoom.
+    if (kind === "truck-h") return { s16: 0.69, s17: 0.79, s18: 0.95, s20: 1.96, s22: 7.84 }; // ~12,2 m vogntog (128 px bred)
+    if (kind === "truck")   return { s16: 0.69, s17: 0.79, s18: 0.95, s20: 1.96, s22: 7.84 }; // ~7,8 m lastbil (84 px bred -> samme førerhus-skala!)
+    if (kind === "gun")     return { s16: 0.55, s17: 0.63, s18: 0.76, s20: 1.56, s22: 6.24 }; // ~5,6 m haubits (76 px bred)
     return                         { s16: 0.58, s17: 0.66, s18: 0.80, s20: 1.65, s22: 6.59 }; // ~3,1 m soldat (40 px bred inkl. pad)
 }
 
