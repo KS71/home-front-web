@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 100;
+const APP_VERSION = 101;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -471,7 +471,7 @@ function initMap() {
     // og træerne drysses ud i de skove, der nu er på skærmen.
     map.on("idle", () => {
         if (!mapReady) return;
-        if (treesDirty) { treesDirty = false; refreshTrees(); }
+        if (treesDirty) { treesDirty = false; refreshTrees(); refreshHouses(); }
         checkCraterFires();
     });
 
@@ -571,6 +571,13 @@ async function installPixelLandscape() {
         ["img-shell", "assets/granat.png", 1]
     ];
 
+    // Pixelhuse: 6 stilarter × 4 former (se house() i grafik/teksturer/lav_teksturer.py).
+    for (let i = 0; i < HOUSE_STYLES; i++) {
+        for (const shape of Object.keys(HOUSE_SHAPES)) {
+            texList.push([`img-house-${i}-${shape}`, `assets/hus_${i}_${shape}.png`, 2]);
+        }
+    }
+
     for (const [id, url, scale] of texList) {
         const tex = await loadPixelTexture(url, scale);
         if (tex && !map.hasImage(id)) {
@@ -583,7 +590,7 @@ async function installPixelLandscape() {
     }
     styleWorldLikeGame();
     styleBuildingsLikeGame();
-    installChimneys();
+    installHouseLayer();
     installTreeLayer();
 
     const beforeLayer = map.getLayer("waterway") ? "waterway" : undefined;
@@ -878,6 +885,96 @@ function installChimneys() {
             "icon-offset": [6, -8]
         }
     }, map.getLayer("waterway_line_label") ? "waterway_line_label" : undefined);
+}
+
+// ---------------------------------------------------------------------------
+// Rigtige pixelhuse. Fra zoom 16 får hvert lavt hus under HOUSE_MAX_AREA m² et tegnet hus
+// (tag, facade, vinduer, dør) sat på husets rigtige plads og skaleret til dets størrelse. Formen
+// vælges efter omridsets bredde/højde, stilen efter husets nummer. Store og høje bygninger
+// beholder omridset med tegltag. Omridset tegnes stadig nedenunder, så placeringen er præcis.
+// ---------------------------------------------------------------------------
+const HOUSE_MIN_ZOOM = 16;
+const HOUSE_MAX_AREA = 900;     // m²
+const HOUSE_MIN_AREA = 12;      // m² (skure og carporte springes over)
+const HOUSE_MAX_HEIGHT = 13;    // m
+const HOUSE_STYLES = 6;
+const HOUSE_SHAPES = { kvadrat: [32, 32], bred: [48, 32], lang: [64, 28], hoej: [28, 56] };
+
+function installHouseLayer() {
+    if (map.getSource("src-houses")) return;
+    map.addSource("src-houses", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+    const pxPerMeterAtZoom0 = 512 / (2 * Math.PI * EARTH_RADIUS_M);
+    map.addLayer({
+        id: "lyr-houses", type: "symbol", source: "src-houses", minzoom: HOUSE_MIN_ZOOM,
+        layout: {
+            "icon-image": ["get", "sprite"], "icon-anchor": "center",
+            "icon-allow-overlap": true, "icon-ignore-placement": true,
+            // mpp = meter pr. tekstur-pixel (med breddegrads-korrektion)
+            "icon-size": ["interpolate", ["exponential", 2], ["zoom"],
+                0, ["*", ["get", "mpp"], pxPerMeterAtZoom0],
+                24, ["*", ["get", "mpp"], pxPerMeterAtZoom0 * Math.pow(2, 24)]],
+            "symbol-sort-key": ["get", "sort"]
+        }
+    }, map.getLayer("waterway_line_label") ? "waterway_line_label" : undefined);
+}
+
+function ringAreaM2(ring, cosLat) {
+    let a = 0;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const xi = ring[i][0] * 111320 * cosLat, yi = ring[i][1] * 111320;
+        const xj = ring[j][0] * 111320 * cosLat, yj = ring[j][1] * 111320;
+        a += xj * yi - xi * yj;
+    }
+    return Math.abs(a) / 2;
+}
+
+function refreshHouses() {
+    if (!mapReady || !map.getSource("src-houses")) return;
+    const z = map.getZoom();
+    if (z < HOUSE_MIN_ZOOM) { map.getSource("src-houses").setData({ type: "FeatureCollection", features: [] }); return; }
+    const feats = map.queryRenderedFeatures({ layers: ["building"] });
+    // Kortets fliser slår nabohuse sammen til én figur med mange omrids, så hvert omrids
+    // behandles for sig. Det samme hus kan komme fra to nabofliser: dedupler på midtpunktet.
+    const seen = new Set();
+    const out = [];
+    const b = map.getBounds();
+    const padLat = (b.getNorth() - b.getSouth()) * 0.15, padLon = (b.getEast() - b.getWest()) * 0.15;
+    const south = b.getSouth() - padLat, north = b.getNorth() + padLat, west = b.getWest() - padLon, east = b.getEast() + padLon;
+    for (const f of feats) {
+        const h = f.properties.render_height || 6;
+        if (h >= HOUSE_MAX_HEIGHT) continue;
+        const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.type === "MultiPolygon" ? f.geometry.coordinates : [];
+        for (const rings of polys) {
+            let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
+            for (const [x, y] of rings[0]) {
+                if (x < minLon) minLon = x; if (x > maxLon) maxLon = x;
+                if (y < minLat) minLat = y; if (y > maxLat) maxLat = y;
+            }
+            const lat = (minLat + maxLat) / 2, lon = (minLon + maxLon) / 2;
+            if (lat < south || lat > north || lon < west || lon > east) continue;   // kun det, der er på skærmen
+            const key = Math.round(lat * 5e4) + ":" + Math.round(lon * 3e4);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const cosLat = Math.max(Math.cos(lat * RAD_PER_DEG), MIN_COS);
+            const bw = (maxLon - minLon) * 111320 * cosLat;
+            const bh = (maxLat - minLat) * 111320;
+            const area = bw * bh;
+            if (area < HOUSE_MIN_AREA || area > HOUSE_MAX_AREA) continue;
+            // Omrids, der fylder under 45 % af deres kasse, er skæve eller L-formede: dem lader vi være.
+            if (ringAreaM2(rings[0], cosLat) < 0.45 * area) continue;
+            const aspect = bw / Math.max(bh, 0.1);
+            const shape = aspect > 2.2 ? "lang" : aspect > 1.3 ? "bred" : aspect < 0.6 ? "hoej" : "kvadrat";
+            const [tw, th] = HOUSE_SHAPES[shape];
+            const style = hash2(Math.round(lat * 1e5), Math.round(lon * 1e5)) % HOUSE_STYLES;
+            const widthM = (shape === "hoej" ? bh * (tw / th) : bw) * 1.06;
+            out.push({
+                type: "Feature",
+                properties: { sprite: `img-house-${style}-${shape}`, mpp: widthM / cosLat / (tw * 2), sort: -lat },
+                geometry: { type: "Point", coordinates: [lon, lat] }
+            });
+        }
+    }
+    map.getSource("src-houses").setData({ type: "FeatureCollection", features: out });
 }
 
 // ---------------------------------------------------------------------------
