@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 95;
+const APP_VERSION = 96;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -533,6 +533,18 @@ async function installPixelLandscape() {
         ["img-b-vaabenfabrik_3", "assets/vaabenfabrik_3.png", 4],
         ["img-b-vaabenfabrik_4", "assets/vaabenfabrik_4.png", 4],
         ["img-b-vaabenfabrik_5", "assets/vaabenfabrik_5.png", 4],
+        ["img-roof-red", "assets/tag_roed.png", 2],
+        ["img-roof-darkred", "assets/tag_moerkroed.png", 2],
+        ["img-roof-yellow", "assets/tag_gul.png", 2],
+        ["img-roof-brown", "assets/tag_brun.png", 2],
+        ["img-roof-grey", "assets/tag_graa.png", 2],
+        ["img-roof-flat", "assets/tag_flad.png", 2],
+        ["img-wall-light", "assets/mur_lys.png", 2],
+        ["img-wall-grey", "assets/mur_graa.png", 2],
+        ["img-road-cobble", "assets/vej_brosten.png", 1],
+        ["img-road-cobble-light", "assets/vej_brosten_lys.png", 1],
+        ["img-road-gravel", "assets/vej_grus.png", 1],
+        ["img-road-path", "assets/vej_sti.png", 1],
         ["img-crater", "assets/krater.png", 2],
         ["img-wreck", "assets/lastbil_vrag.png", 2],
         ["img-parked-truck", "assets/lastbil.png", 2],
@@ -555,13 +567,8 @@ async function installPixelLandscape() {
     if (map.getLayer("background")) {
         map.setPaintProperty("background", "background-pattern", "img-ground");
     }
-    if (map.getLayer("building")) {
-        map.setPaintProperty("building", "fill-color", "#A35A43");
-        map.setPaintProperty("building", "fill-outline-color", "#5C2E22");
-        map.setPaintProperty("building", "fill-opacity", 0.9);
-    }
-
     styleWorldLikeGame();
+    styleBuildingsLikeGame();
 
     const beforeLayer = map.getLayer("waterway") ? "waterway" : undefined;
     const surfaces = [
@@ -659,7 +666,12 @@ function styleWorldLikeGame() {
         }, "highway_minor");
     }
 
-    // Gul midterstribe på motorveje og store veje, når man er tæt nok på.
+    // Veje som brosten og grus, når man er tæt nok på til at se det. Motorveje forbliver asfalt.
+    setPaint("highway_major_inner", { "line-pattern": "img-road-cobble" });
+    setPaint("highway_minor", { "line-pattern": "img-road-cobble-light" });
+    setPaint("highway_path", { "line-pattern": "img-road-path", "line-dasharray": undefined });
+
+    // Gul midterstribe på motorveje, når man er tæt nok på.
     if (map.getLayer("highway_motorway_inner") && !map.getLayer("hf-road-stripe")) {
         map.addLayer({
             id: "hf-road-stripe",
@@ -669,7 +681,7 @@ function styleWorldLikeGame() {
             minzoom: 13,
             filter: ["all", ["match", ["geometry-type"], ["LineString", "MultiLineString"], true, false],
                 ["!=", ["get", "brunnel"], "tunnel"],
-                ["match", ["get", "class"], ["motorway", "trunk", "primary"], true, false]],
+                ["==", ["get", "class"], "motorway"]],
             layout: { "line-cap": "butt", "line-join": "round" },
             paint: {
                 "line-color": ROAD_STRIPE,
@@ -702,6 +714,58 @@ function styleWorldLikeGame() {
     setLayout("label_city_capital", { "text-size": ["interpolate", ["exponential", 1.2], ["zoom"], 4, 13, 7, 16, 11, 22] });
     setLayout("label_town", { "text-size": ["interpolate", ["exponential", 1.2], ["zoom"], 7, 11, 11, 14] });
     setLayout("label_village", { "text-size": ["interpolate", ["exponential", 1.2], ["zoom"], 9, 10, 12, 12] });
+}
+
+// Kortets rigtige bygninger tegnes som små pixel-huse set ovenfra: en skygge mod sydøst, en mur
+// langs sydsiden og et tegltag i husets rigtige omrids. Tagets farve afhænger af bygningens
+// højde (lave huse: rødt tegl, mellemhøje: brunt, høje: gråt skifer, meget høje: fladt tag).
+// Mur og skygge vokser med zoom, så husene "rejser sig", når man kommer tæt på.
+function styleBuildingsLikeGame() {
+    if (!map.getLayer("building")) return;
+    const h = ["coalesce", ["get", "render_height"], 6];
+    // Lave huse veksler mellem fire tagfarver ud fra bygningens nummer, så en gade ikke er ensfarvet.
+    // (Kortets bygningsnumre ender alle på samme tal, så vi bruger de næste cifre.)
+    const pick = ["%", ["floor", ["/", ["coalesce", ["id"], 0], 4]], 4];
+    const roof = ["case",
+        ["<", h, 10], ["match", pick, 0, "img-roof-red", 1, "img-roof-darkred", 2, "img-roof-yellow", "img-roof-brown"],
+        ["<", h, 18], ["match", pick, 0, "img-roof-brown", 1, "img-roof-darkred", "img-roof-grey"],
+        ["<", h, 30], "img-roof-grey",
+        "img-roof-flat"];
+    const wall = ["case", ["<", h, 18], "img-wall-light", "img-wall-grey"];
+    const wallShift = ["interpolate", ["linear"], ["zoom"],
+        14, ["literal", [0, 0]], 16, ["literal", [0, 4]], 18, ["literal", [0, 9]], 20, ["literal", [0, 14]]];
+    const shadowShift = ["interpolate", ["linear"], ["zoom"],
+        14, ["literal", [0, 0]], 16, ["literal", [3, 7]], 18, ["literal", [6, 14]], 20, ["literal", [10, 22]]];
+
+    const base = { type: "fill", source: "openmaptiles", "source-layer": "building", minzoom: 12 };
+    if (!map.getLayer("hf-building-shadow")) {
+        map.addLayer({ ...base, id: "hf-building-shadow", paint: {
+            "fill-color": "#1a140c", "fill-opacity": 0.4, "fill-antialias": false,
+            "fill-translate": shadowShift, "fill-translate-anchor": "viewport"
+        } }, "building");
+    }
+    if (!map.getLayer("hf-building-wall")) {
+        map.addLayer({ ...base, id: "hf-building-wall", paint: {
+            "fill-pattern": wall, "fill-translate": wallShift, "fill-translate-anchor": "viewport"
+        } }, "building");
+    }
+    if (!map.getLayer("hf-building-wall-edge")) {
+        map.addLayer({
+            id: "hf-building-wall-edge", type: "line", source: "openmaptiles", "source-layer": "building", minzoom: 15,
+            paint: { "line-color": "#4a3a26", "line-width": ["interpolate", ["linear"], ["zoom"], 15, 0.6, 18, 1.4],
+                     "line-translate": wallShift, "line-translate-anchor": "viewport" }
+        }, "building");
+    }
+    map.setPaintProperty("building", "fill-pattern", roof);
+    map.setPaintProperty("building", "fill-antialias", false);
+    if (!map.getLayer("hf-building-edge")) {
+        const layers = map.getStyle().layers;
+        const next = layers[layers.findIndex(l => l.id === "building") + 1];
+        map.addLayer({
+            id: "hf-building-edge", type: "line", source: "openmaptiles", "source-layer": "building", minzoom: 15,
+            paint: { "line-color": "#3a2616", "line-width": ["interpolate", ["linear"], ["zoom"], 15, 0.6, 18, 1.4], "line-opacity": 0.9 }
+        }, next ? next.id : undefined);
+    }
 }
 
 // Bygnings-sprites er 56×56 px og indlæses med scale=4 → 224×224 px. Hver bygning har egenskaben
