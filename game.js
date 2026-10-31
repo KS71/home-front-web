@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 117;
+const APP_VERSION = 118;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -2738,7 +2738,7 @@ function installGameLayers() {
         minzoom: STREET_TACTICAL_ZOOM,
         layout: {
             "icon-image": "img-wreck",
-            "icon-size": ["interpolate", ["exponential", 2], ["zoom"], 16, 0.19, 17, 0.24, 18, 0.42, 20, 1.65, 22, 6.6],
+            "icon-size": ["interpolate", ["exponential", 2], ["zoom"], 16, 0.64, 17, 0.73, 18, 0.88, 20, 1.82, 22, 7.3], // v118: samme størrelse som lastbilerne (streetUnitScaleProps)
             "icon-allow-overlap": true,
             "icon-ignore-placement": true
         },
