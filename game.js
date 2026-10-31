@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 101;
+const APP_VERSION = 102;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -463,6 +463,7 @@ function initMap() {
     map.on("moveend", () => {
         if (!mapReady) return;
         treesDirty = true;
+        refreshHouses();
         refreshViewportData();
         loadCratersSoon();
     });
@@ -787,7 +788,7 @@ function styleBuildingsLikeGame() {
     const h = ["coalesce", ["get", "render_height"], 6];
     // Lave huse veksler mellem fire tagfarver ud fra bygningens nummer, så en gade ikke er ensfarvet.
     // (Kortets bygningsnumre ender alle på samme tal, så vi bruger de næste cifre.)
-    const pick = ["%", ["floor", ["/", ["coalesce", ["id"], 0], 4]], 4];
+    const pick = ["coalesce", ["get", "pick"], ["%", ["floor", ["/", ["coalesce", ["id"], 0], 4]], 4]];
     const roof = ["case",
         ["<", h, 10], ["match", pick, 0, "img-roof-red", 1, "img-roof-darkred", 2, "img-roof-yellow", "img-roof-brown"],
         ["<", h, 18], ["match", pick, 0, "img-roof-brown", 1, "img-roof-darkred", "img-roof-grey"],
@@ -803,7 +804,11 @@ function styleBuildingsLikeGame() {
         { id: "mid", filter: ["all", [">=", h, 10], ["<", h, 18]], k: 1.7, wall: "img-wall-light" },
         { id: "tall", filter: [">=", h, 18], k: 2.6, wall: "img-wall-grey" }
     ];
-    const base = { type: "fill", source: "openmaptiles", "source-layer": "building", minzoom: 12 };
+    // Under HOUSE_MIN_ZOOM tegnes alle kortets bygninger som omrids. Fra HOUSE_MIN_ZOOM erstattes
+    // almindelige huse af rigtige pixelhuse (src-houses), mens kun store, høje eller sammensatte
+    // bygninger tegnes som omrids (src-big-buildings), så der ikke ligger skæve kortbygninger
+    // neden under pixelhusene.
+    const base = { type: "fill", source: "openmaptiles", "source-layer": "building", minzoom: 12, maxzoom: HOUSE_MIN_ZOOM };
     for (const c of classes) {
         if (!map.getLayer("hf-building-shadow-" + c.id)) {
             map.addLayer({ ...base, id: "hf-building-shadow-" + c.id, filter: c.filter, paint: {
@@ -820,7 +825,7 @@ function styleBuildingsLikeGame() {
         }
         if (!map.getLayer("hf-building-wall-edge-" + c.id)) {
             map.addLayer({
-                id: "hf-building-wall-edge-" + c.id, type: "line", source: "openmaptiles", "source-layer": "building", minzoom: 15,
+                id: "hf-building-wall-edge-" + c.id, type: "line", source: "openmaptiles", "source-layer": "building", minzoom: 15, maxzoom: HOUSE_MIN_ZOOM,
                 filter: c.filter,
                 paint: { "line-color": "#4a3a26", "line-width": ["interpolate", ["linear"], ["zoom"], 15, 0.6, 18, 1.4],
                          "line-translate": shift(c.k, 0, 1), "line-translate-anchor": "viewport" }
@@ -829,33 +834,80 @@ function styleBuildingsLikeGame() {
     }
     map.setPaintProperty("building", "fill-pattern", roof);
     map.setPaintProperty("building", "fill-antialias", false);
+    // Fra HOUSE_MIN_ZOOM er selve kortets bygningslag usynligt (men kan stadig aflæses ved granatnedslag).
+    map.setPaintProperty("building", "fill-opacity", ["step", ["zoom"], 1, HOUSE_MIN_ZOOM, 0]);
 
     if (!map.getLayer("hf-building-edge")) {
         const layers = map.getStyle().layers;
         const next = layers[layers.findIndex(l => l.id === "building") + 1];
         map.addLayer({
-            id: "hf-building-edge", type: "line", source: "openmaptiles", "source-layer": "building", minzoom: 15,
+            id: "hf-building-edge", type: "line", source: "openmaptiles", "source-layer": "building", minzoom: 15, maxzoom: HOUSE_MIN_ZOOM,
             paint: { "line-color": "#3a2616", "line-width": ["interpolate", ["linear"], ["zoom"], 15, 0.6, 18, 1.4], "line-opacity": 0.9 }
         }, next ? next.id : undefined);
     }
 
-    // Tagskråning: et lysere bånd langs tagets kant (line-offset tegner indad i omridset) og en
-    // mørk streg, hvor skråningen møder den øverste tagflade. Så ligner det et tag set ovenfra
-    // og ikke en flade med brosten.
     const slope = ["interpolate", ["exponential", 1.6], ["zoom"], 15, 1.5, 17, 5, 19, 13, 21, 36];
     const slopeOff = ["interpolate", ["exponential", 1.6], ["zoom"], 15, 0.75, 17, 2.5, 19, 6.5, 21, 18];
     if (!map.getLayer("hf-roof-slope")) {
         map.addLayer({
-            id: "hf-roof-slope", type: "line", source: "openmaptiles", "source-layer": "building", minzoom: 15,
+            id: "hf-roof-slope", type: "line", source: "openmaptiles", "source-layer": "building", minzoom: 15, maxzoom: HOUSE_MIN_ZOOM,
             layout: { "line-join": "miter", "line-cap": "butt" },
             paint: { "line-color": "rgba(255, 244, 214, 0.26)", "line-width": slope, "line-offset": slopeOff }
         }, "hf-building-edge");
     }
-    if (!map.getLayer("hf-roof-ridge")) {
+
+    // Store, høje og sammensatte bygninger ved zoom >= HOUSE_MIN_ZOOM (dem, der ikke bliver til pixelhuse).
+    if (!map.getSource("src-big-buildings")) {
+        map.addSource("src-big-buildings", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+    }
+    const bigBase = { type: "fill", source: "src-big-buildings", minzoom: HOUSE_MIN_ZOOM };
+    for (const c of classes) {
+        if (!map.getLayer("hf-big-shadow-" + c.id)) {
+            map.addLayer({ ...bigBase, id: "hf-big-shadow-" + c.id, filter: c.filter, paint: {
+                "fill-color": "#1a140c", "fill-opacity": 0.4, "fill-antialias": false,
+                "fill-translate": shift(c.k, 0.75, 1.6), "fill-translate-anchor": "viewport"
+            } }, "building");
+        }
+    }
+    for (const c of classes) {
+        if (!map.getLayer("hf-big-wall-" + c.id)) {
+            map.addLayer({ ...bigBase, id: "hf-big-wall-" + c.id, filter: c.filter, paint: {
+                "fill-pattern": c.wall, "fill-translate": shift(c.k, 0, 1), "fill-translate-anchor": "viewport"
+            } }, "building");
+        }
+        if (!map.getLayer("hf-big-wall-edge-" + c.id)) {
+            map.addLayer({
+                id: "hf-big-wall-edge-" + c.id, type: "line", source: "src-big-buildings", minzoom: HOUSE_MIN_ZOOM,
+                filter: c.filter,
+                paint: { "line-color": "#4a3a26", "line-width": ["interpolate", ["linear"], ["zoom"], 15, 0.6, 18, 1.4],
+                         "line-translate": shift(c.k, 0, 1), "line-translate-anchor": "viewport" }
+            }, "building");
+        }
+    }
+    if (!map.getLayer("hf-big-roof")) {
         map.addLayer({
-            id: "hf-roof-ridge", type: "line", source: "openmaptiles", "source-layer": "building", minzoom: 16,
+            ...bigBase, id: "hf-big-roof",
+            paint: { "fill-pattern": roof, "fill-antialias": false }
+        }, "hf-building-edge");
+    }
+    if (!map.getLayer("hf-big-roof-slope")) {
+        map.addLayer({
+            id: "hf-big-roof-slope", type: "line", source: "src-big-buildings", minzoom: HOUSE_MIN_ZOOM,
+            layout: { "line-join": "miter", "line-cap": "butt" },
+            paint: { "line-color": "rgba(255, 244, 214, 0.26)", "line-width": slope, "line-offset": slopeOff }
+        }, "hf-building-edge");
+    }
+    if (!map.getLayer("hf-big-roof-ridge")) {
+        map.addLayer({
+            id: "hf-big-roof-ridge", type: "line", source: "src-big-buildings", minzoom: HOUSE_MIN_ZOOM,
             layout: { "line-join": "miter", "line-cap": "butt" },
             paint: { "line-color": "rgba(70, 32, 20, 0.5)", "line-width": ["interpolate", ["linear"], ["zoom"], 16, 0.7, 20, 2], "line-offset": slope }
+        }, "hf-building-edge");
+    }
+    if (!map.getLayer("hf-big-edge")) {
+        map.addLayer({
+            id: "hf-big-edge", type: "line", source: "src-big-buildings", minzoom: HOUSE_MIN_ZOOM,
+            paint: { "line-color": "#3a2616", "line-width": ["interpolate", ["linear"], ["zoom"], 15, 0.6, 18, 1.4], "line-opacity": 0.9 }
         }, "hf-building-edge");
     }
 }
@@ -889,13 +941,13 @@ function installChimneys() {
 
 // ---------------------------------------------------------------------------
 // Rigtige pixelhuse. Fra zoom 16 får hvert lavt hus under HOUSE_MAX_AREA m² et tegnet hus
-// (tag, facade, vinduer, dør) sat på husets rigtige plads og skaleret til dets størrelse. Formen
-// vælges efter omridsets bredde/højde, stilen efter husets nummer. Store og høje bygninger
-// beholder omridset med tegltag. Omridset tegnes stadig nedenunder, så placeringen er præcis.
+// (tag, facade, vinduer, dør) sat på husets rigtige plads og skaleret til dets størrelse — uden
+// kortets skæve bygningsomrids nedenunder. Kun store, høje og sammensatte bygninger beholder
+// omridset med tegltag (src-big-buildings), og små skure/carporte under 35 m² udelades.
 // ---------------------------------------------------------------------------
 const HOUSE_MIN_ZOOM = 16;
-const HOUSE_MAX_AREA = 900;     // m²
-const HOUSE_MIN_AREA = 12;      // m² (skure og carporte springes over)
+const HOUSE_MAX_AREA = 600;     // m² (faktisk grundplan; større bygninger beholder deres omrids)
+const HOUSE_MIN_AREA = 35;      // m² (skure, drivhuse og carporte under 35 m² udelades helt)
 const HOUSE_MAX_HEIGHT = 13;    // m
 const HOUSE_STYLES = 6;
 const HOUSE_SHAPES = { kvadrat: [32, 32], bred: [48, 32], lang: [64, 28], hoej: [28, 56] };
@@ -931,18 +983,27 @@ function ringAreaM2(ring, cosLat) {
 function refreshHouses() {
     if (!mapReady || !map.getSource("src-houses")) return;
     const z = map.getZoom();
-    if (z < HOUSE_MIN_ZOOM) { map.getSource("src-houses").setData({ type: "FeatureCollection", features: [] }); return; }
-    const feats = map.queryRenderedFeatures({ layers: ["building"] });
+    const empty = { type: "FeatureCollection", features: [] };
+    if (z < HOUSE_MIN_ZOOM) {
+        map.getSource("src-houses").setData(empty);
+        map.getSource("src-big-buildings")?.setData(empty);
+        return;
+    }
+    const feats = [
+        ...map.queryRenderedFeatures({ layers: ["building"] }),
+        ...map.querySourceFeatures("openmaptiles", { sourceLayer: "building" })
+    ];
     // Kortets fliser slår nabohuse sammen til én figur med mange omrids, så hvert omrids
-    // behandles for sig. Det samme hus kan komme fra to nabofliser: dedupler på midtpunktet.
+    // behandles for sig. Hvert hus bliver ENTEN til et pixelhus (src-houses) ELLER til en stor
+    // bygning med tegltag (src-big-buildings) — aldrig begge dele på én gang.
     const seen = new Set();
-    const out = [];
+    const candidates = [];
+    const bigPolys = [];
     const b = map.getBounds();
-    const padLat = (b.getNorth() - b.getSouth()) * 0.15, padLon = (b.getEast() - b.getWest()) * 0.15;
+    const padLat = (b.getNorth() - b.getSouth()) * 0.25, padLon = (b.getEast() - b.getWest()) * 0.25;
     const south = b.getSouth() - padLat, north = b.getNorth() + padLat, west = b.getWest() - padLon, east = b.getEast() + padLon;
     for (const f of feats) {
         const h = f.properties.render_height || 6;
-        if (h >= HOUSE_MAX_HEIGHT) continue;
         const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.type === "MultiPolygon" ? f.geometry.coordinates : [];
         for (const rings of polys) {
             let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
@@ -951,30 +1012,60 @@ function refreshHouses() {
                 if (y < minLat) minLat = y; if (y > maxLat) maxLat = y;
             }
             const lat = (minLat + maxLat) / 2, lon = (minLon + maxLon) / 2;
-            if (lat < south || lat > north || lon < west || lon > east) continue;   // kun det, der er på skærmen
+            if (lat < south || lat > north || lon < west || lon > east) continue;
             const key = Math.round(lat * 5e4) + ":" + Math.round(lon * 3e4);
             if (seen.has(key)) continue;
             seen.add(key);
             const cosLat = Math.max(Math.cos(lat * RAD_PER_DEG), MIN_COS);
             const bw = (maxLon - minLon) * 111320 * cosLat;
             const bh = (maxLat - minLat) * 111320;
-            const area = bw * bh;
-            if (area < HOUSE_MIN_AREA || area > HOUSE_MAX_AREA) continue;
-            // Omrids, der fylder under 45 % af deres kasse, er skæve eller L-formede: dem lader vi være.
-            if (ringAreaM2(rings[0], cosLat) < 0.45 * area) continue;
-            const aspect = bw / Math.max(bh, 0.1);
-            const shape = aspect > 2.2 ? "lang" : aspect > 1.3 ? "bred" : aspect < 0.6 ? "hoej" : "kvadrat";
-            const [tw, th] = HOUSE_SHAPES[shape];
-            const style = hash2(Math.round(lat * 1e5), Math.round(lon * 1e5)) % HOUSE_STYLES;
-            const widthM = (shape === "hoej" ? bh * (tw / th) : bw) * 1.06;
-            out.push({
-                type: "Feature",
-                properties: { sprite: `img-house-${style}-${shape}`, mpp: widthM / cosLat / (tw * 2), sort: -lat },
-                geometry: { type: "Point", coordinates: [lon, lat] }
-            });
+            const boxArea = bw * bh;
+            const polyArea = ringAreaM2(rings[0], cosLat);
+            // Små skure, carporte og drivhuse (< 35 m²) udelades helt, så haverne er rene.
+            if (polyArea < HOUSE_MIN_AREA) continue;
+            const isHouse = h < HOUSE_MAX_HEIGHT && polyArea <= HOUSE_MAX_AREA && boxArea <= 950
+                && rings.length === 1 && polyArea >= 0.34 * boxArea;
+            if (!isHouse) {
+                const pick = hash2(Math.round(lat * 1e5), Math.round(lon * 1e5)) % 4;
+                bigPolys.push({
+                    type: "Feature",
+                    properties: { render_height: h, pick },
+                    geometry: { type: "Polygon", coordinates: rings }
+                });
+                continue;
+            }
+            candidates.push({ lat, lon, cosLat, bw, bh, boxArea, polyArea });
         }
     }
+    // Største huse placeres først, så mindre tilbygninger/garager tæt på ikke lægger sig oven i huset.
+    candidates.sort((a, b) => b.polyArea - a.polyArea);
+    const placed = [];
+    const out = [];
+    for (const c of candidates) {
+        if (bigPolys.some(bp => pointInRings(c.lon, c.lat, bp.geometry.coordinates))) continue;
+        const fill = Math.min(1, Math.sqrt(c.polyArea / Math.max(c.boxArea, 1)));
+        const ew = c.bw * fill, eh = c.bh * fill;
+        const aspect = c.bw / Math.max(c.bh, 0.1);
+        const shape = aspect > 2.2 ? "lang" : aspect > 1.3 ? "bred" : aspect < 0.6 ? "hoej" : "kvadrat";
+        const [tw, th] = HOUSE_SHAPES[shape];
+        const widthM = (shape === "hoej" ? eh * (tw / th) : ew) * 1.06;
+        const heightM = widthM * (th / tw);
+        const overlaps = placed.some(p => {
+            const dx = (c.lon - p.lon) * 111320 * c.cosLat;
+            const dy = (c.lat - p.lat) * 111320;
+            return Math.abs(dx) < (widthM + p.w) * 0.42 && Math.abs(dy) < (heightM + p.h) * 0.42;
+        });
+        if (overlaps) continue;
+        placed.push({ lat: c.lat, lon: c.lon, w: widthM, h: heightM });
+        const style = hash2(Math.round(c.lat * 1e5), Math.round(c.lon * 1e5)) % HOUSE_STYLES;
+        out.push({
+            type: "Feature",
+            properties: { sprite: `img-house-${style}-${shape}`, mpp: widthM / c.cosLat / (tw * 2), sort: -c.lat },
+            geometry: { type: "Point", coordinates: [c.lon, c.lat] }
+        });
+    }
     map.getSource("src-houses").setData({ type: "FeatureCollection", features: out });
+    map.getSource("src-big-buildings")?.setData({ type: "FeatureCollection", features: bigPolys });
 }
 
 // ---------------------------------------------------------------------------
