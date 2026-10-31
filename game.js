@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 94;
+const APP_VERSION = 95;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -561,6 +561,8 @@ async function installPixelLandscape() {
         map.setPaintProperty("building", "fill-opacity", 0.9);
     }
 
+    styleWorldLikeGame();
+
     const beforeLayer = map.getLayer("waterway") ? "waterway" : undefined;
     const surfaces = [
         { id: "land-town", sourceLayer: "landuse", filter: ["==", ["get", "class"], "residential"], pattern: "img-town" },
@@ -585,6 +587,121 @@ async function installPixelLandscape() {
             map.addLayer(lyr, beforeLayer);
         }
     }
+}
+
+// Gør kortgrundlaget mindre "Google Maps" og mere computerspil: grænser, togbaner, vejnavne og
+// ruteskilte slukkes, vejene bliver asfalt med mørk kant (motorveje får gul midterstribe), og
+// kun by-, bydels- og landsbynavne bliver stående, skrevet i spillets stil.
+const MAP_HIDDEN_LAYERS = [
+    "boundary_2", "boundary_3", "boundary_disputed",
+    "railway", "railway_dashline", "railway_service", "railway_service_dashline",
+    "railway_transit", "railway_transit_dashline",
+    "aeroway-taxiway", "aeroway-runway-casing", "aeroway-area", "aeroway-runway", "airport",
+    "highway-name-path", "highway-name-minor", "highway-name-major",
+    "highway-shield-non-us", "highway-shield-us-interstate", "road_shield_us",
+    "waterway_line_label", "water_name_point_label", "water_name_line_label",
+    "label_other", "label_state", "label_country_1", "label_country_2", "label_country_3",
+    "landcover_ice_shelf", "landcover_glacier"
+];
+
+const ROAD_ASPHALT = "#5d5c63";
+const ROAD_ASPHALT_LIGHT = "#7d7c83";
+const ROAD_EDGE = "#2f2e34";
+const ROAD_STRIPE = "#e4c75c";
+const ROAD_DIRT = "#b4955f";
+
+function styleWorldLikeGame() {
+    for (const id of MAP_HIDDEN_LAYERS) {
+        if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", "none");
+    }
+
+    const setPaint = (id, props) => {
+        if (!map.getLayer(id)) return;
+        for (const [k, v] of Object.entries(props)) map.setPaintProperty(id, k, v);
+    };
+    const setLayout = (id, props) => {
+        if (!map.getLayer(id)) return;
+        for (const [k, v] of Object.entries(props)) map.setLayoutProperty(id, k, v);
+    };
+
+    // Veje: mørk kant, asfalt indeni.
+    setPaint("highway_motorway_casing", { "line-color": ROAD_EDGE, "line-dasharray": [1, 0] });
+    setPaint("highway_motorway_inner", { "line-color": ROAD_ASPHALT });
+    setPaint("highway_motorway_bridge_casing", { "line-color": ROAD_EDGE });
+    setPaint("highway_motorway_bridge_inner", { "line-color": ROAD_ASPHALT });
+    setPaint("tunnel_motorway_casing", { "line-color": ROAD_EDGE, "line-opacity": 0.35 });
+    setPaint("tunnel_motorway_inner", { "line-color": ROAD_ASPHALT, "line-opacity": 0.35 });
+    setPaint("highway_motorway_subtle", { "line-color": ROAD_ASPHALT });
+    setPaint("highway_major_casing", { "line-color": ROAD_EDGE, "line-dasharray": [1, 0] });
+    setPaint("highway_major_inner", { "line-color": ROAD_ASPHALT });
+    setPaint("highway_major_subtle", { "line-color": ROAD_ASPHALT });
+    setPaint("highway_minor", { "line-color": ROAD_ASPHALT_LIGHT, "line-opacity": 1 });
+    setPaint("highway_path", { "line-color": ROAD_DIRT, "line-opacity": 1, "line-dasharray": [2, 1.2] });
+    setPaint("road_pier", { "line-color": "#8c6b45" });
+    setPaint("road_area_pier", { "fill-color": "#8c6b45" });
+    setPaint("waterway", { "line-color": "#3f7fb5" });
+
+    // Små veje får også en mørk kant: et ekstra lag lige under dem.
+    if (map.getLayer("highway_minor") && !map.getLayer("hf-minor-casing")) {
+        map.addLayer({
+            id: "hf-minor-casing",
+            type: "line",
+            source: "openmaptiles",
+            "source-layer": "transportation",
+            minzoom: 13,
+            filter: ["all", ["match", ["geometry-type"], ["LineString", "MultiLineString"], true, false],
+                ["match", ["get", "class"], ["minor", "service", "track"], true, false]],
+            layout: { "line-cap": "round", "line-join": "round" },
+            paint: {
+                "line-color": ROAD_EDGE,
+                "line-width": ["interpolate", ["exponential", 1.55], ["zoom"], 13, 3, 20, 24]
+            }
+        }, "highway_minor");
+    }
+
+    // Gul midterstribe på motorveje og store veje, når man er tæt nok på.
+    if (map.getLayer("highway_motorway_inner") && !map.getLayer("hf-road-stripe")) {
+        map.addLayer({
+            id: "hf-road-stripe",
+            type: "line",
+            source: "openmaptiles",
+            "source-layer": "transportation",
+            minzoom: 13,
+            filter: ["all", ["match", ["geometry-type"], ["LineString", "MultiLineString"], true, false],
+                ["!=", ["get", "brunnel"], "tunnel"],
+                ["match", ["get", "class"], ["motorway", "trunk", "primary"], true, false]],
+            layout: { "line-cap": "butt", "line-join": "round" },
+            paint: {
+                "line-color": ROAD_STRIPE,
+                "line-dasharray": [3, 3],
+                "line-width": ["interpolate", ["exponential", 1.4], ["zoom"], 13, 0.8, 20, 4]
+            }
+        }, "highway_motorway_bridge_casing");
+    }
+
+    // Stednavne i spillets stil: store bogstaver, lys skrift med mørk kant, ingen prikker.
+    const labelLayout = {
+        "text-font": ["Noto Sans Bold"],
+        "text-transform": "uppercase",
+        "text-letter-spacing": 0.12,
+        "icon-image": "",
+        "text-anchor": "center",
+        "text-offset": [0, 0]
+    };
+    const labelPaint = {
+        "text-color": "#f6e9c4",
+        "text-halo-color": "#241a10",
+        "text-halo-width": 2,
+        "text-halo-blur": 0
+    };
+    for (const id of ["label_city", "label_city_capital", "label_town", "label_village"]) {
+        setLayout(id, labelLayout);
+        setPaint(id, labelPaint);
+    }
+    setLayout("label_city", { "text-size": ["interpolate", ["exponential", 1.2], ["zoom"], 4, 12, 7, 14, 11, 20] });
+    setLayout("label_city_capital", { "text-size": ["interpolate", ["exponential", 1.2], ["zoom"], 4, 13, 7, 16, 11, 22] });
+    setLayout("label_town", { "text-size": ["interpolate", ["exponential", 1.2], ["zoom"], 7, 11, 11, 14] });
+    setLayout("label_village", { "text-size": ["interpolate", ["exponential", 1.2], ["zoom"], 9, 10, 12, 12] });
 }
 
 // Bygnings-sprites er 56×56 px og indlæses med scale=4 → 224×224 px. Hver bygning har egenskaben
