@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 112;
+const APP_VERSION = 113;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -74,10 +74,10 @@ const GAME_CONFIG = {
     BUILDINGS: {
         barracks: {
             id: "barracks",
-            name: "Barrakken",
+            name: "Barrak",
             shortName: "barrak",
             desc: "Giver sengepladser til dine soldater: 100 på trin 1 og op til 1.000 på trin 5.",
-            stages: ["Bivuak", "Teltlejr", "Barrak", "Kaserne", "Hovedkaserne"],
+            stages: ["Barrak", "Barrak", "Barrak", "Barrak", "Barrak"],
             sprites: ["barrak_1", "barrak_2", "barrak_3", "barrak_4", "barrak_5"],
             prices: [500, 600, 700, 800, 900],
             materials: [{}, {}, {}, {}, {}],
@@ -86,10 +86,10 @@ const GAME_CONFIG = {
         },
         academy: {
             id: "academy",
-            name: "Militærskolen",
+            name: "Militærskole",
             shortName: "militærskole",
             desc: "Uddanner nye soldater over tid — og lader dig straks-uddanne soldater for skridt.",
-            stages: ["Skydebane", "Træningslejr", "Rekrutskole", "Militærakademi", "Krigsskole"],
+            stages: ["Militærskole", "Militærskole", "Militærskole", "Militærskole", "Militærskole"],
             sprites: ["skole_1", "skole_2", "skole_3", "skole_4", "skole_5"],
             prices: [300, 600, 1200, 2200, 4000],
             materials: [{}, {}, {}, { steel: 15 }, { steel: 40 }],
@@ -102,10 +102,10 @@ const GAME_CONFIG = {
         },
         hospital: {
             id: "hospital",
-            name: "Felthospitalet",
+            name: "Felthospital",
             shortName: "felthospital",
             desc: "Heler sårede soldater lidt efter lidt. Uden hospital kan sårede ikke heles.",
-            stages: ["Sanitetstelt", "Felthospital", "Lazaret", "Hospital", "Militærhospital"],
+            stages: ["Felthospital", "Felthospital", "Felthospital", "Felthospital", "Felthospital"],
             sprites: ["hospital_1", "hospital_2", "hospital_3", "hospital_4", "hospital_5"],
             prices: [400, 700, 1200, 2000, 3200],
             materials: [{}, {}, {}, { steel: 10 }, { steel: 30 }],
@@ -115,10 +115,10 @@ const GAME_CONFIG = {
         },
         steel_mill: {
             id: "steel_mill",
-            name: "Stålværket",
+            name: "Stålværk",
             shortName: "stålværk",
             desc: "Producerer stål løbende, som du henter, når du vil. Stål bruges til at opgradere andre bygninger.",
-            stages: ["Smedje", "Støberi", "Valseværk", "Stålværk", "Stålkombinat"],
+            stages: ["Stålværk", "Stålværk", "Stålværk", "Stålværk", "Stålværk"],
             sprites: ["staalvaerk_1", "staalvaerk_2", "staalvaerk_3", "staalvaerk_4", "staalvaerk_5"],
             prices: [800, 1500, 2500, 4000, 6000],
             materials: [{}, {}, {}, {}, {}],
@@ -131,10 +131,10 @@ const GAME_CONFIG = {
         },
         weapons_factory: {
             id: "weapons_factory",
-            name: "Våbenfabrikken",
+            name: "Våbenfabrik",
             shortName: "våbenfabrik",
             desc: "Sælger våben, granater og køretøjer. Højere trin låser op for tungere udstyr og giver rabat. Udstyret står på lager i barrakken.",
-            stages: ["Værksted", "Våbenværksted", "Ammunitionsfabrik", "Våbenfabrik", "Rustningskombinat"],
+            stages: ["Våbenfabrik", "Våbenfabrik", "Våbenfabrik", "Våbenfabrik", "Våbenfabrik"],
             sprites: ["vaabenfabrik_1", "vaabenfabrik_2", "vaabenfabrik_3", "vaabenfabrik_4", "vaabenfabrik_5"],
             prices: [1000, 1800, 3000, 4500, 6500],
             materials: [{}, { steel: 50 }, { steel: 100 }, { steel: 200 }, { steel: 300 }],
@@ -2577,6 +2577,41 @@ function compoundFeatures(buildings, teamColor) {
     return features;
 }
 
+// Grøn = din, allieret farve, ellers fjendens pink (samme som omridset på kortet).
+function buildingOwnerColor(b) {
+    if (state.user && b.owner_id === state.user.id) return "#39FF14";
+    return isAlly(b.owner_id) ? allyColor(b.owner_id) : "#FF2E88";
+}
+
+// Samme tegning som på kortet, som billede til oversigten og infovinduerne (gemmes pr. type/trin/farve).
+const buildingImageCache = new Map();
+function buildingImageUrl(kind, level, team = "#39FF14") {
+    const key = kind + "|" + level + "|" + team;
+    let url = buildingImageCache.get(key);
+    if (url) return url;
+    const px = 160, pad = 10, size = buildingSize(kind);
+    const k = (px - 2 * pad) / size;
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = px;
+    const g = cv.getContext("2d");
+    g.fillStyle = "#739e48";
+    g.fillRect(0, 0, px, px);
+    const shapes = compoundShapes(kind, level, team, size).map((sh, i) => [sh, i]).sort((a, b) => a[0].z - b[0].z || a[1] - b[1]);
+    for (const [sh] of shapes) {
+        g.beginPath();
+        sh.ring.forEach(([x, y], i) => i ? g.lineTo(pad + x * k, pad + y * k) : g.moveTo(pad + x * k, pad + y * k));
+        g.closePath();
+        g.globalAlpha = sh.a;
+        g.fillStyle = sh.c;
+        g.fill();
+        if (sh.o) { g.strokeStyle = sh.o; g.lineWidth = 0.8; g.stroke(); }
+    }
+    g.globalAlpha = 1;
+    url = cv.toDataURL("image/png");
+    buildingImageCache.set(key, url);
+    return url;
+}
+
 // ----------------------------------------------------------------------------
 // Kortets huse og træer ryddes inden for spillernes bygninger.
 // ----------------------------------------------------------------------------
@@ -3042,19 +3077,17 @@ async function refreshViewportData() {
 // Fjender uden for udsynet når aldrig hertil — de er skjult på serveren.
 function renderWorld() {
     if (!mapReady || !state.user) return;
-    const uid = state.user.id;
     state.visibleBuildings = [...state.myBuildings, ...state.allies.buildings, ...state.enemies.buildings];
 
-    const teamColor = b => b.owner_id === uid ? "#39FF14" : isAlly(b.owner_id) ? allyColor(b.owner_id) : "#FF2E88";
     updateClearedSquares(state.visibleBuildings);
     map.getSource("src-buildings")?.setData({
         type: "FeatureCollection",
-        features: compoundFeatures(state.visibleBuildings, teamColor)
+        features: compoundFeatures(state.visibleBuildings, buildingOwnerColor)
     });
     map.getSource("src-footprints")?.setData({
         type: "FeatureCollection",
         features: state.visibleBuildings.map(b =>
-            squareFeature(b.lat, b.lon, buildingSize(b.kind), { c: teamColor(b) }))
+            squareFeature(b.lat, b.lon, buildingSize(b.kind), { c: buildingOwnerColor(b) }))
     });
 
     if (state.selected) renderSelectedBox();
@@ -5460,7 +5493,7 @@ function renderBuildingBox(bld, box, badge) {
     setSelectedShape(squareFeature(bld.lat, bld.lon, size, { state: "building" }));
 
     const stageName = cfg ? cfg.stages[bld.level - 1] : bld.kind;
-    const sprite = cfg ? cfg.sprites[Math.min(bld.level, cfg.sprites.length) - 1] : "barrak_1";
+    const sprite = buildingImageUrl(bld.kind, bld.level, buildingOwnerColor(bld));
     let html = "";
 
     if (isMine) {
@@ -5473,7 +5506,7 @@ function renderBuildingBox(bld, box, badge) {
         html += `
             <div class="item-row">
                 <div class="item-row-top">
-                    <img src="assets/${sprite}.png" class="pixel-img item-sprite" />
+                    <img src="${sprite}" class="item-sprite" alt="" />
                     <div class="item-info">
                         <div class="item-title">${stageName} (Trin ${bld.level}/${cfg ? cfg.prices.length : 5})</div>
                         <div class="item-sub">${cfg ? cfg.desc : ""}</div>
@@ -5503,9 +5536,9 @@ function renderBuildingBox(bld, box, badge) {
         html += `
             <div class="item-row">
                 <div class="item-row-top">
-                    <img src="assets/${sprite}.png" class="pixel-img item-sprite" />
+                    <img src="${sprite}" class="item-sprite" alt="" />
                     <div class="item-info">
-                        <div class="item-title" style="color:${allyColor(bld.owner_id)}">${escapeHtml(allyName(bld.owner_id))}s ${cfg?.shortName || bld.kind}: ${stageName} (trin ${bld.level})</div>
+                        <div class="item-title" style="color:${allyColor(bld.owner_id)}">${escapeHtml(allyName(bld.owner_id))}s ${cfg?.shortName || bld.kind} (trin ${bld.level})</div>
                         <div class="item-sub">🤝 Allieret. I kæmper ikke mod hinanden. Sender du soldater hertil, stiller de sig som vagt ved bygningen.</div>
                     </div>
                 </div>
@@ -5523,9 +5556,9 @@ function renderBuildingBox(bld, box, badge) {
         html += `
             <div class="item-row">
                 <div class="item-row-top">
-                    <img src="assets/${sprite}.png" class="pixel-img item-sprite" />
+                    <img src="${sprite}" class="item-sprite" alt="" />
                     <div class="item-info">
-                        <div class="item-title enemy-title">Fjendtlig ${cfg?.shortName || bld.kind}: ${stageName} (trin ${bld.level})</div>
+                        <div class="item-title enemy-title">Fjendtlig ${cfg?.shortName || bld.kind} (trin ${bld.level})</div>
                         <div class="item-sub">Du kan se den lige nu, fordi din telefon (${GAME_CONFIG.VISION_RADIUS_M} m) eller dine soldater (${GAME_CONFIG.SOLDIER_VISION_M} m) er tæt på.</div>
                         <div class="item-sub"><strong>Forsvar:</strong> ${guards} vagter + ${bldDef} fra bygningen. Send mindst <strong>${guards + bldDef + 1}</strong> soldater for at jævne den med jorden.</div>
                     </div>
@@ -5734,9 +5767,9 @@ function buildChoicesHtml(lat, lon, terr) {
         html += `
             <div class="item-row" style="margin-bottom:6px;" onmouseenter="previewFootprint(${lat}, ${lon}, ${size}, ${!blocked})" onmouseleave="clearFootprintPreview()">
                 <div class="item-row-top">
-                    <img src="assets/${cfg.sprites[0]}.png" class="pixel-img item-sprite" />
+                    <img src="${buildingImageUrl(cfg.id, 1)}" class="item-sprite" alt="" />
                     <div class="item-info">
-                        <div class="item-title">${cfg.name} (${cfg.stages[0]})</div>
+                        <div class="item-title">${cfg.name} (trin 1)</div>
                         <div class="item-sub">${cfg.desc} ${size}×${size} m.</div>
                         ${blocked ? `<div class="item-sub" style="color:#FF8A80">Ikke plads her: ${size}×${size} m skal holde ${GAME_CONFIG.BUILDING_GAP_M} m afstand til andre bygninger og ligge i dit byggeområde. Hold musen over denne boks for at se, hvor meget den fylder.</div>` : ""}
                     </div>
@@ -6009,7 +6042,7 @@ function renderBuildingsSidebar() {
     list.innerHTML = state.myBuildings.map(b => {
         const cfg = GAME_CONFIG.BUILDINGS[b.kind];
         const stageName = cfg ? cfg.stages[b.level - 1] : b.kind;
-        const sprite = cfg ? cfg.sprites[Math.min(b.level, cfg.sprites.length) - 1] : "barrak_1";
+        const sprite = buildingImageUrl(b.kind, b.level, buildingOwnerColor(b));
         const housing = cfg?.housing ? cfg.housing[b.level - 1] : null;
         const prod = computeProductionContents(b);
         const avail = availableInBarracks();
@@ -6020,7 +6053,7 @@ function renderBuildingsSidebar() {
         return `
             <div class="item-row">
                 <div class="item-row-top">
-                    <img src="assets/${sprite}.png" class="pixel-img item-sprite" />
+                    <img src="${sprite}" class="item-sprite" alt="" />
                     <div class="item-info">
                         <div class="item-title">${stageName} (Trin ${b.level})</div>
                         <div class="item-sub">${housing ? `Plads: ${housing} soldater` : (cfg?.name || "")}</div>
@@ -8175,11 +8208,11 @@ function renderContactsSidebar() {
     const rows = [];
     for (const b of e.buildings) {
         const cfg = GAME_CONFIG.BUILDINGS[b.kind];
-        const sprite = cfg ? cfg.sprites[Math.min(b.level, cfg.sprites.length) - 1] : "barrak_1";
+        const sprite = buildingImageUrl(b.kind, b.level, buildingOwnerColor(b));
         rows.push(`
             <div class="item-row">
                 <div class="item-row-top">
-                    <img src="assets/${sprite}.png" class="pixel-img item-sprite" />
+                    <img src="${sprite}" class="item-sprite" alt="" />
                     <div class="item-info">
                         <div class="item-title enemy-title">${cfg ? cfg.name : b.kind} (trin ${b.level})</div>
                         <div class="item-sub">${who(b)}</div>
@@ -9235,10 +9268,10 @@ function codexBuildingsHtml() {
             </div>
             <p class="muted-hint">${escapeHtml(b.desc)}</p>
             <div class="codex-stages">
-                ${b.stages.map((stage, i) => `
+                ${b.stages.map((_, i) => `
                     <div class="codex-stage">
-                        <div class="codex-stage-img"><img src="assets/${b.sprites[i]}.png" class="pixel-img" alt="" /></div>
-                        <div class="codex-stage-name">Trin ${i + 1}: ${escapeHtml(stage)}</div>
+                        <div class="codex-stage-img"><img src="${buildingImageUrl(b.id, i + 1)}" alt="" /></div>
+                        <div class="codex-stage-name">Trin ${i + 1}</div>
                         <div class="codex-stage-price">${codexPrice(b.prices?.[i] || 0, b.materials?.[i]?.steel || 0)}</div>
                         <div class="codex-stage-effect">${codexStageEffect(b, i)}</div>
                     </div>`).join("")}
