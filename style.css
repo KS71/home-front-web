@@ -560,6 +560,7 @@ body, html {
 .modal-box {
     width: 100%;
     max-width: 420px;
+    max-height: 92vh;
     background: #171E26;
     border: 1px solid #37474F;
     border-radius: 12px;
@@ -577,6 +578,8 @@ body, html {
     display: flex;
     flex-direction: column;
     gap: 12px;
+    min-height: 0;
+    overflow-y: auto;   /* lange lister (fx Byer) kan rulles */
 }
 
 .modal-actions {

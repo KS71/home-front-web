@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 121;
+const APP_VERSION = 122;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -9988,62 +9988,122 @@ function renderFlagModal() {
         <button class="btn" onclick="closeModal()">Luk</button>`;
 }
 
-// Siden "Byer": hvilke byer er besat, og hvem ejer dem.
-window.openTownsModal = function() {
+// Siden "Byer": spillere → byer, spilleren har flag i → byens flag. Klik på et flag åbner flagets infoboks.
+const townsView = { level: "players", owner: null, townId: null };
+
+window.openTownsModal = function(level = "players", owner = null, townId = null) {
     state.groupModal = null;
     state.hospitalModal = null;
     state.flagModal = null;
+    townsView.level = level; townsView.owner = owner; townsView.townId = townId;
     const title = document.getElementById("modal-title");
     const body = document.getElementById("modal-body");
     const actions = document.getElementById("modal-actions");
     document.querySelector(".modal-box")?.classList.add("modal-wide");
-    title.textContent = "🏙️ Byer under kontrol";
 
     if (!flagData.supported) {
+        title.textContent = "🏙️ Byer under kontrol";
         body.innerHTML = `<p class="muted-hint">Byer og flag kræver, at <strong>0048_byer_og_flag.sql</strong> og <strong>0049_byer_danmark_data.sql</strong> er kørt i Supabase.</p>`;
-    } else if (!flagData.loaded) {
+        actions.innerHTML = `<button class="btn" onclick="closeModal()">Luk</button>`;
+        document.getElementById("modal-overlay").classList.remove("hidden");
+        return;
+    }
+    if (!flagData.loaded) {
+        title.textContent = "🏙️ Byer under kontrol";
         body.innerHTML = `<p class="muted-hint">Henter byer …</p>`;
-        loadFlags().then(() => { if (!document.getElementById("modal-overlay").classList.contains("hidden")) openTownsModal(); });
-    } else {
-        const owned = [...flagData.towns.values()].filter(t => t.owner_id);
-        const flagsByTown = new Map();
+        actions.innerHTML = `<button class="btn" onclick="closeModal()">Luk</button>`;
+        document.getElementById("modal-overlay").classList.remove("hidden");
+        loadFlags().then(() => { if (!document.getElementById("modal-overlay").classList.contains("hidden")) openTownsModal(level, owner, townId); });
+        return;
+    }
+
+    const flagsByTown = new Map();
+    for (const f of flagData.flags.values()) {
+        if (!flagsByTown.has(f.town_id)) flagsByTown.set(f.town_id, []);
+        flagsByTown.get(f.town_id).push(f);
+    }
+    const sideRank = { own: 0, ally: 1, enemy: 2, none: 3 };
+    const ownedTowns = [...flagData.towns.values()].filter(t => t.owner_id);
+    const contested = [...flagData.flags.values()].filter(f => f.cand_id).length;
+
+    if (level === "players") {
+        // Én række pr. spiller med flag: antal byer, han ejer, og antal flag, han holder.
+        const players = new Map();
         for (const f of flagData.flags.values()) {
-            if (!flagsByTown.has(f.town_id)) flagsByTown.set(f.town_id, []);
-            flagsByTown.get(f.town_id).push(f);
+            if (!f.owner_id) continue;
+            if (!players.has(f.owner_id)) players.set(f.owner_id, { id: f.owner_id, name: f.owner_name, flags: 0, towns: 0, townsWithFlags: new Set() });
+            const p = players.get(f.owner_id);
+            p.flags++;
+            p.townsWithFlags.add(f.town_id);
         }
-        const sideRank = { own: 0, ally: 1, enemy: 2, none: 3 };
-        owned.sort((a, b) => sideRank[flagSideOf(a.owner_id)] - sideRank[flagSideOf(b.owner_id)]
-            || String(a.owner_name || "").localeCompare(String(b.owner_name || ""), "da")
-            || a.name.localeCompare(b.name, "da"));
-
-        const perOwner = new Map();
-        for (const t of owned) {
-            const key = t.owner_id;
-            if (!perOwner.has(key)) perOwner.set(key, { name: flagOwnerLabel(t.owner_id, t.owner_name), color: flagSideColor(t.owner_id), n: 0 });
-            perOwner.get(key).n++;
+        for (const t of ownedTowns) {
+            if (players.has(t.owner_id)) players.get(t.owner_id).towns++;
         }
-        const summary = [...perOwner.values()].map(o => `<span class="badge" style="border-color:${o.color}; color:${o.color}">${o.name}: ${o.n}</span>`).join(" ");
-        const contested = [...flagData.flags.values()].filter(f => f.cand_id).length;
-
-        const rows = owned.map(t => {
-            const fl = flagsByTown.get(t.id) || [];
-            const heldBySide = fl.filter(f => f.owner_id && sameSide(f.owner_id, t.owner_id)).length;
-            const taking = fl.some(f => f.cand_id) ? " ⏳" : "";
-            return `<div class="item-row" style="cursor:pointer" onclick="closeModal(); jumpToPoint(${t.lat}, ${t.lon})">
+        const list = [...players.values()].sort((a, b) => sideRank[flagSideOf(a.id)] - sideRank[flagSideOf(b.id)]
+            || b.towns - a.towns || b.flags - a.flags);
+        title.textContent = "🏙️ Byer under kontrol";
+        const rows = list.map(p => `<div class="item-row" style="cursor:pointer" onclick="openTownsModal('towns', '${p.id}')">
+                <div class="item-row-top">
+                    <strong style="color:${flagSideColor(p.id)}">${flagOwnerLabel(p.id, p.name)}</strong>
+                    <span class="muted-hint">▶</span>
+                </div>
+                <div class="muted-hint">Ejer ${p.towns} ${p.towns === 1 ? "by" : "byer"} · holder ${p.flags} flag i ${p.townsWithFlags.size} ${p.townsWithFlags.size === 1 ? "by" : "byer"}</div>
+            </div>`).join("");
+        body.innerHTML = `
+            <p class="muted-hint">${flagData.towns.size} byer, bydele og landsbyer med ${flagData.flags.size} flag i alt. ${ownedTowns.length} er under kontrol${contested ? `, ${contested} flag er ved at skifte hænder` : ""}. Tryk på en spiller for at se byerne.</p>
+            ${rows ? `<div class="list-stack">${rows}</div>` : `<p class="muted-hint">Ingen har taget flag endnu. Send soldater ind i en bys flagcirkel og lad dem stå der alene i ${fmtNum(flagData.rules.hold_s)} sekunder.</p>`}`;
+        actions.innerHTML = `<button class="btn" onclick="closeModal()">Luk</button>`;
+    } else if (level === "towns") {
+        // Byer, hvor spilleren holder mindst ét flag.
+        const name = flagOwnerLabel(owner, [...flagData.flags.values()].find(f => f.owner_id === owner)?.owner_name);
+        const towns = [...flagData.towns.values()]
+            .filter(t => (flagsByTown.get(t.id) || []).some(f => f.owner_id === owner))
+            .map(t => {
+                const fl = flagsByTown.get(t.id) || [];
+                return { t, fl, held: fl.filter(f => f.owner_id === owner).length, owns: t.owner_id === owner };
+            })
+            .sort((a, b) => (b.owns - a.owns) || b.held - a.held || a.t.name.localeCompare(b.t.name, "da"));
+        title.textContent = `🏙️ ${name}`;
+        const rows = towns.map(({ t, fl, held, owns }) => `<div class="item-row" style="cursor:pointer" onclick="openTownsModal('flags', '${owner}', ${t.id})">
                 <div class="item-row-top">
                     <strong style="color:${flagSideColor(t.owner_id)}">${t.name}</strong>
-                    <span class="muted-hint">${TOWN_KIND_LABEL[t.kind] || t.kind}${taking}</span>
+                    <span class="muted-hint">${TOWN_KIND_LABEL[t.kind] || t.kind}${fl.some(f => f.cand_id) ? " ⏳" : ""} ▶</span>
                 </div>
-                <div class="muted-hint">Ejer: ${flagOwnerLabel(t.owner_id, t.owner_name)} · flag ${heldBySide}/${fl.length} · siden ${fmtWhen(t.owned_at)}</div>
+                <div class="muted-hint">${owns ? `Ejer byen siden ${fmtWhen(t.owned_at)}` : `Byen ejes af ${flagOwnerLabel(t.owner_id, t.owner_name)}`} · holder ${held}/${fl.length} flag</div>
+            </div>`).join("");
+        body.innerHTML = `
+            <p class="muted-hint">Byer, hvor <strong style="color:${flagSideColor(owner)}">${name}</strong> holder flag. Tryk på en by for at se dens flag.</p>
+            ${rows ? `<div class="list-stack">${rows}</div>` : `<p class="muted-hint">Ingen flag.</p>`}`;
+        actions.innerHTML = `
+            <button class="btn" onclick="openTownsModal('players')">◀ Spillere</button>
+            <button class="btn" onclick="closeModal()">Luk</button>`;
+    } else {
+        // Byens flag med ejer; klik åbner flagets infoboks.
+        const t = flagData.towns.get(townId);
+        const fl = (flagsByTown.get(townId) || []).slice().sort((a, b) => a.id - b.id);
+        title.textContent = `🚩 ${t ? t.name : "By"}`;
+        const rows = fl.map(f => {
+            let cand = "";
+            if (f.cand_id && f.cand_since) {
+                const left = Math.max(0, Math.round(flagData.rules.hold_s - (serverNow() - Date.parse(f.cand_since)) / 1000));
+                cand = ` · ⏳ ${flagSideOf(f.cand_id) === "own" ? "dine soldater" : (f.cand_name || "en anden spiller")} tager det om ${left} s`;
+            }
+            return `<div class="item-row" style="cursor:pointer" onclick="openFlagModal(${f.id})">
+                <div class="item-row-top">
+                    <strong style="color:${flagSideColor(f.owner_id)}">${f.name}</strong>
+                    <span class="muted-hint">▶</span>
+                </div>
+                <div class="muted-hint">Ejer: ${flagOwnerLabel(f.owner_id, f.owner_name)}${f.owner_id ? ` siden ${fmtWhen(f.owned_at)}` : ""}${cand}</div>
             </div>`;
         }).join("");
-
         body.innerHTML = `
-            <p class="muted-hint">${flagData.towns.size} byer, bydele og landsbyer med ${flagData.flags.size} flag i alt. ${owned.length} ${owned.length === 1 ? "er" : "er"} under kontrol${contested ? `, ${contested} flag er ved at skifte hænder` : ""}.</p>
-            ${summary ? `<p>${summary}</p>` : ""}
-            ${rows ? `<div class="list-stack">${rows}</div>` : `<p class="muted-hint">Ingen byer er besat endnu. Send soldater ind i en bys flagcirkel og lad dem stå der alene i ${fmtNum(flagData.rules.hold_s)} sekunder.</p>`}`;
+            <p class="muted-hint">${t ? `${TOWN_KIND_LABEL[t.kind] || t.kind} med ${fl.length} flag. Byen ejes af <strong style="color:${flagSideColor(t.owner_id)}">${flagOwnerLabel(t.owner_id, t.owner_name)}</strong>${t.owner_id ? ` siden ${fmtWhen(t.owned_at)}` : ""}.` : ""} Tryk på et flag for at se det på kortet.</p>
+            <div class="list-stack">${rows}</div>`;
+        actions.innerHTML = `
+            <button class="btn" onclick="openTownsModal('towns', '${owner}')">◀ Byer</button>
+            ${t ? `<button class="btn" onclick="closeModal(); jumpToPoint(${t.lat}, ${t.lon})">🎯 Hop til byen</button>` : ""}
+            <button class="btn" onclick="closeModal()">Luk</button>`;
     }
-    actions.innerHTML = `<button class="btn" onclick="closeModal()">Luk</button>`;
     document.getElementById("modal-overlay").classList.remove("hidden");
 };
 
