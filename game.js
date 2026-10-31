@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 104;
+const APP_VERSION = 105;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -599,13 +599,14 @@ async function installPixelLandscape() {
 
     const beforeLayer = map.getLayer("waterway") ? "waterway" : undefined;
     const surfaces = [
-        { id: "land-town", sourceLayer: "landuse", filter: ["==", ["get", "class"], "residential"], pattern: "img-town" },
         // Marker: ensfarvet pløjejord langt væk, afgrøderækker tæt på (ellers bliver det striber).
         { id: "land-farm", sourceLayer: "landcover", filter: ["==", ["get", "class"], "farmland"], pattern: ["step", ["zoom"], "img-farm-1", 14, "img-farm-0"] },
         { id: "land-park", sourceLayer: "park", filter: null, pattern: "img-grass" },
         { id: "land-grass", sourceLayer: "landcover", filter: ["==", ["get", "class"], "grass"], pattern: "img-grass" },
         // Skov: trækrone-tekstur langt væk, skovbund med rigtige træer (sprites) tæt på.
         { id: "land-wood", sourceLayer: "landcover", filter: ["==", ["get", "class"], "wood"], pattern: ["step", ["zoom"], "img-wood", TREE_MIN_ZOOM, "img-wood-floor"] },
+        // Villakvarterer ligger over 'land-wood', så bebyggede haveforeninger/villakvarterer med OSM-'wood' får lys græsplæne.
+        { id: "land-town", sourceLayer: "landuse", filter: ["==", ["get", "class"], "residential"], pattern: "img-town" },
         { id: "land-sand", sourceLayer: "landcover", filter: ["==", ["get", "class"], "sand"], pattern: "img-sand" },
         { id: "land-water", sourceLayer: "water", filter: ["!=", ["get", "brunnel"], "tunnel"], pattern: "img-water" }
     ];
@@ -766,10 +767,30 @@ function styleWorldLikeGame() {
         "line-opacity": 1,
         "line-width": ["interpolate", ["exponential", 1.6], ["zoom"], 13, 1.4, 14, 2.1, 16, 6.8, 18, 19.6, 20, 54]
     });
+    if (map.getLayer("highway_path") && !map.getLayer("hf-path-casing")) {
+        map.addLayer({
+            id: "hf-path-casing",
+            type: "line",
+            source: "openmaptiles",
+            "source-layer": "transportation",
+            minzoom: 14,
+            filter: ["all",
+                ["match", ["geometry-type"], ["LineString", "MultiLineString"], true, false],
+                ["!=", ["get", "brunnel"], "tunnel"],
+                ["==", ["get", "class"], "path"]
+            ],
+            layout: { "line-cap": "round", "line-join": "round" },
+            paint: {
+                "line-color": "#584f42",
+                "line-opacity": 0.85,
+                "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 14, 2.0, 16, 3.8, 18, 7.6, 20, 15]
+            }
+        }, "highway_path");
+    }
     setPaint("highway_path", {
-        "line-color": ROAD_DIRT,
-        "line-opacity": 0.9,
-        "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 14, 1.0, 17, 2.8, 20, 7]
+        "line-color": "#d4c4a6",
+        "line-opacity": 0.95,
+        "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 14, 1.2, 16, 2.5, 18, 5.2, 20, 11]
     });
     setPaint("road_pier", { "line-color": "#8c6b45" });
     setPaint("road_area_pier", { "fill-color": "#8c6b45" });
@@ -1027,10 +1048,10 @@ function pointInRings(lon, lat, rings) {
 }
 
 const TREE_KINDS = {
-    wood: { density: 0.95, pick: r => r < 0.22 ? "img-pine-1" : r < 0.38 ? "img-pine-2" : r < 0.62 ? "img-tree-1" : r < 0.84 ? "img-tree-2" : r < 0.95 ? "img-tree-3" : "img-bush-1" },
-    park: { density: 0.30, pick: r => r < 0.38 ? "img-tree-1" : r < 0.68 ? "img-tree-2" : r < 0.88 ? "img-tree-3" : "img-bush-2" },
-    town: { density: 0.36, pick: r => r < 0.34 ? "img-tree-1" : r < 0.64 ? "img-tree-2" : r < 0.84 ? "img-tree-3" : r < 0.92 ? "img-bush-1" : "img-bush-2" },
-    grass: { density: 0.16, pick: r => r < 0.45 ? "img-tree-2" : r < 0.75 ? "img-tree-3" : "img-bush-1" }
+    wood: { density: 0.88, pick: r => r < 0.22 ? "img-pine-1" : r < 0.38 ? "img-pine-2" : r < 0.62 ? "img-tree-1" : r < 0.84 ? "img-tree-2" : r < 0.95 ? "img-tree-3" : "img-bush-1" },
+    park: { density: 0.14, pick: r => r < 0.38 ? "img-tree-1" : r < 0.68 ? "img-tree-2" : r < 0.88 ? "img-tree-3" : "img-bush-2" },
+    town: { density: 0.035, pick: r => r < 0.32 ? "img-tree-1" : r < 0.60 ? "img-tree-2" : r < 0.80 ? "img-tree-3" : r < 0.90 ? "img-bush-1" : "img-bush-2" },
+    grass: { density: 0.055, pick: r => r < 0.45 ? "img-tree-2" : r < 0.75 ? "img-tree-3" : "img-bush-1" }
 };
 
 function installTreeLayer() {
@@ -1041,7 +1062,7 @@ function installTreeLayer() {
         layout: {
             "icon-image": ["get", "sprite"], "icon-anchor": "center",
             "icon-allow-overlap": true, "icon-ignore-placement": true,
-            "icon-size": metreIconSize(28, 0.25),
+            "icon-size": metreIconSize(56, 0.06),
             "symbol-sort-key": ["get", "sort"]
         }
     }, map.getLayer("waterway_line_label") ? "waterway_line_label" : undefined);
@@ -1207,16 +1228,23 @@ function syncVectorTilesToChunks() {
         }
     }
 
-    // 2. Vejnet (til træ-afstand og fodgængerfelter ved vejkryds)
+    // 2. Vejnet (til træ-afstand i både by og skov samt fodgængerfelter ved vejkryds)
     const newRoads = collectNewLayerFeatures("transportation", null);
-    const roadClasses = new Set(["motorway", "trunk", "primary", "secondary", "tertiary", "minor", "service"]);
+    const roadClearanceM = {
+        motorway: 16.0, trunk: 14.5, primary: 13.5, secondary: 12.5, tertiary: 11.5,
+        minor: 9.0, service: 7.8, track: 8.6, path: 7.2
+    };
     const xwalkClasses = new Set(["trunk", "primary", "secondary", "tertiary", "minor"]);
     for (let idx = 0; idx < newRoads.length; idx++) {
         const rf = newRoads[idx];
         const props = rf.properties;
         if (!props || props.brunnel === "tunnel") continue;
         const cls = props.class;
-        if (!roadClasses.has(cls)) continue;
+        const clearM = roadClearanceM[cls];
+        if (!clearM) continue;
+        const clearM2 = clearM * clearM;
+        const padSegLon = (clearM * 1.22) / (111320 * 0.54) + 0.00004;
+        const padSegLat = (clearM * 1.22) / 111320 + 0.00003;
         const g = rf.geometry;
         if (!g) continue;
         const lines = g.type === "LineString" ? [g.coordinates] : g.type === "MultiLineString" ? g.coordinates : [];
@@ -1235,10 +1263,11 @@ function syncVectorTilesToChunks() {
 
                 const seg = {
                     x1: p1[0], y1: p1[1], x2: p2[0], y2: p2[1],
-                    minX: Math.min(p1[0], p2[0]) - 0.00012,
-                    maxX: Math.max(p1[0], p2[0]) + 0.00012,
-                    minY: Math.min(p1[1], p2[1]) - 0.00008,
-                    maxY: Math.max(p1[1], p2[1]) + 0.00008
+                    clearM2,
+                    minX: Math.min(p1[0], p2[0]) - padSegLon,
+                    maxX: Math.max(p1[0], p2[0]) + padSegLon,
+                    minY: Math.min(p1[1], p2[1]) - padSegLat,
+                    maxY: Math.max(p1[1], p2[1]) + padSegLat
                 };
                 const cx0 = Math.floor(seg.minX / CHUNK_LON), cx1 = Math.floor(seg.maxX / CHUNK_LON);
                 const cy0 = Math.floor(seg.minY / CHUNK_LAT), cy1 = Math.floor(seg.maxY / CHUNK_LAT);
@@ -1486,7 +1515,7 @@ function buildChunkBuildings(cx, cy) {
                 uvToXY(uMid - hl, vMid + hw)
             ] : pts;
 
-            const padM = 0.6;
+            const padM = 1.7;
             blds.push({
                 minLon: minLon - padM * invMLon, maxLon: maxLon + padM * invMLon,
                 minLat: minLat - (padM + 1.4) * invMLat, maxLat: maxLat + padM * invMLat,
@@ -1791,26 +1820,33 @@ function buildFullChunk3D(cx, cy) {
     }
 
     const rawCh = rawChunks.get(ck);
-    if (rawCh) {
-        for (let i = 0; i < rawCh.roadSegs.length; i++) {
-            const seg = rawCh.roadSegs[i];
-            if (seg.maxX < gWest || seg.minX > gEast || seg.maxY < gSouth || seg.minY > gNorth) continue;
-            const x0 = clampI(Math.floor((seg.minX - gWest) / CELL_LON), gxCols);
-            const x1 = clampI(Math.floor((seg.maxX - gWest) / CELL_LON), gxCols);
-            const y0 = clampI(Math.floor((seg.minY - gSouth) / CELL_LAT), gyRows);
-            const y1 = clampI(Math.floor((seg.maxY - gSouth) / CELL_LAT), gyRows);
-            for (let gy = y0; gy <= y1; gy++) {
-                const rowOff = gy * gxCols;
-                for (let gx = x0; gx <= x1; gx++) {
-                    let cell = roadGrid[rowOff + gx];
-                    if (!cell) { cell = []; roadGrid[rowOff + gx] = cell; }
-                    cell.push(seg);
+    const seenGridSegs = new Set();
+    for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+            const nRaw = rawChunks.get((cx + dx) + ":" + (cy + dy));
+            if (!nRaw) continue;
+            for (let i = 0; i < nRaw.roadSegs.length; i++) {
+                const seg = nRaw.roadSegs[i];
+                if (seg.maxX < gWest || seg.minX > gEast || seg.maxY < gSouth || seg.minY > gNorth) continue;
+                if (seenGridSegs.has(seg)) continue;
+                seenGridSegs.add(seg);
+                const x0 = clampI(Math.floor((seg.minX - gWest) / CELL_LON), gxCols);
+                const x1 = clampI(Math.floor((seg.maxX - gWest) / CELL_LON), gxCols);
+                const y0 = clampI(Math.floor((seg.minY - gSouth) / CELL_LAT), gyRows);
+                const y1 = clampI(Math.floor((seg.maxY - gSouth) / CELL_LAT), gyRows);
+                for (let gy = y0; gy <= y1; gy++) {
+                    const rowOff = gy * gxCols;
+                    for (let gx = x0; gx <= x1; gx++) {
+                        let cell = roadGrid[rowOff + gx];
+                        if (!cell) { cell = []; roadGrid[rowOff + gx] = cell; }
+                        cell.push(seg);
+                    }
                 }
             }
         }
     }
 
-    const hitsBuildingOrRoad = (lon, lat) => {
+    const hitsBuildingOrRoad = (lon, lat, roadClearScale2 = 1.0) => {
         if (lon < gWest || lon > gEast || lat < gSouth || lat > gNorth) return false;
         const idx = clampI(Math.floor((lat - gSouth) / CELL_LAT), gyRows) * gxCols + clampI(Math.floor((lon - gWest) / CELL_LON), gxCols);
         const bCell = bldGrid[idx];
@@ -1830,7 +1866,22 @@ function buildFullChunk3D(cx, cy) {
                 const l2 = vx * vx + vy * vy;
                 const t = l2 > 0 ? Math.max(0, Math.min(1, (wx * vx + wy * vy) / l2)) : 0;
                 const dx = wx - t * vx, dy = wy - t * vy;
-                if (dx * dx + dy * dy < 18) return true;
+                if (dx * dx + dy * dy < seg.clearM2 * roadClearScale2) return true;
+            }
+        }
+        return false;
+    };
+
+    const isBuiltUpChunk = centerBld.blds.length >= 6;
+    const isNearAnyHouse = (lon, lat) => {
+        if (isBuiltUpChunk) return true;
+        const cxI = clampI(Math.floor((lon - gWest) / CELL_LON), gxCols);
+        const cyI = clampI(Math.floor((lat - gSouth) / CELL_LAT), gyRows);
+        for (let gy = Math.max(0, cyI - 1); gy <= Math.min(gyRows - 1, cyI + 1); gy++) {
+            const rowOff = gy * gxCols;
+            for (let gx = Math.max(0, cxI - 1); gx <= Math.min(gxCols - 1, cxI + 1); gx++) {
+                const bCell = bldGrid[rowOff + gx];
+                if (bCell && bCell.length) return true;
             }
         }
         return false;
@@ -1843,7 +1894,7 @@ function buildFullChunk3D(cx, cy) {
         if (!cell) { cell = []; treeSpacingGrid[idx] = cell; }
         cell.push(lon, lat);
     };
-    const tooCloseToTree = (lon, lat) => {
+    const tooCloseToTree = (lon, lat, minDist2) => {
         const cxI = clampI(Math.floor((lon - gWest) / CELL_LON), gxCols);
         const cyI = clampI(Math.floor((lat - gSouth) / CELL_LAT), gyRows);
         for (let gy = Math.max(0, cyI - 1); gy <= Math.min(gyRows - 1, cyI + 1); gy++) {
@@ -1854,7 +1905,7 @@ function buildFullChunk3D(cx, cy) {
                 for (let k = 0; k < cell.length; k += 2) {
                     const dx = (lon - cell[k]) * mPerLon0;
                     const dy = (lat - cell[k + 1]) * 111320;
-                    if (dx * dx + dy * dy < 22) return true;
+                    if (dx * dx + dy * dy < minDist2) return true;
                 }
             }
         }
@@ -1884,17 +1935,22 @@ function buildFullChunk3D(cx, cy) {
                     const key = i * 4000000 + j;
                     if (seenGrid.has(key)) continue;
                     const h = hash2(i, j);
-                    if ((h & 1023) / 1024 > kind.density) continue;
                     const lat = (i + 0.18 + ((h >>> 10) & 63) / 100) * dLat;
                     const lon = (j + 0.18 + ((h >>> 16) & 63) / 100) * dLon;
                     if (lon < cWest || lon >= cEast || lat < cSouth || lat >= cNorth) continue;
+                    const effectiveWood = land.isWood && !isNearAnyHouse(lon, lat);
+                    const effKind = (land.isWood && !effectiveWood) ? TREE_KINDS.town : kind;
+                    if ((h & 1023) / 1024 > effKind.density) continue;
                     if (!pointInRings(lon, lat, land.rings)) continue;
-                    if (!land.isWood && hitsBuildingOrRoad(lon, lat)) continue;
+                    // Også i skov holdes alle veje, stier og bygninger helt fri for træer (med ekstra margin for store skovkroner)
+                    if (hitsBuildingOrRoad(lon, lat, effectiveWood ? 1.35 : 1.0)) continue;
+                    if (!effectiveWood && tooCloseToTree(lon, lat, 160)) continue; // mindst ~12,6 m mellem by-/parktræer
                     seenGrid.add(key);
                     registerTreePos(lon, lat);
                     const r = ((h >>> 22) & 1023) / 1024;
-                    const sprite = kind.pick(r);
-                    const size = sprite.startsWith("img-bush") ? 5.5 : sprite.startsWith("img-pine") ? 8.8 : (8.8 + (h & 3) * 0.7);
+                    const sprite = effKind.pick(r);
+                    const baseSize = effectiveWood ? 12.2 : 10.4;
+                    const size = sprite.startsWith("img-bush") ? 6.8 : sprite.startsWith("img-pine") ? 11.4 : (baseSize + (h & 3) * 0.8);
                     const feat = {
                         type: "Feature",
                         properties: { sprite, m: size / cosLat0, sort: -lat },
@@ -1907,18 +1963,19 @@ function buildFullChunk3D(cx, cy) {
         }
     }
 
-    // Havetræer rundt om alle bygninger i feltet
+    // Enkelte, luftige havetræer ved husene (1-2 træer i haven, god afstand til naboer, huse og veje)
     for (let bIdx = 0; bIdx < centerBld.blds.length; bIdx++) {
         const sb = centerBld.blds[bIdx];
         const h0 = hash2(Math.round(sb.lat0 * 1e5), Math.round(sb.lon0 * 1e5));
+        if ((h0 % 5) === 0) continue; // Nogle grunde har helt åben græsplæne
         const bw = (sb.maxLon - sb.minLon) * mPerLon0;
         const bh = (sb.maxLat - sb.minLat) * 111320;
-        const count = bw * bh > 450 ? 9 : 6;
+        const count = bw * bh > 600 ? 3 : 2;
         for (let k = 0; k < count; k++) {
             const hk = hash2(h0 + k * 97, k * 131 + 17);
-            const side = k & 3;
-            const along = (((hk & 1023) / 1023) - 0.5) * 1.15;
-            const outDist = 1.4 + ((hk >>> 10) & 255) / 255 * 4.2;
+            const side = (h0 + k) & 3;
+            const along = (((hk & 1023) / 1023) - 0.5) * 0.95;
+            const outDist = 1.6 + ((hk >>> 10) & 255) / 255 * 3.8;
             let rx, ry;
             if (side === 0) { rx = along * bw; ry = bh * 0.5 + outDist; }
             else if (side === 1) { rx = along * bw; ry = -bh * 0.5 - outDist; }
@@ -1928,17 +1985,17 @@ function buildFullChunk3D(cx, cy) {
             const lat = sb.lat0 + ry / 111320;
             if (lon < gWest || lon > gEast || lat < gSouth || lat > gNorth) continue;
             if (hitsBuildingOrRoad(lon, lat)) continue;
-            if (tooCloseToTree(lon, lat)) continue;
+            if (tooCloseToTree(lon, lat, 156)) continue; // mindst ~12,5 m mellem havetræer
             registerTreePos(lon, lat);
             const r = ((hk >>> 18) & 1023) / 1024;
             const sprite = TREE_KINDS.town.pick(r);
-            const size = sprite.startsWith("img-bush") ? 6.2 : (9.2 + (hk & 3) * 0.85);
+            const size = sprite.startsWith("img-bush") ? 6.8 : (10.6 + (hk & 3) * 0.75);
             const feat = {
                 type: "Feature",
                 properties: { sprite, m: size / cosLat0, sort: -lat },
                 geometry: { type: "Point", coordinates: [lon, lat] }
             };
-            if ((k & 1) === 0) treesLo.push(feat);
+            if (k === 0) treesLo.push(feat);
             else treesHi.push(feat);
         }
     }
