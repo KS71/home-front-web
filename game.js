@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 111;
+const APP_VERSION = 112;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -2458,14 +2458,17 @@ function drawHospitalCompound(P, lv, team) {
 }
 
 function drawAcademyCompound(P, lv, team) {
-    // Skydebane med baner, skiver og en jordvold bagved.
-    P.rect(1, 3, 14, 24, 12, "#c9bf95");
+    // Skydebane: en lille skydeplads, smalle slidte baner i græsset, skiver og en jordvold bagved.
+    P.apron(3.5, 14, 3, 12);
     for (let i = 0; i < 4; i++) {
-        P.seg(1.5, [[5, 15.5 + i * 3], [24, 15.5 + i * 3]], 0.2, "#f4efe0");
-        P.circ(6, 25, 15.5 + i * 3, 0.9, "#ffffff", "#cc3333");
-        P.circ(6.5, 25, 15.5 + i * 3, 0.35, "#cc3333");
+        const y = 15.5 + i * 3;
+        P.rect(1, 6.5, y - 0.45, 17.5, 0.9, "#b9b08a", "", 0.75);
+        P.rect(5, 4.4, y - 0.5, 1.2, 1, "#5d643a"); // skytte-måtte
+        P.circ(6, 24.6, y, 0.9, "#ffffff", "#cc3333");
+        P.circ(6.5, 24.6, y, 0.35, "#cc3333");
     }
-    P.rect(1.5, 26.3, 14, 0.9, 12, "#8a7550");
+    P.poly(2, [[27.4, 14.4], [28.4, 15.8], [28.4, 28.4], [25.8, 27.4]], CP_SHADOW, "", 0.45);
+    P.poly(5, [[25.8, 13.6], [27.4, 14.4], [27.4, 26.6], [25.8, 27.4]], "#8a7550", "#5e4f36");
     if (lv <= 1) {
         P.tent(4, 4, 6, 4); P.crates(13, 4, 2, 1);
     } else if (lv === 2) {
@@ -2480,13 +2483,6 @@ function drawAcademyCompound(P, lv, team) {
 }
 
 function drawSteelCompound(P, lv, team) {
-    if (lv >= 4) {
-        // Jernbanespor langs sydsiden
-        P.rect(1, 3, 88, 94, 4, "#8a8478");
-        for (let t = 4; t < 96; t += 1.6) P.seg(1.2, [[t, 88.3], [t, 91.7]], 0.4, "#5b4a3a");
-        P.seg(1.4, [[3, 89], [97, 89]], 0.3, "#3d3f44");
-        P.seg(1.4, [[3, 91], [97, 91]], 0.3, "#3d3f44");
-    }
     if (lv <= 1) {
         P.box(30, 30, 24, 16, { ht: 7, pal: CP_PAL.slate, doors: 2 });
         P.chimney(56, 32, 1.2, 14);
