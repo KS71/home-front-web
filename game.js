@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 107;
+const APP_VERSION = 108;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -4098,10 +4098,11 @@ function ensureStreetBadge(count, strokeColor, pct, tag = "") {
 
 // Skaleringsprofil pr. enhedstype (zoom 16 -> 22): tydelige mini-enheder ved zoom 16, ægte gade-/hus-proportioner ved zoom 17-22
 function streetUnitScaleProps(kind) {
-    if (kind === "truck-h") return { s16: 0.18, s17: 0.22, s18: 0.40, s20: 1.55, s22: 6.20 }; // ~12,2 m vogntog (128 px bred)
-    if (kind === "truck")   return { s16: 0.18, s17: 0.22, s18: 0.40, s20: 1.55, s22: 6.20 }; // ~7,8 m lastbil (84 px bred -> samme førerhus-skala!)
-    if (kind === "gun")     return { s16: 0.15, s17: 0.19, s18: 0.32, s20: 1.22, s22: 4.88 }; // ~5,6 m haubits (76 px bred)
-    return                         { s16: 0.22, s17: 0.25, s18: 0.36, s20: 1.22, s22: 4.88 }; // ~3,1 m soldat (40 px bred inkl. pad)
+    // v108: soldater ca. 35 % og køretøjer ca. 15 % større end den "ægte" skala, så de er til at se.
+    if (kind === "truck-h") return { s16: 0.21, s17: 0.25, s18: 0.46, s20: 1.78, s22: 7.13 }; // ~12,2 m vogntog (128 px bred)
+    if (kind === "truck")   return { s16: 0.21, s17: 0.25, s18: 0.46, s20: 1.78, s22: 7.13 }; // ~7,8 m lastbil (84 px bred -> samme førerhus-skala!)
+    if (kind === "gun")     return { s16: 0.17, s17: 0.22, s18: 0.37, s20: 1.40, s22: 5.61 }; // ~5,6 m haubits (76 px bred)
+    return                         { s16: 0.30, s17: 0.34, s18: 0.49, s20: 1.65, s22: 6.59 }; // ~3,1 m soldat (40 px bred inkl. pad)
 }
 
 function visibleSoldierCount(count) {
@@ -4237,7 +4238,7 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
             for (let i = 0; i < nSol; i++) {
                 const row = Math.floor(i / 2);
                 const side = (i % 2 === 0) ? -1 : 1;
-                const pt = pointAlongMarchByMeters(marchObj, now, headOff - row * 2.85);
+                const pt = pointAlongMarchByMeters(marchObj, now, headOff - row * 3.4);
                 const nx = -pt.uy, ny = pt.ux;
                 const jitter = (((i * 73 + (Number(group.id) || 1) * 19) % 11) - 5) * 0.05;
                 let latS = pt.lat + (ny * side * 1.3 + pt.uy * jitter) * invLat;
@@ -4252,7 +4253,7 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
             // Eventuelle medfølgende lastbiler i gåtempo bagerst i kolonnen
             const nTr = Math.min(trucks, 3);
             for (let t = 0; t < nTr; t++) {
-                const pt = pointAlongMarchByMeters(marchObj, now, headOff - rows * 2.9 - 5.5 - t * 10.5);
+                const pt = pointAlongMarchByMeters(marchObj, now, headOff - rows * 3.4 - 5.5 - t * 10.5);
                 const { facingLeft, rot } = vehicleTiltDeg(pt.ux, pt.uy);
                 const hasGun = t < howitzers;
                 pushUnit(pt.lat, pt.lon, hasGun ? (facingLeft ? "st-truck-h-l" : "st-truck-h") : (facingLeft ? "st-truck-l" : "st-truck"), hasGun ? "truck-h" : "truck", rot);
