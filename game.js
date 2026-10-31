@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 102;
+const APP_VERSION = 103;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -472,7 +472,7 @@ function initMap() {
     // og træerne drysses ud i de skove, der nu er på skærmen.
     map.on("idle", () => {
         if (!mapReady) return;
-        if (treesDirty) { treesDirty = false; refreshTrees(); refreshHouses(); }
+        if (treesDirty) { treesDirty = false; refreshHouses(); refreshTrees(); }
         checkCraterFires();
     });
 
@@ -572,12 +572,7 @@ async function installPixelLandscape() {
         ["img-shell", "assets/granat.png", 1]
     ];
 
-    // Pixelhuse: 6 stilarter × 4 former (se house() i grafik/teksturer/lav_teksturer.py).
-    for (let i = 0; i < HOUSE_STYLES; i++) {
-        for (const shape of Object.keys(HOUSE_SHAPES)) {
-            texList.push([`img-house-${i}-${shape}`, `assets/hus_${i}_${shape}.png`, 2]);
-        }
-    }
+    
 
     for (const [id, url, scale] of texList) {
         const tex = await loadPixelTexture(url, scale);
@@ -672,11 +667,13 @@ const MAP_HIDDEN_LAYERS = [
     "landcover_ice_shelf", "landcover_glacier"
 ];
 
-const ROAD_ASPHALT = "#5d5c63";
-const ROAD_ASPHALT_LIGHT = "#7d7c83";
-const ROAD_EDGE = "#2f2e34";
-const ROAD_STRIPE = "#e4c75c";
-const ROAD_DIRT = "#b4955f";
+const ROAD_ASPHALT = "#6e676a";
+const ROAD_ASPHALT_LIGHT = "#7b7376";
+const ROAD_EDGE = "#434047";
+const SIDEWALK_FILL = "#e8e1d5";
+const SIDEWALK_EDGE = "#343843";
+const ROAD_STRIPE = "#eae3d8";
+const ROAD_DIRT = "#c6b79c";
 
 function styleWorldLikeGame() {
     for (const id of MAP_HIDDEN_LAYERS) {
@@ -692,7 +689,60 @@ function styleWorldLikeGame() {
         for (const [k, v] of Object.entries(props)) map.setLayoutProperty(id, k, v);
     };
 
-    // Veje: mørk kant, asfalt indeni.
+    const roadLineFilter = ["all",
+        ["match", ["geometry-type"], ["LineString", "MultiLineString"], true, false],
+        ["!=", ["get", "brunnel"], "tunnel"],
+        ["match", ["get", "class"], ["minor", "service", "primary", "secondary", "tertiary", "trunk"], true, false]
+    ];
+
+    // Fortove (lys stenbelægning med mørk yderkant mod græsset og mørk kantsten mod asfalten)
+    if (map.getLayer("highway_minor") && !map.getLayer("hf-sidewalk-edge")) {
+        map.addLayer({
+            id: "hf-sidewalk-edge",
+            type: "line",
+            source: "openmaptiles",
+            "source-layer": "transportation",
+            minzoom: 14,
+            filter: roadLineFilter,
+            layout: { "line-cap": "round", "line-join": "round" },
+            paint: {
+                "line-color": SIDEWALK_EDGE,
+                "line-width": ["interpolate", ["exponential", 1.6], ["zoom"], 14, 4.8, 16, 13.8, 18, 37, 20, 98]
+            }
+        }, "highway_minor");
+    }
+    if (map.getLayer("highway_minor") && !map.getLayer("hf-sidewalk-fill")) {
+        map.addLayer({
+            id: "hf-sidewalk-fill",
+            type: "line",
+            source: "openmaptiles",
+            "source-layer": "transportation",
+            minzoom: 14,
+            filter: roadLineFilter,
+            layout: { "line-cap": "round", "line-join": "round" },
+            paint: {
+                "line-color": SIDEWALK_FILL,
+                "line-width": ["interpolate", ["exponential", 1.6], ["zoom"], 14, 3.8, 16, 11.4, 18, 31.5, 20, 84]
+            }
+        }, "highway_minor");
+    }
+    if (map.getLayer("highway_minor") && !map.getLayer("hf-minor-casing")) {
+        map.addLayer({
+            id: "hf-minor-casing",
+            type: "line",
+            source: "openmaptiles",
+            "source-layer": "transportation",
+            minzoom: 13,
+            filter: roadLineFilter,
+            layout: { "line-cap": "round", "line-join": "round" },
+            paint: {
+                "line-color": ROAD_EDGE,
+                "line-width": ["interpolate", ["exponential", 1.6], ["zoom"], 13, 2.2, 14, 2.9, 16, 8.2, 18, 22.8, 20, 62]
+            }
+        }, "highway_minor");
+    }
+
+    // Glat, varm grå asfalt (uden brostensmønster) og tydelig bredde på villaveje
     setPaint("highway_motorway_casing", { "line-color": ROAD_EDGE, "line-dasharray": [1, 0] });
     setPaint("highway_motorway_inner", { "line-color": ROAD_ASPHALT });
     setPaint("highway_motorway_bridge_casing", { "line-color": ROAD_EDGE });
@@ -703,55 +753,42 @@ function styleWorldLikeGame() {
     setPaint("highway_major_casing", { "line-color": ROAD_EDGE, "line-dasharray": [1, 0] });
     setPaint("highway_major_inner", { "line-color": ROAD_ASPHALT });
     setPaint("highway_major_subtle", { "line-color": ROAD_ASPHALT });
-    setPaint("highway_minor", { "line-color": ROAD_ASPHALT_LIGHT, "line-opacity": 1 });
-    setPaint("highway_path", { "line-color": ROAD_DIRT, "line-opacity": 1, "line-dasharray": [2, 1.2] });
+    setPaint("highway_minor", {
+        "line-color": ROAD_ASPHALT_LIGHT,
+        "line-opacity": 1,
+        "line-width": ["interpolate", ["exponential", 1.6], ["zoom"], 13, 1.4, 14, 2.1, 16, 6.8, 18, 19.6, 20, 54]
+    });
+    setPaint("highway_path", {
+        "line-color": ROAD_DIRT,
+        "line-opacity": 0.9,
+        "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 14, 1.0, 17, 2.8, 20, 7]
+    });
     setPaint("road_pier", { "line-color": "#8c6b45" });
     setPaint("road_area_pier", { "fill-color": "#8c6b45" });
     setPaint("waterway", { "line-color": "#3f7fb5" });
 
-    // Små veje får også en mørk kant: et ekstra lag lige under dem.
-    if (map.getLayer("highway_minor") && !map.getLayer("hf-minor-casing")) {
-        map.addLayer({
-            id: "hf-minor-casing",
-            type: "line",
-            source: "openmaptiles",
-            "source-layer": "transportation",
-            minzoom: 13,
-            filter: ["all", ["match", ["geometry-type"], ["LineString", "MultiLineString"], true, false],
-                ["match", ["get", "class"], ["minor", "service", "track"], true, false]],
-            layout: { "line-cap": "round", "line-join": "round" },
-            paint: {
-                "line-color": ROAD_EDGE,
-                "line-width": ["interpolate", ["exponential", 1.55], ["zoom"], 13, 3, 20, 24]
-            }
-        }, "highway_minor");
-    }
-
-    // Alle veje er brosten (motorveje og store veje mørk, små veje lys); stier er jordstier.
-    setPaint("highway_motorway_inner", { "line-pattern": "img-road-cobble" });
-    setPaint("highway_motorway_bridge_inner", { "line-pattern": "img-road-cobble" });
-    setPaint("highway_major_inner", { "line-pattern": "img-road-cobble" });
-    setPaint("highway_minor", { "line-pattern": "img-road-cobble-light" });
-    setPaint("highway_path", { "line-pattern": "img-road-path", "line-dasharray": undefined });
-
-    // Gul midterstribe på motorveje (slået fra: alle veje er brosten).
-    if (false && map.getLayer("highway_motorway_inner") && !map.getLayer("hf-road-stripe")) {
+    // Hvid stiplet midterlinje på vejene fra zoom 15
+    const afterRoadLayer = map.getLayer("highway_motorway_bridge_casing") ? "highway_motorway_bridge_casing" : undefined;
+    if (!map.getLayer("hf-road-stripe")) {
         map.addLayer({
             id: "hf-road-stripe",
             type: "line",
             source: "openmaptiles",
             "source-layer": "transportation",
-            minzoom: 13,
-            filter: ["all", ["match", ["geometry-type"], ["LineString", "MultiLineString"], true, false],
+            minzoom: 15,
+            filter: ["all",
+                ["match", ["geometry-type"], ["LineString", "MultiLineString"], true, false],
                 ["!=", ["get", "brunnel"], "tunnel"],
-                ["==", ["get", "class"], "motorway"]],
+                ["match", ["get", "class"], ["minor", "primary", "secondary", "tertiary", "trunk", "motorway"], true, false]
+            ],
             layout: { "line-cap": "butt", "line-join": "round" },
             paint: {
                 "line-color": ROAD_STRIPE,
-                "line-dasharray": [3, 3],
-                "line-width": ["interpolate", ["exponential", 1.4], ["zoom"], 13, 0.8, 20, 4]
+                "line-dasharray": [2.2, 2.6],
+                "line-opacity": 0.82,
+                "line-width": ["interpolate", ["exponential", 1.45], ["zoom"], 15, 0.65, 17, 1.35, 20, 3.4]
             }
-        }, "highway_motorway_bridge_casing");
+        }, afterRoadLayer);
     }
 
     // Stednavne i spillets stil: store bogstaver, lys skrift med mørk kant, ingen prikker.
@@ -779,195 +816,177 @@ function styleWorldLikeGame() {
     setLayout("label_village", { "text-size": ["interpolate", ["exponential", 1.2], ["zoom"], 9, 10, 12, 12] });
 }
 
-// Kortets rigtige bygninger tegnes som små pixel-huse set ovenfra: en skygge mod sydøst, en mur
-// langs sydsiden og et tegltag i husets rigtige omrids. Tagets farve afhænger af bygningens
-// højde (lave huse: rødt tegl, mellemhøje: brunt, høje: gråt skifer, meget høje: fladt tag).
-// Mur og skygge vokser med zoom, så husene "rejser sig", når man kommer tæt på.
+// ---------------------------------------------------------------------------
+// 3D-taglandskab set ovenfra (som i moderne top-down byspil):
+// Under zoom 15 vises bygninger i rene tagfarver med mørk slagskygge.
+// Fra zoom 15 (HOUSE_MIN_ZOOM) beregnes 3D-tagflader med solside (nordvest) og skyggeside (sydøst),
+// lys tagkant/gesims, rygning, ovenlysvinduer/solceller, skorstene, sydfacade og dyb slagskygge
+// i hver bygnings præcise placering og vinkel — samt fodgængerfelter ved vejkryds.
+// ---------------------------------------------------------------------------
+const HOUSE_MIN_ZOOM = 15;
+const HOUSE_MIN_AREA = 28; // m² (små skure og drivhuse under 28 m² udelades)
+
+const BUILDING_PALETTES = [
+    // 0: Varmt terrakotta-tegltag
+    { type: "pitched", light: "#eb9668", midL: "#df8355", midD: "#c86c41", dark: "#a8502c", trim: "#f3ebdd", wallL: "#e8dfd0", wallM: "#d6ccb9", wallD: "#b8ae9c" },
+    // 1: Klassisk rødbrunt tegltag
+    { type: "pitched", light: "#e07e58", midL: "#ce6b46", midD: "#b65634", dark: "#963f22", trim: "#f0e7d8", wallL: "#e5dccb", wallM: "#d2c8b6", wallD: "#b5ab99" },
+    // 2: Mørkt skifertag (antracit/blågrå)
+    { type: "pitched", light: "#6f7484", midL: "#5d6270", midD: "#4b4f5d", dark: "#393c48", trim: "#ebe7df", wallL: "#eae3d7", wallM: "#d6cfc2", wallD: "#b8b1a4" },
+    // 3: Varmt brunt tag
+    { type: "pitched", light: "#9c7e6d", midL: "#886a5a", midD: "#725647", dark: "#584034", trim: "#efe7da", wallL: "#e4dbc9", wallM: "#d1c7b4", wallD: "#b4aa97" },
+    // 4: Støvet salvie-/kobbergrønt tag
+    { type: "pitched", light: "#93ae6c", midL: "#7f9b59", midD: "#6b8647", dark: "#536b35", trim: "#ece8dc", wallL: "#e4dfd2", wallM: "#d0cabe", wallD: "#b2aca0" },
+    // 5: Moderne fladt tag med lys cremefarvet parapet
+    { type: "flat", parapet: "#f2ece2", deck: "#d2cabe", innerShade: "#9e968a", trim: "#f2ece2", wallL: "#e4dccf", wallM: "#cfc7b9", wallD: "#b2aa9c" },
+    // 6: Moderne fladt tag i kølig arkitektgrå
+    { type: "flat", parapet: "#e1e5ea", deck: "#aeb5be", innerShade: "#7d848e", trim: "#e1e5ea", wallL: "#d4d9df", wallM: "#bec4cb", wallD: "#a0a6ae" },
+    // 7: Moderne fladt tag med mørk tagflade og lys kant
+    { type: "flat", parapet: "#e6e0d6", deck: "#4e525e", innerShade: "#333640", trim: "#e6e0d6", wallL: "#e2dbce", wallM: "#cec7ba", wallD: "#b0a99c" }
+];
+
 function styleBuildingsLikeGame() {
     if (!map.getLayer("building")) return;
     const h = ["coalesce", ["get", "render_height"], 6];
-    // Lave huse veksler mellem fire tagfarver ud fra bygningens nummer, så en gade ikke er ensfarvet.
-    // (Kortets bygningsnumre ender alle på samme tal, så vi bruger de næste cifre.)
-    const pick = ["coalesce", ["get", "pick"], ["%", ["floor", ["/", ["coalesce", ["id"], 0], 4]], 4]];
-    const roof = ["case",
-        ["<", h, 10], ["match", pick, 0, "img-roof-red", 1, "img-roof-darkred", 2, "img-roof-yellow", "img-roof-brown"],
-        ["<", h, 18], ["match", pick, 0, "img-roof-brown", 1, "img-roof-darkred", "img-roof-grey"],
-        ["<", h, 30], "img-roof-grey",
-        "img-roof-flat"];
-    // Mur og skygge vokser med zoom, og høje bygninger får højere mur og længere skygge, så
-    // etageejendomme og fabrikker rejser sig over villaerne. (fill-translate kan ikke styres af
-    // bygningens egenskaber, så der er ét lag pr. højdeklasse.)
-    const shift = (k, x, y) => ["interpolate", ["linear"], ["zoom"],
-        14, ["literal", [0, 0]], 16, ["literal", [x * 4 * k, y * 4 * k]], 18, ["literal", [x * 9 * k, y * 9 * k]], 20, ["literal", [x * 14 * k, y * 14 * k]]];
-    const classes = [
-        { id: "low", filter: ["<", h, 10], k: 1, wall: "img-wall-light" },
-        { id: "mid", filter: ["all", [">=", h, 10], ["<", h, 18]], k: 1.7, wall: "img-wall-light" },
-        { id: "tall", filter: [">=", h, 18], k: 2.6, wall: "img-wall-grey" }
-    ];
-    // Under HOUSE_MIN_ZOOM tegnes alle kortets bygninger som omrids. Fra HOUSE_MIN_ZOOM erstattes
-    // almindelige huse af rigtige pixelhuse (src-houses), mens kun store, høje eller sammensatte
-    // bygninger tegnes som omrids (src-big-buildings), så der ikke ligger skæve kortbygninger
-    // neden under pixelhusene.
-    const base = { type: "fill", source: "openmaptiles", "source-layer": "building", minzoom: 12, maxzoom: HOUSE_MIN_ZOOM };
-    for (const c of classes) {
-        if (!map.getLayer("hf-building-shadow-" + c.id)) {
-            map.addLayer({ ...base, id: "hf-building-shadow-" + c.id, filter: c.filter, paint: {
-                "fill-color": "#1a140c", "fill-opacity": 0.4, "fill-antialias": false,
-                "fill-translate": shift(c.k, 0.75, 1.6), "fill-translate-anchor": "viewport"
-            } }, "building");
-        }
+    const pick = ["%", ["floor", ["/", ["coalesce", ["id"], 0], 4]], 4];
+    const roofColor = ["case",
+        ["<", h, 10], ["match", pick, 0, "#d87d52", 1, "#585d6b", 2, "#836757", "#769152"],
+        ["<", h, 18], ["match", pick, 0, "#c86c44", 1, "#4e525f", "#c9c2b6"],
+        "#b4bcc4"];
+
+    if (!map.getLayer("hf-building-shadow-low")) {
+        map.addLayer({
+            id: "hf-building-shadow-low",
+            type: "fill",
+            source: "openmaptiles",
+            "source-layer": "building",
+            minzoom: 12,
+            maxzoom: HOUSE_MIN_ZOOM,
+            paint: {
+                "fill-color": "#1a202e",
+                "fill-opacity": 0.55,
+                "fill-translate": ["interpolate", ["linear"], ["zoom"], 12, ["literal", [1, 1.2]], 15, ["literal", [3.5, 4.2]]],
+                "fill-translate-anchor": "viewport"
+            }
+        }, "building");
     }
-    for (const c of classes) {
-        if (!map.getLayer("hf-building-wall-" + c.id)) {
-            map.addLayer({ ...base, id: "hf-building-wall-" + c.id, filter: c.filter, paint: {
-                "fill-pattern": c.wall, "fill-translate": shift(c.k, 0, 1), "fill-translate-anchor": "viewport"
-            } }, "building");
-        }
-        if (!map.getLayer("hf-building-wall-edge-" + c.id)) {
-            map.addLayer({
-                id: "hf-building-wall-edge-" + c.id, type: "line", source: "openmaptiles", "source-layer": "building", minzoom: 15, maxzoom: HOUSE_MIN_ZOOM,
-                filter: c.filter,
-                paint: { "line-color": "#4a3a26", "line-width": ["interpolate", ["linear"], ["zoom"], 15, 0.6, 18, 1.4],
-                         "line-translate": shift(c.k, 0, 1), "line-translate-anchor": "viewport" }
-            }, "building");
-        }
-    }
-    map.setPaintProperty("building", "fill-pattern", roof);
-    map.setPaintProperty("building", "fill-antialias", false);
+
+    map.setPaintProperty("building", "fill-color", roofColor);
+    map.setPaintProperty("building", "fill-outline-color", "#2b2f3a");
     // Fra HOUSE_MIN_ZOOM er selve kortets bygningslag usynligt (men kan stadig aflæses ved granatnedslag).
     map.setPaintProperty("building", "fill-opacity", ["step", ["zoom"], 1, HOUSE_MIN_ZOOM, 0]);
-
-    if (!map.getLayer("hf-building-edge")) {
-        const layers = map.getStyle().layers;
-        const next = layers[layers.findIndex(l => l.id === "building") + 1];
-        map.addLayer({
-            id: "hf-building-edge", type: "line", source: "openmaptiles", "source-layer": "building", minzoom: 15, maxzoom: HOUSE_MIN_ZOOM,
-            paint: { "line-color": "#3a2616", "line-width": ["interpolate", ["linear"], ["zoom"], 15, 0.6, 18, 1.4], "line-opacity": 0.9 }
-        }, next ? next.id : undefined);
-    }
-
-    const slope = ["interpolate", ["exponential", 1.6], ["zoom"], 15, 1.5, 17, 5, 19, 13, 21, 36];
-    const slopeOff = ["interpolate", ["exponential", 1.6], ["zoom"], 15, 0.75, 17, 2.5, 19, 6.5, 21, 18];
-    if (!map.getLayer("hf-roof-slope")) {
-        map.addLayer({
-            id: "hf-roof-slope", type: "line", source: "openmaptiles", "source-layer": "building", minzoom: 15, maxzoom: HOUSE_MIN_ZOOM,
-            layout: { "line-join": "miter", "line-cap": "butt" },
-            paint: { "line-color": "rgba(255, 244, 214, 0.26)", "line-width": slope, "line-offset": slopeOff }
-        }, "hf-building-edge");
-    }
-
-    // Store, høje og sammensatte bygninger ved zoom >= HOUSE_MIN_ZOOM (dem, der ikke bliver til pixelhuse).
-    if (!map.getSource("src-big-buildings")) {
-        map.addSource("src-big-buildings", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-    }
-    const bigBase = { type: "fill", source: "src-big-buildings", minzoom: HOUSE_MIN_ZOOM };
-    for (const c of classes) {
-        if (!map.getLayer("hf-big-shadow-" + c.id)) {
-            map.addLayer({ ...bigBase, id: "hf-big-shadow-" + c.id, filter: c.filter, paint: {
-                "fill-color": "#1a140c", "fill-opacity": 0.4, "fill-antialias": false,
-                "fill-translate": shift(c.k, 0.75, 1.6), "fill-translate-anchor": "viewport"
-            } }, "building");
-        }
-    }
-    for (const c of classes) {
-        if (!map.getLayer("hf-big-wall-" + c.id)) {
-            map.addLayer({ ...bigBase, id: "hf-big-wall-" + c.id, filter: c.filter, paint: {
-                "fill-pattern": c.wall, "fill-translate": shift(c.k, 0, 1), "fill-translate-anchor": "viewport"
-            } }, "building");
-        }
-        if (!map.getLayer("hf-big-wall-edge-" + c.id)) {
-            map.addLayer({
-                id: "hf-big-wall-edge-" + c.id, type: "line", source: "src-big-buildings", minzoom: HOUSE_MIN_ZOOM,
-                filter: c.filter,
-                paint: { "line-color": "#4a3a26", "line-width": ["interpolate", ["linear"], ["zoom"], 15, 0.6, 18, 1.4],
-                         "line-translate": shift(c.k, 0, 1), "line-translate-anchor": "viewport" }
-            }, "building");
-        }
-    }
-    if (!map.getLayer("hf-big-roof")) {
-        map.addLayer({
-            ...bigBase, id: "hf-big-roof",
-            paint: { "fill-pattern": roof, "fill-antialias": false }
-        }, "hf-building-edge");
-    }
-    if (!map.getLayer("hf-big-roof-slope")) {
-        map.addLayer({
-            id: "hf-big-roof-slope", type: "line", source: "src-big-buildings", minzoom: HOUSE_MIN_ZOOM,
-            layout: { "line-join": "miter", "line-cap": "butt" },
-            paint: { "line-color": "rgba(255, 244, 214, 0.26)", "line-width": slope, "line-offset": slopeOff }
-        }, "hf-building-edge");
-    }
-    if (!map.getLayer("hf-big-roof-ridge")) {
-        map.addLayer({
-            id: "hf-big-roof-ridge", type: "line", source: "src-big-buildings", minzoom: HOUSE_MIN_ZOOM,
-            layout: { "line-join": "miter", "line-cap": "butt" },
-            paint: { "line-color": "rgba(70, 32, 20, 0.5)", "line-width": ["interpolate", ["linear"], ["zoom"], 16, 0.7, 20, 2], "line-offset": slope }
-        }, "hf-building-edge");
-    }
-    if (!map.getLayer("hf-big-edge")) {
-        map.addLayer({
-            id: "hf-big-edge", type: "line", source: "src-big-buildings", minzoom: HOUSE_MIN_ZOOM,
-            paint: { "line-color": "#3a2616", "line-width": ["interpolate", ["linear"], ["zoom"], 15, 0.6, 18, 1.4], "line-opacity": 0.9 }
-        }, "hf-building-edge");
-    }
 }
 
-// Størrelse for en sprite, der skal fylde ["get","m"] (meter/cos(lat)) på kortet, når
-// teksturen er texPx pixels bred. Aldrig mindre end minSize, så små ting stadig kan ses.
 function metreIconSize(texPx, minSize) {
     const pxPerMeterAtZoom0 = 512 / (2 * Math.PI * EARTH_RADIUS_M);
     const k = z => (pxPerMeterAtZoom0 * Math.pow(2, z)) / texPx;
-    // (minSize lægges til i stoppene, for "zoom" må kun stå øverst i udtrykket.)
     const lo = minSize ? ["+", ["*", ["get", "m"], k(0)], minSize] : ["*", ["get", "m"], k(0)];
     const hi = minSize ? ["+", ["*", ["get", "m"], k(24)], minSize] : ["*", ["get", "m"], k(24)];
     return ["interpolate", ["exponential", 2], ["zoom"], 0, lo, 24, hi];
 }
 
-// Skorstene på ca. halvdelen af de lave huse, så gaden ser "bygget" ud.
-function installChimneys() {
-    if (!map.getLayer("building") || map.getLayer("hf-chimneys")) return;
-    const h = ["coalesce", ["get", "render_height"], 6];
-    const pick = ["%", ["floor", ["/", ["coalesce", ["id"], 0], 4]], 4];
-    map.addLayer({
-        id: "hf-chimneys", type: "symbol", source: "openmaptiles", "source-layer": "building", minzoom: 16,
-        filter: ["all", ["<", h, 10], ["match", pick, [0, 2], true, false]],
-        layout: {
-            "icon-image": "img-chimney", "icon-allow-overlap": true, "icon-ignore-placement": true,
-            "icon-size": ["interpolate", ["exponential", 2], ["zoom"], 16, 0.35, 20, 1.6],
-            "icon-offset": [6, -8]
-        }
-    }, map.getLayer("waterway_line_label") ? "waterway_line_label" : undefined);
-}
-
-// ---------------------------------------------------------------------------
-// Rigtige pixelhuse. Fra zoom 16 får hvert lavt hus under HOUSE_MAX_AREA m² et tegnet hus
-// (tag, facade, vinduer, dør) sat på husets rigtige plads og skaleret til dets størrelse — uden
-// kortets skæve bygningsomrids nedenunder. Kun store, høje og sammensatte bygninger beholder
-// omridset med tegltag (src-big-buildings), og små skure/carporte under 35 m² udelades.
-// ---------------------------------------------------------------------------
-const HOUSE_MIN_ZOOM = 16;
-const HOUSE_MAX_AREA = 600;     // m² (faktisk grundplan; større bygninger beholder deres omrids)
-const HOUSE_MIN_AREA = 35;      // m² (skure, drivhuse og carporte under 35 m² udelades helt)
-const HOUSE_MAX_HEIGHT = 13;    // m
-const HOUSE_STYLES = 6;
-const HOUSE_SHAPES = { kvadrat: [32, 32], bred: [48, 32], lang: [64, 28], hoej: [28, 56] };
+function installChimneys() {}
 
 function installHouseLayer() {
     if (map.getSource("src-houses")) return;
-    map.addSource("src-houses", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-    const pxPerMeterAtZoom0 = 512 / (2 * Math.PI * EARTH_RADIUS_M);
+    const empty = { type: "FeatureCollection", features: [] };
+    map.addSource("src-houses", { type: "geojson", data: empty });
+    const before = map.getLayer("waterway_line_label") ? "waterway_line_label" : undefined;
+
+    // 1. Fodgængerfelter på vejene ved vejkryds
     map.addLayer({
-        id: "lyr-houses", type: "symbol", source: "src-houses", minzoom: HOUSE_MIN_ZOOM,
-        layout: {
-            "icon-image": ["get", "sprite"], "icon-anchor": "center",
-            "icon-allow-overlap": true, "icon-ignore-placement": true,
-            // mpp = meter pr. tekstur-pixel (med breddegrads-korrektion)
-            "icon-size": ["interpolate", ["exponential", 2], ["zoom"],
-                0, ["*", ["get", "mpp"], pxPerMeterAtZoom0],
-                24, ["*", ["get", "mpp"], pxPerMeterAtZoom0 * Math.pow(2, 24)]],
-            "symbol-sort-key": ["get", "sort"]
+        id: "lyr-b3d-crosswalk",
+        type: "fill",
+        source: "src-houses",
+        minzoom: HOUSE_MIN_ZOOM,
+        filter: ["==", ["get", "k"], "xwalk"],
+        paint: { "fill-color": "#ece6dc", "fill-opacity": 0.92 }
+    }, before);
+
+    // 2. Terrasser / flisebelægning ved husene
+    map.addLayer({
+        id: "lyr-b3d-patio",
+        type: "fill",
+        source: "src-houses",
+        minzoom: HOUSE_MIN_ZOOM,
+        filter: ["==", ["get", "k"], "patio"],
+        paint: { "fill-color": ["get", "c"], "fill-outline-color": "#948d80" }
+    }, before);
+
+    // 3. Dyb mørkeblå/grå slagskygge mod sydøst
+    map.addLayer({
+        id: "lyr-b3d-shadow",
+        type: "fill",
+        source: "src-houses",
+        minzoom: HOUSE_MIN_ZOOM,
+        filter: ["==", ["get", "k"], "shadow"],
+        paint: { "fill-color": "#1a202e", "fill-opacity": 0.68 }
+    }, before);
+
+    // 4. Sydfacade under taget
+    map.addLayer({
+        id: "lyr-b3d-wall",
+        type: "fill",
+        source: "src-houses",
+        minzoom: HOUSE_MIN_ZOOM,
+        filter: ["==", ["get", "k"], "wall"],
+        paint: { "fill-color": ["get", "c"] }
+    }, before);
+
+    // 5. Lys tagkant / udhæng / parapet
+    map.addLayer({
+        id: "lyr-b3d-eave",
+        type: "fill",
+        source: "src-houses",
+        minzoom: HOUSE_MIN_ZOOM,
+        filter: ["==", ["get", "k"], "eave"],
+        paint: { "fill-color": ["get", "c"] }
+    }, before);
+
+    // 6. 3D-tagflader (solside, mellemtone, skyggeside og forsænket fladt tag)
+    map.addLayer({
+        id: "lyr-b3d-slope",
+        type: "fill",
+        source: "src-houses",
+        minzoom: HOUSE_MIN_ZOOM,
+        filter: ["==", ["get", "k"], "slope"],
+        paint: { "fill-color": ["get", "c"] }
+    }, before);
+
+    // 7. Små slagskygger fra skorstene og tagopbygninger
+    map.addLayer({
+        id: "lyr-b3d-dshadow",
+        type: "fill",
+        source: "src-houses",
+        minzoom: HOUSE_MIN_ZOOM,
+        filter: ["==", ["get", "k"], "dshadow"],
+        paint: { "fill-color": "#1a202e", "fill-opacity": 0.62 }
+    }, before);
+
+    // 8. Ovenlysvinduer, solceller og skorstene
+    map.addLayer({
+        id: "lyr-b3d-detail",
+        type: "fill",
+        source: "src-houses",
+        minzoom: HOUSE_MIN_ZOOM,
+        filter: ["==", ["get", "k"], "detail"],
+        paint: { "fill-color": ["get", "c"] }
+    }, before);
+
+    // 9. Skarpe konturer, rygningslinjer og gratlinjer
+    map.addLayer({
+        id: "lyr-b3d-line",
+        type: "line",
+        source: "src-houses",
+        minzoom: HOUSE_MIN_ZOOM,
+        filter: ["==", ["get", "k"], "line"],
+        layout: { "line-join": "round", "line-cap": "round" },
+        paint: {
+            "line-color": ["get", "c"],
+            "line-width": ["interpolate", ["linear"], ["zoom"], 15, ["*", ["get", "w"], 0.55], 17, ["get", "w"], 20, ["*", ["get", "w"], 2.2]],
+            "line-opacity": 0.9
         }
-    }, map.getLayer("waterway_line_label") ? "waterway_line_label" : undefined);
+    }, before);
 }
 
 function ringAreaM2(ring, cosLat) {
@@ -980,101 +999,512 @@ function ringAreaM2(ring, cosLat) {
     return Math.abs(a) / 2;
 }
 
+// Gemmer aktuelle bygningers omrids på skærmen, så refreshTrees() kan sætte havetræer rundt om
+// husene uden nogensinde at placere et træ oven i et hus.
+let currentScreenBuildings = [];
+
+function slopeColorForNormal(nx, ny, pal) {
+    // Sollys kommer fra nordvest: (-0.68, +0.73)
+    const dot = nx * -0.68 + ny * 0.73;
+    if (dot > 0.32) return pal.light;
+    if (dot > 0.0) return pal.midL;
+    if (dot > -0.34) return pal.midD;
+    return pal.dark;
+}
+
+function insetPolygonCCW(pts, insetM) {
+    const n = pts.length;
+    const out = [];
+    for (let i = 0; i < n; i++) {
+        const prev = pts[(i - 1 + n) % n];
+        const curr = pts[i];
+        const next = pts[(i + 1) % n];
+        const dx1 = curr.x - prev.x, dy1 = curr.y - prev.y;
+        const l1 = Math.hypot(dx1, dy1) || 1;
+        const dx2 = next.x - curr.x, dy2 = next.y - curr.y;
+        const l2 = Math.hypot(dx2, dy2) || 1;
+        // Indadrettede normaler for CCW polygon: (-dy, dx)
+        const n1x = -dy1 / l1, n1y = dx1 / l1;
+        const n2x = -dy2 / l2, n2y = dx2 / l2;
+        let bx = n1x + n2x, by = n1y + n2y;
+        const bl = Math.hypot(bx, by);
+        if (bl < 1e-4) {
+            bx = n1x; by = n1y;
+        } else {
+            bx /= bl; by /= bl;
+        }
+        const cosHalf = Math.max(0.45, Math.abs(bx * n1x + by * n1y));
+        const d = Math.min(insetM / cosHalf, insetM * 1.65, l1 * 0.42, l2 * 0.42);
+        out.push({ x: curr.x + bx * d, y: curr.y + by * d });
+    }
+    return out;
+}
+
+function buildCrosswalkFeatures(b, out) {
+    if (map.getZoom() < 15.6) return;
+    const roadLayers = ["highway_minor", "highway_major_inner"].filter(id => map.getLayer(id));
+    if (!roadLayers.length) return;
+    const rFeats = map.queryRenderedFeatures({ layers: roadLayers });
+    const nodes = new Map();
+    const cosLat = Math.max(Math.cos(((b.getNorth() + b.getSouth()) * 0.5) * RAD_PER_DEG), MIN_COS);
+    const seenSegs = new Set();
+
+    const addSeg = (p1, p2) => {
+        const k1 = Math.round(p1[1] * 2e4) + ":" + Math.round(p1[0] * 1.4e4);
+        const k2 = Math.round(p2[1] * 2e4) + ":" + Math.round(p2[0] * 1.4e4);
+        if (k1 === k2) return;
+        const sk = k1 < k2 ? k1 + "|" + k2 : k2 + "|" + k1;
+        if (seenSegs.has(sk)) return;
+        seenSegs.add(sk);
+        if (!nodes.has(k1)) nodes.set(k1, { lon: p1[0], lat: p1[1], dirs: [] });
+        if (!nodes.has(k2)) nodes.set(k2, { lon: p2[0], lat: p2[1], dirs: [] });
+        nodes.get(k1).dirs.push(p2);
+        nodes.get(k2).dirs.push(p1);
+    };
+
+    for (const rf of rFeats) {
+        const cls = rf.properties?.class;
+        if (cls === "service" || cls === "track" || cls === "path") continue;
+        const lines = rf.geometry.type === "LineString" ? [rf.geometry.coordinates]
+            : rf.geometry.type === "MultiLineString" ? rf.geometry.coordinates : [];
+        for (const line of lines) {
+            for (let i = 0; i < line.length - 1; i++) addSeg(line[i], line[i + 1]);
+        }
+    }
+
+    let xwCount = 0;
+    for (const node of nodes.values()) {
+        if (node.dirs.length < 3) continue; // Kun rigtige vejkryds
+        if (node.lat < b.getSouth() || node.lat > b.getNorth() || node.lon < b.getWest() || node.lon > b.getEast()) continue;
+        for (const target of node.dirs) {
+            const dx = (target[0] - node.lon) * 111320 * cosLat;
+            const dy = (target[1] - node.lat) * 111320;
+            const len = Math.hypot(dx, dy);
+            if (len < 18) continue;
+            const ux = dx / len, uy = dy / len;
+            const nx = -uy, ny = ux;
+            const distFromCorner = 7.8; // meter fra krydsets midte
+            const cx = ux * distFromCorner, cy = uy * distFromCorner;
+            const stripeHalfLen = 1.25;
+            const stripeHalfW = 0.28;
+            for (const off of [-2.1, -1.05, 0, 1.05, 2.1]) {
+                const sx = cx + nx * off, sy = cy + ny * off;
+                const c0 = [node.lon + (sx - ux * stripeHalfLen - nx * stripeHalfW) / (111320 * cosLat), node.lat + (sy - uy * stripeHalfLen - ny * stripeHalfW) / 111320];
+                const c1 = [node.lon + (sx + ux * stripeHalfLen - nx * stripeHalfW) / (111320 * cosLat), node.lat + (sy + uy * stripeHalfLen - ny * stripeHalfW) / 111320];
+                const c2 = [node.lon + (sx + ux * stripeHalfLen + nx * stripeHalfW) / (111320 * cosLat), node.lat + (sy + uy * stripeHalfLen + ny * stripeHalfW) / 111320];
+                const c3 = [node.lon + (sx - ux * stripeHalfLen + nx * stripeHalfW) / (111320 * cosLat), node.lat + (sy - uy * stripeHalfLen + ny * stripeHalfW) / 111320];
+                out.push({ type: "Feature", properties: { k: "xwalk" }, geometry: { type: "Polygon", coordinates: [[c0, c1, c2, c3, c0]] } });
+            }
+            if (++xwCount > 160) return;
+        }
+    }
+}
+
 function refreshHouses() {
     if (!mapReady || !map.getSource("src-houses")) return;
     const z = map.getZoom();
     const empty = { type: "FeatureCollection", features: [] };
     if (z < HOUSE_MIN_ZOOM) {
+        currentScreenBuildings = [];
         map.getSource("src-houses").setData(empty);
-        map.getSource("src-big-buildings")?.setData(empty);
         return;
     }
     const feats = [
         ...map.queryRenderedFeatures({ layers: ["building"] }),
         ...map.querySourceFeatures("openmaptiles", { sourceLayer: "building" })
     ];
-    // Kortets fliser slår nabohuse sammen til én figur med mange omrids, så hvert omrids
-    // behandles for sig. Hvert hus bliver ENTEN til et pixelhus (src-houses) ELLER til en stor
-    // bygning med tegltag (src-big-buildings) — aldrig begge dele på én gang.
     const seen = new Set();
-    const candidates = [];
-    const bigPolys = [];
+    const out = [];
+    const screenBlds = [];
     const b = map.getBounds();
-    const padLat = (b.getNorth() - b.getSouth()) * 0.25, padLon = (b.getEast() - b.getWest()) * 0.25;
+    const padLat = (b.getNorth() - b.getSouth()) * 0.22, padLon = (b.getEast() - b.getWest()) * 0.22;
     const south = b.getSouth() - padLat, north = b.getNorth() + padLat, west = b.getWest() - padLon, east = b.getEast() + padLon;
+
+    const polyFeat = (coords, props) => ({
+        type: "Feature",
+        properties: props,
+        geometry: { type: "Polygon", coordinates: [coords] }
+    });
+    const lineFeat = (coords, c, w = 1.1, op = 0.92) => ({
+        type: "Feature",
+        properties: { k: "line", c, w, op },
+        geometry: { type: "LineString", coordinates: coords }
+    });
+
+    buildCrosswalkFeatures(b, out);
+
     for (const f of feats) {
         const h = f.properties.render_height || 6;
         const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.type === "MultiPolygon" ? f.geometry.coordinates : [];
         for (const rings of polys) {
+            const raw = rings[0];
+            if (!raw || raw.length < 4) continue;
             let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
-            for (const [x, y] of rings[0]) {
+            for (const [x, y] of raw) {
                 if (x < minLon) minLon = x; if (x > maxLon) maxLon = x;
                 if (y < minLat) minLat = y; if (y > maxLat) maxLat = y;
             }
-            const lat = (minLat + maxLat) / 2, lon = (minLon + maxLon) / 2;
-            if (lat < south || lat > north || lon < west || lon > east) continue;
-            const key = Math.round(lat * 5e4) + ":" + Math.round(lon * 3e4);
+            const lat0 = (minLat + maxLat) / 2, lon0 = (minLon + maxLon) / 2;
+            if (lat0 < south || lat0 > north || lon0 < west || lon0 > east) continue;
+            const key = Math.round(lat0 * 5e4) + ":" + Math.round(lon0 * 3e4);
             if (seen.has(key)) continue;
             seen.add(key);
-            const cosLat = Math.max(Math.cos(lat * RAD_PER_DEG), MIN_COS);
-            const bw = (maxLon - minLon) * 111320 * cosLat;
-            const bh = (maxLat - minLat) * 111320;
-            const boxArea = bw * bh;
-            const polyArea = ringAreaM2(rings[0], cosLat);
-            // Små skure, carporte og drivhuse (< 35 m²) udelades helt, så haverne er rene.
-            if (polyArea < HOUSE_MIN_AREA) continue;
-            const isHouse = h < HOUSE_MAX_HEIGHT && polyArea <= HOUSE_MAX_AREA && boxArea <= 950
-                && rings.length === 1 && polyArea >= 0.34 * boxArea;
-            if (!isHouse) {
-                const pick = hash2(Math.round(lat * 1e5), Math.round(lon * 1e5)) % 4;
-                bigPolys.push({
-                    type: "Feature",
-                    properties: { render_height: h, pick },
-                    geometry: { type: "Polygon", coordinates: rings }
-                });
-                continue;
+
+            const cosLat = Math.max(Math.cos(lat0 * RAD_PER_DEG), MIN_COS);
+            const mPerLon = 111320 * cosLat;
+            const mPerLat = 111320;
+            const toLL = (x, y) => [lon0 + x / mPerLon, lat0 + y / mPerLat];
+
+            // Konverter til lokale meter omkring bygningens midtpunkt og rens næsten-identiske punkter
+            let pts = [];
+            for (let i = 0; i < raw.length - 1; i++) {
+                const px = (raw[i][0] - lon0) * mPerLon;
+                const py = (raw[i][1] - lat0) * mPerLat;
+                if (!pts.length || Math.hypot(px - pts[pts.length - 1].x, py - pts[pts.length - 1].y) > 0.35) {
+                    pts.push({ x: px, y: py });
+                }
             }
-            candidates.push({ lat, lon, cosLat, bw, bh, boxArea, polyArea });
+            if (pts.length > 2 && Math.hypot(pts[0].x - pts[pts.length - 1].x, pts[0].y - pts[pts.length - 1].y) <= 0.35) {
+                pts.pop();
+            }
+            if (pts.length < 3) continue;
+
+            // Sikr mod-urs (CCW) omløbsretning og beregn faktisk grundareal
+            let signed2 = 0;
+            for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+                signed2 += pts[j].x * pts[i].y - pts[i].x * pts[j].y;
+            }
+            const polyArea = Math.abs(signed2) * 0.5;
+            if (polyArea < HOUSE_MIN_AREA) continue;
+            if (signed2 < 0) pts.reverse();
+
+            // Fjern kollineære mellempunkter på lige mure
+            const clean = [];
+            for (let i = 0; i < pts.length; i++) {
+                const p0 = pts[(i - 1 + pts.length) % pts.length];
+                const p1 = pts[i];
+                const p2 = pts[(i + 1) % pts.length];
+                const v1x = p1.x - p0.x, v1y = p1.y - p0.y, l1 = Math.hypot(v1x, v1y) || 1;
+                const v2x = p2.x - p1.x, v2y = p2.y - p1.y, l2 = Math.hypot(v2x, v2y) || 1;
+                const cross = Math.abs((v1x * v2y - v1y * v2x) / (l1 * l2));
+                if (cross > 0.08) clean.push(p1);
+            }
+            if (clean.length >= 3) pts = clean;
+
+            // Find bygningens hovedretning (theta) vægtet efter murenes længde
+            let sC = 0, sS = 0;
+            for (let i = 0; i < pts.length; i++) {
+                const a = pts[i], bPt = pts[(i + 1) % pts.length];
+                const dx = bPt.x - a.x, dy = bPt.y - a.y;
+                const len = Math.hypot(dx, dy);
+                const ang4 = 4 * Math.atan2(dy, dx);
+                sC += len * Math.cos(ang4);
+                sS += len * Math.sin(ang4);
+            }
+            let theta = 0.25 * Math.atan2(sS, sC);
+            let ux = Math.cos(theta), uy = Math.sin(theta);
+            let vx = -uy, vy = ux;
+
+            const projBounds = (ux_, uy_, vx_, vy_) => {
+                let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+                for (const p of pts) {
+                    const u = p.x * ux_ + p.y * uy_;
+                    const v = p.x * vx_ + p.y * vy_;
+                    if (u < u0) u0 = u; if (u > u1) u1 = u;
+                    if (v < v0) v0 = v; if (v > v1) v1 = v;
+                }
+                return { u0, u1, v0, v1, L: u1 - u0, W: v1 - v0 };
+            };
+            let obb = projBounds(ux, uy, vx, vy);
+            if (obb.W > obb.L) {
+                theta += Math.PI * 0.5;
+                ux = Math.cos(theta); uy = Math.sin(theta);
+                vx = -uy; vy = ux;
+                obb = projBounds(ux, uy, vx, vy);
+            }
+            const uMid = 0.5 * (obb.u0 + obb.u1);
+            const vMid = 0.5 * (obb.v0 + obb.v1);
+            const uvToXY = (u, v) => ({ x: u * ux + v * vx, y: u * uy + v * vy });
+            const uvToLL = (u, v) => toLL(u * ux + v * vx, u * uy + v * vy);
+
+            // Vælg arkitektonisk stil ud fra husets faste GPS-koordinat
+            const hSeed = hash2(Math.round(lat0 * 1e5), Math.round(lon0 * 1e5));
+            let styleIdx;
+            if (h >= 14 || polyArea > 900) {
+                const bigChoices = [0, 2, 5, 6, 7, 2, 6];
+                styleIdx = bigChoices[hSeed % bigChoices.length];
+            } else {
+                // Fordeling som i referencebilledet: terrakotta, skifer, grøn, brun og moderne flade tage
+                const houseChoices = [0, 0, 1, 2, 2, 3, 4, 5, 6, 7];
+                styleIdx = houseChoices[hSeed % houseChoices.length];
+            }
+            const pal = BUILDING_PALETTES[styleIdx];
+
+            const obbArea = Math.max(1, obb.L * obb.W);
+            const isRect = rings.length === 1 && polyArea <= 680 && (polyArea / obbArea) >= 0.72;
+            const scale = isRect ? Math.sqrt(polyArea / obbArea) : 1.0;
+            const hl = Math.max(2.2, 0.5 * obb.L * scale);
+            const hw = Math.max(2.0, 0.5 * obb.W * scale);
+
+            // Bygningens hjørner i meter (enten det skarpe orienterede rektangel eller det præcise polygon)
+            const bPts = isRect ? [
+                uvToXY(uMid - hl, vMid - hw),
+                uvToXY(uMid + hl, vMid - hw),
+                uvToXY(uMid + hl, vMid + hw),
+                uvToXY(uMid - hl, vMid + hw)
+            ] : pts;
+
+            // Gem husets boks til træ-kollisionstjek (lille margin så træer kan stå tæt ved huset)
+            const padM = 0.6;
+            screenBlds.push({
+                minLon: minLon - padM / mPerLon, maxLon: maxLon + padM / mPerLon,
+                minLat: minLat - (padM + 1.4) / mPerLat, maxLat: maxLat + padM / mPerLat,
+                lon0, lat0
+            });
+
+            // 1. Lille terrasse / gårdflise ved parcelhuse
+            if (isRect && polyArea < 360 && (hSeed & 3) !== 0) {
+                const pSide = (hSeed & 4) ? 1 : -1;
+                const pU0 = uMid - hl * 0.55, pU1 = uMid + hl * 0.45;
+                const pV0 = pSide > 0 ? vMid + hw : vMid - hw - 2.6;
+                const pV1 = pSide > 0 ? vMid + hw + 2.6 : vMid - hw;
+                const patioCoords = [uvToLL(pU0, pV0), uvToLL(pU1, pV0), uvToLL(pU1, pV1), uvToLL(pU0, pV1), uvToLL(pU0, pV0)];
+                out.push(polyFeat(patioCoords, { k: "patio", c: "#cbc3b4" }));
+            }
+
+            // 2. Dyb slagskygge mod sydøst (+shDx, -shDy) og 3D-sydfacade (-wallH)
+            const wallH = Math.min(9.5, Math.max(2.5, h * 0.40));
+            const shDx = wallH * 1.15;
+            const shDy = -wallH * 1.25;
+
+            const shRing = bPts.map(p => toLL(p.x + shDx, p.y - wallH * 0.55 + shDy));
+            shRing.push(shRing[0]);
+            out.push(polyFeat(shRing, { k: "shadow" }));
+
+            for (let i = 0; i < bPts.length; i++) {
+                const A = bPts[i], B = bPts[(i + 1) % bPts.length];
+                const edx = B.x - A.x, edy = B.y - A.y;
+                const elen = Math.hypot(edx, edy);
+                if (elen < 0.4) continue;
+                // Udadrettet normal for CCW polygon: (edy, -edx) / elen
+                const nx = edy / elen, ny = -edx / elen;
+
+                // Slagskyggens sideflade fra bygningen ud til skyggen
+                if (nx * shDx + ny * shDy > 0) {
+                    const sq = [
+                        toLL(A.x, A.y),
+                        toLL(B.x, B.y),
+                        toLL(B.x + shDx, B.y - wallH * 0.55 + shDy),
+                        toLL(A.x + shDx, A.y - wallH * 0.55 + shDy),
+                        toLL(A.x, A.y)
+                    ];
+                    out.push(polyFeat(sq, { k: "shadow" }));
+                }
+
+                // Sydfacade på alle sydvendte mure
+                if (ny < -0.10) {
+                    const wColor = nx < -0.18 ? pal.wallL : nx > 0.18 ? pal.wallD : pal.wallM;
+                    const wq = [
+                        toLL(A.x, A.y),
+                        toLL(B.x, B.y),
+                        toLL(B.x, B.y - wallH),
+                        toLL(A.x, A.y - wallH),
+                        toLL(A.x, A.y)
+                    ];
+                    out.push(polyFeat(wq, { k: "wall", c: wColor }));
+                    out.push(lineFeat([toLL(A.x, A.y - wallH), toLL(B.x, B.y - wallH)], "#252934", 1.15, 0.92));
+                }
+            }
+
+            // 3. Ydre tagkant / gesims / parapet
+            const outerRing = bPts.map(p => toLL(p.x, p.y));
+            outerRing.push(outerRing[0]);
+            out.push(polyFeat(outerRing, { k: "eave", c: pal.trim }));
+
+            // 4. Tagflader (3D-valmtag, saddeltag eller forsænket fladt tag)
+            if (isRect) {
+                const trimM = Math.min(0.55, hw * 0.12);
+                const il = Math.max(1.2, hl - trimM);
+                const iw = Math.max(1.0, hw - trimM);
+
+                if (pal.type === "flat") {
+                    const pM = Math.min(1.05, iw * 0.22);
+                    const dl = Math.max(0.8, il - pM);
+                    const dw = Math.max(0.7, iw - pM);
+                    const deckCoords = [
+                        uvToLL(uMid - dl, vMid - dw),
+                        uvToLL(uMid + dl, vMid - dw),
+                        uvToLL(uMid + dl, vMid + dw),
+                        uvToLL(uMid - dl, vMid + dw),
+                        uvToLL(uMid - dl, vMid - dw)
+                    ];
+                    out.push(polyFeat(deckCoords, { k: "slope", c: pal.deck }));
+                    out.push(lineFeat(deckCoords, "#555862", 0.85, 0.75));
+
+                    // Indvendig skyggekant langs nord-/vest-parapet
+                    const shW = Math.min(0.75, dw * 0.35);
+                    const edgesUV = [
+                        { c: [[-dl, dw - shW], [dl, dw - shW], [dl, dw], [-dl, dw]], nx: vx, ny: vy },
+                        { c: [[-dl, -dw], [dl, -dw], [dl, -dw + shW], [-dl, -dw + shW]], nx: -vx, ny: -vy },
+                        { c: [[-dl, -dw], [-dl + shW, -dw], [-dl + shW, dw], [-dl, dw]], nx: -ux, ny: -uy },
+                        { c: [[dl - shW, -dw], [dl, -dw], [dl, dw], [dl - shW, dw]], nx: ux, ny: uy }
+                    ];
+                    for (const e of edgesUV) {
+                        if (e.nx * -0.68 + e.ny * 0.73 > 0.05) {
+                            const sc = e.c.map(([u, v]) => uvToLL(uMid + u, vMid + v));
+                            sc.push(sc[0]);
+                            out.push(polyFeat(sc, { k: "slope", c: pal.innerShade }));
+                        }
+                    }
+
+                    // Ovenlysvinduer / solcelle-sektion på det flade tag
+                    if (dl > 2.4 && dw > 2.0) {
+                        const cols = dl > 5.0 ? 3 : 2;
+                        const paneW = Math.min(1.5, (dl * 0.9) / cols);
+                        const paneH = Math.min(1.6, dw * 0.65);
+                        const startU = uMid - ((cols - 1) * (paneW + 0.35)) * 0.5;
+                        const baseV = vMid + dw * 0.12;
+                        for (let c = 0; c < cols; c++) {
+                            const cu = startU + c * (paneW + 0.35);
+                            const pCoords = [
+                                uvToLL(cu - paneW * 0.5, baseV - paneH * 0.5),
+                                uvToLL(cu + paneW * 0.5, baseV - paneH * 0.5),
+                                uvToLL(cu + paneW * 0.5, baseV + paneH * 0.5),
+                                uvToLL(cu - paneW * 0.5, baseV + paneH * 0.5),
+                                uvToLL(cu - paneW * 0.5, baseV - paneH * 0.5)
+                            ];
+                            out.push(polyFeat(pCoords, { k: "detail", c: "#2e4154" }));
+                            out.push(lineFeat(pCoords, "#dce4ec", 0.75, 0.85));
+                        }
+                    }
+                } else {
+                    // Valmtag (hipped) eller saddeltag (gabled) med 4 sol-/skyggebelyste tagflader
+                    const isGabled = (hSeed % 3) === 0;
+                    const hipInset = isGabled ? Math.min(0.6, il * 0.12) : Math.min(iw * 0.88, il * 0.72);
+                    const rU = Math.max(0.2, il - hipInset);
+
+                    const NW = [uMid - il, vMid + iw];
+                    const NE = [uMid + il, vMid + iw];
+                    const SE = [uMid + il, vMid - iw];
+                    const SW = [uMid - il, vMid - iw];
+                    const R1 = [uMid - rU, vMid];
+                    const R2 = [uMid + rU, vMid];
+
+                    const facets = [
+                        { pts: [NW, R1, R2, NE], nx: vx, ny: vy },     // +v langside
+                        { pts: [SW, SE, R2, R1], nx: -vx, ny: -vy },   // -v langside
+                        { pts: [SW, R1, NW], nx: -ux, ny: -uy },       // -u valmgavl
+                        { pts: [SE, NE, R2], nx: ux, ny: uy }          // +u valmgavl
+                    ];
+                    for (const fc of facets) {
+                        const coords = fc.pts.map(([u, v]) => uvToLL(u, v));
+                        coords.push(coords[0]);
+                        out.push(polyFeat(coords, { k: "slope", c: slopeColorForNormal(fc.nx, fc.ny, pal) }));
+                    }
+
+                    // Rygningslinje og gratlinjer (lys kant + mørk fuge)
+                    out.push(lineFeat([uvToLL(...R1), uvToLL(...R2)], pal.trim, 1.35, 0.9));
+                    out.push(lineFeat([uvToLL(...NW), uvToLL(...R1), uvToLL(...SW)], pal.trim, 0.9, 0.75));
+                    out.push(lineFeat([uvToLL(...NE), uvToLL(...R2), uvToLL(...SE)], pal.trim, 0.9, 0.75));
+
+                    // Ovenlysvinduer / solceller på den ene tagflade
+                    if (il > 2.6 && iw > 2.2) {
+                        const numWin = (hSeed & 1) && il > 4.2 ? 2 : 1;
+                        const winSide = (hSeed & 2) ? 1 : -1;
+                        const winV = vMid + winSide * iw * 0.46;
+                        const wU = 0.65, wV = Math.min(0.55, iw * 0.22);
+                        for (let wIdx = 0; wIdx < numWin; wIdx++) {
+                            const wu = uMid - il * 0.25 + wIdx * 1.65;
+                            if (Math.abs(wu - uMid) + wU > rU + 0.3) continue;
+                            const wc = [
+                                uvToLL(wu - wU, winV - wV),
+                                uvToLL(wu + wU, winV - wV),
+                                uvToLL(wu + wU, winV + wV),
+                                uvToLL(wu - wU, winV + wV),
+                                uvToLL(wu - wU, winV - wV)
+                            ];
+                            out.push(polyFeat(wc, { k: "detail", c: "#2c3f52" }));
+                            out.push(lineFeat(wc, "#dce4ec", 0.7, 0.85));
+                        }
+                    }
+
+                    // Skorsten med lille slagskygge på halvdelen af husene
+                    if ((hSeed % 5) < 3 && il > 2.5) {
+                        const cu = uMid + ((hSeed & 8) ? 0.32 : -0.32) * rU;
+                        const cv = vMid + ((hSeed & 16) ? 0.22 : -0.22) * iw;
+                        const cs = 0.52;
+                        const chXY = uvToXY(cu, cv);
+                        const shCoords = [
+                            toLL(chXY.x - cs, chXY.y - cs),
+                            toLL(chXY.x + cs + 0.9, chXY.y - cs - 1.0),
+                            toLL(chXY.x + cs + 0.9, chXY.y + cs - 1.0),
+                            toLL(chXY.x - cs, chXY.y + cs),
+                            toLL(chXY.x - cs, chXY.y - cs)
+                        ];
+                        out.push(polyFeat(shCoords, { k: "dshadow" }));
+                        const chCoords = [
+                            toLL(chXY.x - cs, chXY.y - cs),
+                            toLL(chXY.x + cs, chXY.y - cs),
+                            toLL(chXY.x + cs, chXY.y + cs),
+                            toLL(chXY.x - cs, chXY.y + cs),
+                            toLL(chXY.x - cs, chXY.y - cs)
+                        ];
+                        out.push(polyFeat(chCoords, { k: "detail", c: "#e6ddd0" }));
+                        out.push(lineFeat(chCoords, "#262a34", 0.75, 0.9));
+                    }
+                }
+            } else {
+                // Sammensatte, L-formede og store bygninger: ægte 3D-skråflader langs hver mur
+                const trimPts = insetPolygonCCW(bPts, 0.48);
+                const slopeW = pal.type === "flat" ? 1.15 : Math.min(4.5, Math.max(2.0, obb.W * 0.28));
+                const innerPts = insetPolygonCCW(trimPts, slopeW);
+
+                if (pal.type === "flat") {
+                    const innerRing = innerPts.map(p => toLL(p.x, p.y));
+                    innerRing.push(innerRing[0]);
+                    out.push(polyFeat(innerRing, { k: "slope", c: pal.deck }));
+                    for (let i = 0; i < trimPts.length; i++) {
+                        const A = trimPts[i], B = trimPts[(i + 1) % trimPts.length];
+                        const A2 = innerPts[i], B2 = innerPts[(i + 1) % innerPts.length];
+                        const edx = B.x - A.x, edy = B.y - A.y, elen = Math.hypot(edx, edy) || 1;
+                        const nx = edy / elen, ny = -edx / elen;
+                        if (nx * -0.68 + ny * 0.73 < -0.05) {
+                            const sc = [toLL(A.x, A.y), toLL(B.x, B.y), toLL(B2.x, B2.y), toLL(A2.x, A2.y), toLL(A.x, A.y)];
+                            out.push(polyFeat(sc, { k: "slope", c: pal.innerShade }));
+                        }
+                    }
+                    out.push(lineFeat(innerRing, "#555862", 0.85, 0.75));
+                } else {
+                    for (let i = 0; i < trimPts.length; i++) {
+                        const A = trimPts[i], B = trimPts[(i + 1) % trimPts.length];
+                        const A2 = innerPts[i], B2 = innerPts[(i + 1) % innerPts.length];
+                        const edx = B.x - A.x, edy = B.y - A.y, elen = Math.hypot(edx, edy) || 1;
+                        const nx = edy / elen, ny = -edx / elen;
+                        const quad = [toLL(A.x, A.y), toLL(B.x, B.y), toLL(B2.x, B2.y), toLL(A2.x, A2.y), toLL(A.x, A.y)];
+                        out.push(polyFeat(quad, { k: "slope", c: slopeColorForNormal(nx, ny, pal) }));
+                        out.push(lineFeat([toLL(A.x, A.y), toLL(A2.x, A2.y)], pal.trim, 0.8, 0.65));
+                    }
+                    const innerRing = innerPts.map(p => toLL(p.x, p.y));
+                    innerRing.push(innerRing[0]);
+                    out.push(polyFeat(innerRing, { k: "slope", c: pal.midL }));
+                    out.push(lineFeat(innerRing, pal.trim, 1.15, 0.85));
+                }
+            }
+
+            // Skarp mørk yderkontur rundt om taget
+            out.push(lineFeat(outerRing, "#262a34", 1.15, 0.92));
         }
     }
-    // Største huse placeres først, så mindre tilbygninger/garager tæt på ikke lægger sig oven i huset.
-    candidates.sort((a, b) => b.polyArea - a.polyArea);
-    const placed = [];
-    const out = [];
-    for (const c of candidates) {
-        if (bigPolys.some(bp => pointInRings(c.lon, c.lat, bp.geometry.coordinates))) continue;
-        const fill = Math.min(1, Math.sqrt(c.polyArea / Math.max(c.boxArea, 1)));
-        const ew = c.bw * fill, eh = c.bh * fill;
-        const aspect = c.bw / Math.max(c.bh, 0.1);
-        const shape = aspect > 2.2 ? "lang" : aspect > 1.3 ? "bred" : aspect < 0.6 ? "hoej" : "kvadrat";
-        const [tw, th] = HOUSE_SHAPES[shape];
-        const widthM = (shape === "hoej" ? eh * (tw / th) : ew) * 1.06;
-        const heightM = widthM * (th / tw);
-        const overlaps = placed.some(p => {
-            const dx = (c.lon - p.lon) * 111320 * c.cosLat;
-            const dy = (c.lat - p.lat) * 111320;
-            return Math.abs(dx) < (widthM + p.w) * 0.42 && Math.abs(dy) < (heightM + p.h) * 0.42;
-        });
-        if (overlaps) continue;
-        placed.push({ lat: c.lat, lon: c.lon, w: widthM, h: heightM });
-        const style = hash2(Math.round(c.lat * 1e5), Math.round(c.lon * 1e5)) % HOUSE_STYLES;
-        out.push({
-            type: "Feature",
-            properties: { sprite: `img-house-${style}-${shape}`, mpp: widthM / c.cosLat / (tw * 2), sort: -c.lat },
-            geometry: { type: "Point", coordinates: [c.lon, c.lat] }
-        });
-    }
+    currentScreenBuildings = screenBlds;
     map.getSource("src-houses").setData({ type: "FeatureCollection", features: out });
-    map.getSource("src-big-buildings")?.setData({ type: "FeatureCollection", features: bigPolys });
 }
 
 // ---------------------------------------------------------------------------
-// Rigtige træer i skove og parker. Kortet kender kun skovens omrids, så vi drysser selv træer
-// ud i et fast verdensgitter (9 m) med lidt tilfældig forskydning, udregnet fra gitterfeltet,
-// så det samme træ altid står samme sted. Langt væk vises kun hvert 2. eller 3. træ.
+// Fyldige træer i skove, parker OG i villahaver/langs veje (som i referencebilledet).
+// Træerne undgår automatisk alle bygningers fodaftryk samt selve kørebanen/fortovet.
 // ---------------------------------------------------------------------------
 const TREE_MIN_ZOOM = 15;
-const TREE_GRID_M = 9;
+const TREE_GRID_M = 8.5;
 const TREE_MAX = 9000;
 let treesDirty = true;
 
@@ -1096,9 +1526,10 @@ function pointInRings(lon, lat, rings) {
 }
 
 const TREE_KINDS = {
-    wood: { density: 1.0, pick: r => r < 0.28 ? "img-pine-1" : r < 0.45 ? "img-pine-2" : r < 0.65 ? "img-tree-1" : r < 0.85 ? "img-tree-2" : r < 0.95 ? "img-tree-3" : "img-bush-1" },
-    park: { density: 0.22, pick: r => r < 0.4 ? "img-tree-1" : r < 0.7 ? "img-tree-2" : r < 0.85 ? "img-tree-3" : "img-bush-2" },
-    grass: { density: 0.08, pick: r => r < 0.5 ? "img-tree-2" : r < 0.75 ? "img-bush-1" : "img-bush-2" }
+    wood: { density: 0.95, pick: r => r < 0.22 ? "img-pine-1" : r < 0.38 ? "img-pine-2" : r < 0.62 ? "img-tree-1" : r < 0.84 ? "img-tree-2" : r < 0.95 ? "img-tree-3" : "img-bush-1" },
+    park: { density: 0.30, pick: r => r < 0.38 ? "img-tree-1" : r < 0.68 ? "img-tree-2" : r < 0.88 ? "img-tree-3" : "img-bush-2" },
+    town: { density: 0.36, pick: r => r < 0.34 ? "img-tree-1" : r < 0.64 ? "img-tree-2" : r < 0.84 ? "img-tree-3" : r < 0.92 ? "img-bush-1" : "img-bush-2" },
+    grass: { density: 0.16, pick: r => r < 0.45 ? "img-tree-2" : r < 0.75 ? "img-tree-3" : "img-bush-1" }
 };
 
 function installTreeLayer() {
@@ -1107,9 +1538,9 @@ function installTreeLayer() {
     map.addLayer({
         id: "lyr-trees", type: "symbol", source: "src-trees", minzoom: TREE_MIN_ZOOM,
         layout: {
-            "icon-image": ["get", "sprite"], "icon-anchor": "bottom",
+            "icon-image": ["get", "sprite"], "icon-anchor": "center",
             "icon-allow-overlap": true, "icon-ignore-placement": true,
-            "icon-size": metreIconSize(32, 0.3),
+            "icon-size": metreIconSize(28, 0.25),
             "symbol-sort-key": ["get", "sort"]
         }
     }, map.getLayer("waterway_line_label") ? "waterway_line_label" : undefined);
@@ -1120,15 +1551,58 @@ function refreshTrees() {
     const z = map.getZoom();
     const empty = { type: "FeatureCollection", features: [] };
     if (z < TREE_MIN_ZOOM) { map.getSource("src-trees").setData(empty); return; }
-    const step = z < 16 ? 2 : 1;                      // hvert 2. træ eller hvert træ
+    const step = z < 15.6 ? 2 : 1;
     const b = map.getBounds();
-    const feats = map.queryRenderedFeatures({ layers: ["land-wood", "land-park", "land-grass"] });
+    const cosLat0 = Math.max(Math.cos(((b.getNorth() + b.getSouth()) * 0.5) * RAD_PER_DEG), MIN_COS);
+
+    // Saml vejsegmenter på skærmen, så havetræer ikke sættes midt ude på kørebanen
+    const roadLayers = ["highway_minor", "highway_major_inner", "highway_motorway_inner"].filter(id => map.getLayer(id));
+    const roadSegs = [];
+    if (roadLayers.length) {
+        for (const rf of map.queryRenderedFeatures({ layers: roadLayers })) {
+            const lines = rf.geometry.type === "LineString" ? [rf.geometry.coordinates]
+                : rf.geometry.type === "MultiLineString" ? rf.geometry.coordinates : [];
+            for (const line of lines) {
+                for (let i = 0; i < line.length - 1; i++) {
+                    const p1 = line[i], p2 = line[i + 1];
+                    roadSegs.push({
+                        x1: p1[0], y1: p1[1], x2: p2[0], y2: p2[1],
+                        minX: Math.min(p1[0], p2[0]) - 0.00012, maxX: Math.max(p1[0], p2[0]) + 0.00012,
+                        minY: Math.min(p1[1], p2[1]) - 0.00008, maxY: Math.max(p1[1], p2[1]) + 0.00008
+                    });
+                }
+            }
+        }
+    }
+
+    const hitsBuildingOrRoad = (lon, lat) => {
+        for (const sb of currentScreenBuildings) {
+            if (lon >= sb.minLon && lon <= sb.maxLon && lat >= sb.minLat && lat <= sb.maxLat) return true;
+        }
+        for (const seg of roadSegs) {
+            if (lon < seg.minX || lon > seg.maxX || lat < seg.minY || lat > seg.maxY) continue;
+            const vx = (seg.x2 - seg.x1) * 111320 * cosLat0, vy = (seg.y2 - seg.y1) * 111320;
+            const wx = (lon - seg.x1) * 111320 * cosLat0, wy = (lat - seg.y1) * 111320;
+            const l2 = vx * vx + vy * vy;
+            const t = l2 > 0 ? Math.max(0, Math.min(1, (wx * vx + wy * vy) / l2)) : 0;
+            const dx = wx - t * vx, dy = wy - t * vy;
+            if (dx * dx + dy * dy < 18) return true; // mindst ~4.2 m fra vejmidten
+        }
+        return false;
+    };
+
+    const layerIds = ["land-wood", "land-park", "land-town", "land-grass"].filter(id => map.getLayer(id));
+    const feats = map.queryRenderedFeatures({ layers: layerIds });
     const seen = new Set();
     const out = [];
     const dLat = TREE_GRID_M / 111320;
     for (const f of feats) {
         if (out.length >= TREE_MAX) break;
-        const kind = f.layer.id === "land-wood" ? TREE_KINDS.wood : f.layer.id === "land-park" ? TREE_KINDS.park : TREE_KINDS.grass;
+        const kind = f.layer.id === "land-wood" ? TREE_KINDS.wood
+            : f.layer.id === "land-park" ? TREE_KINDS.park
+            : f.layer.id === "land-town" ? TREE_KINDS.town
+            : TREE_KINDS.grass;
+        const isWood = f.layer.id === "land-wood";
         const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.type === "MultiPolygon" ? f.geometry.coordinates : [];
         for (const rings of polys) {
             let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
@@ -1148,19 +1622,65 @@ function refreshTrees() {
                     if (seen.has(key)) continue;
                     const h = hash2(i, j);
                     if ((h & 1023) / 1024 > kind.density) continue;
-                    const lat = (i + 0.2 + ((h >>> 10) & 63) / 100) * dLat;
-                    const lon = (j + 0.2 + ((h >>> 16) & 63) / 100) * dLon;
+                    const lat = (i + 0.18 + ((h >>> 10) & 63) / 100) * dLat;
+                    const lon = (j + 0.18 + ((h >>> 16) & 63) / 100) * dLon;
                     if (!pointInRings(lon, lat, rings)) continue;
+                    if (!isWood && hitsBuildingOrRoad(lon, lat)) continue;
                     seen.add(key);
                     const r = ((h >>> 22) & 1023) / 1024;
                     const sprite = kind.pick(r);
-                    const size = sprite.startsWith("img-bush") ? 4 : sprite.startsWith("img-pine") ? 9 : 8;
+                    const size = sprite.startsWith("img-bush") ? 5.5 : sprite.startsWith("img-pine") ? 8.8 : (8.8 + (h & 3) * 0.7);
                     out.push({ type: "Feature", properties: { sprite, m: size / cosLat, sort: -lat },
                                geometry: { type: "Point", coordinates: [lon, lat] } });
                     if (out.length >= TREE_MAX) break;
                 }
                 if (out.length >= TREE_MAX) break;
             }
+        }
+    }
+    // Sæt også frodige havetræer rundt om husene i villakvarterer (også hvor kortet ikke har en
+    // særskilt 'residential'-flade), så haverne omkring husene får træer som i referencebilledet.
+    const placedTrees = out.map(f => f.geometry.coordinates);
+    const tooCloseToTree = (lon, lat, cosL) => {
+        for (let k = placedTrees.length - 1; k >= 0; k--) {
+            const p = placedTrees[k];
+            const dx = (lon - p[0]) * 111320 * cosL;
+            const dy = (lat - p[1]) * 111320;
+            if (dx * dx + dy * dy < 22) return true; // mindst ~4.7 m mellem træer
+        }
+        return false;
+    };
+    for (const sb of currentScreenBuildings) {
+        if (out.length >= TREE_MAX) break;
+        const h0 = hash2(Math.round(sb.lat0 * 1e5), Math.round(sb.lon0 * 1e5));
+        const cosL = Math.max(Math.cos(sb.lat0 * RAD_PER_DEG), MIN_COS);
+        const bw = (sb.maxLon - sb.minLon) * 111320 * cosL;
+        const bh = (sb.maxLat - sb.minLat) * 111320;
+        const count = bw * bh > 450 ? 9 : 6;
+        for (let k = 0; k < count; k++) {
+            const hk = hash2(h0 + k * 97, k * 131 + 17);
+            const side = k % 4; // 0: nord, 1: syd, 2: øst, 3: vest
+            const along = (((hk & 1023) / 1023) - 0.5) * 1.15;
+            const outDist = 1.4 + ((hk >>> 10) & 255) / 255 * 4.2;
+            let rx, ry;
+            if (side === 0) { rx = along * bw; ry = bh * 0.5 + outDist; }
+            else if (side === 1) { rx = along * bw; ry = -bh * 0.5 - outDist; }
+            else if (side === 2) { rx = bw * 0.5 + outDist; ry = along * bh; }
+            else { rx = -bw * 0.5 - outDist; ry = along * bh; }
+            const lon = sb.lon0 + rx / (111320 * cosL);
+            const lat = sb.lat0 + ry / 111320;
+            if (lon < b.getWest() || lon > b.getEast() || lat < b.getSouth() || lat > b.getNorth()) continue;
+            if (hitsBuildingOrRoad(lon, lat)) continue;
+            if (tooCloseToTree(lon, lat, cosL)) continue;
+            placedTrees.push([lon, lat]);
+            const r = ((hk >>> 18) & 1023) / 1024;
+            const sprite = TREE_KINDS.town.pick(r);
+            const size = sprite.startsWith("img-bush") ? 6.2 : (9.2 + (hk & 3) * 0.85);
+            out.push({
+                type: "Feature",
+                properties: { sprite, m: size / cosL, sort: -lat },
+                geometry: { type: "Point", coordinates: [lon, lat] }
+            });
         }
     }
     map.getSource("src-trees").setData({ type: "FeatureCollection", features: out });
