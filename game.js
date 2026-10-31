@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 98;
+const APP_VERSION = 99;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -538,12 +538,12 @@ async function installPixelLandscape() {
         ["img-b-vaabenfabrik_3", "assets/vaabenfabrik_3.png", 4],
         ["img-b-vaabenfabrik_4", "assets/vaabenfabrik_4.png", 4],
         ["img-b-vaabenfabrik_5", "assets/vaabenfabrik_5.png", 4],
-        ["img-roof-red", "assets/tag_roed.png", 2],
-        ["img-roof-darkred", "assets/tag_moerkroed.png", 2],
-        ["img-roof-yellow", "assets/tag_gul.png", 2],
-        ["img-roof-brown", "assets/tag_brun.png", 2],
-        ["img-roof-grey", "assets/tag_graa.png", 2],
-        ["img-roof-flat", "assets/tag_flad.png", 2],
+        ["img-roof-red", "assets/tag_roed.png", 1],
+        ["img-roof-darkred", "assets/tag_moerkroed.png", 1],
+        ["img-roof-yellow", "assets/tag_gul.png", 1],
+        ["img-roof-brown", "assets/tag_brun.png", 1],
+        ["img-roof-grey", "assets/tag_graa.png", 1],
+        ["img-roof-flat", "assets/tag_flad.png", 1],
         ["img-wall-light", "assets/mur_lys.png", 2],
         ["img-wall-grey", "assets/mur_graa.png", 2],
         ["img-wood-floor", "assets/land_skovbund.png", 2],
@@ -778,6 +778,7 @@ function styleBuildingsLikeGame() {
     }
     map.setPaintProperty("building", "fill-pattern", roof);
     map.setPaintProperty("building", "fill-antialias", false);
+
     if (!map.getLayer("hf-building-edge")) {
         const layers = map.getStyle().layers;
         const next = layers[layers.findIndex(l => l.id === "building") + 1];
@@ -785,6 +786,26 @@ function styleBuildingsLikeGame() {
             id: "hf-building-edge", type: "line", source: "openmaptiles", "source-layer": "building", minzoom: 15,
             paint: { "line-color": "#3a2616", "line-width": ["interpolate", ["linear"], ["zoom"], 15, 0.6, 18, 1.4], "line-opacity": 0.9 }
         }, next ? next.id : undefined);
+    }
+
+    // Tagskråning: et lysere bånd langs tagets kant (line-offset tegner indad i omridset) og en
+    // mørk streg, hvor skråningen møder den øverste tagflade. Så ligner det et tag set ovenfra
+    // og ikke en flade med brosten.
+    const slope = ["interpolate", ["exponential", 1.6], ["zoom"], 15, 1.5, 17, 5, 19, 13, 21, 36];
+    const slopeOff = ["interpolate", ["exponential", 1.6], ["zoom"], 15, 0.75, 17, 2.5, 19, 6.5, 21, 18];
+    if (!map.getLayer("hf-roof-slope")) {
+        map.addLayer({
+            id: "hf-roof-slope", type: "line", source: "openmaptiles", "source-layer": "building", minzoom: 15,
+            layout: { "line-join": "miter", "line-cap": "butt" },
+            paint: { "line-color": "rgba(255, 244, 214, 0.26)", "line-width": slope, "line-offset": slopeOff }
+        }, "hf-building-edge");
+    }
+    if (!map.getLayer("hf-roof-ridge")) {
+        map.addLayer({
+            id: "hf-roof-ridge", type: "line", source: "openmaptiles", "source-layer": "building", minzoom: 16,
+            layout: { "line-join": "miter", "line-cap": "butt" },
+            paint: { "line-color": "rgba(70, 32, 20, 0.5)", "line-width": ["interpolate", ["linear"], ["zoom"], 16, 0.7, 20, 2], "line-offset": slope }
+        }, "hf-building-edge");
     }
 }
 
