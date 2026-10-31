@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 127;
+const APP_VERSION = 128;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -6841,7 +6841,7 @@ function soldierTilesHtml(g) {
     for (let i = 0; i < showHealthy; i++) html += tile(hp, ++nr);
     let more = "";
     if (showHealthy < healthy - named.length) more = `<p class="muted-hint">+ ${healthy - named.length} raske menige med fuld energi (${hp}).</p>`;
-    return `<div class="soldier-grid">${html}</div>${more}`;
+    return `<div class="soldier-grid${named.length ? " has-named" : ""}">${html}</div>${more}`;
 }
 
 function openGroupModal(kind, id) {
