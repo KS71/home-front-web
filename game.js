@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 99;
+const APP_VERSION = 100;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -612,6 +612,41 @@ async function installPixelLandscape() {
             map.addLayer(lyr, beforeLayer);
         }
     }
+    installShoresAndHedges(beforeLayer);
+}
+
+// Kyster: en sandstribe uden for vandkanten og lavt, lysere vand inden for. Marker får en hæk
+// langs kanten. (line-offset: positiv = ind i fladen, negativ = ud af fladen.)
+function installShoresAndHedges(beforeLayer) {
+    const isPoly = ["match", ["geometry-type"], ["Polygon", "MultiPolygon"], true, false];
+    const w = ["interpolate", ["exponential", 1.5], ["zoom"], 13, 1.2, 15, 3, 17, 7, 19, 14];
+    const half = ["interpolate", ["exponential", 1.5], ["zoom"], 13, 0.6, 15, 1.5, 17, 3.5, 19, 7];
+    const negHalf = ["interpolate", ["exponential", 1.5], ["zoom"], 13, -0.6, 15, -1.5, 17, -3.5, 19, -7];
+    if (!map.getLayer("hf-shore-sand")) {
+        map.addLayer({
+            id: "hf-shore-sand", type: "line", source: "openmaptiles", "source-layer": "water", minzoom: 13,
+            filter: ["all", isPoly, ["!=", ["get", "brunnel"], "tunnel"]],
+            layout: { "line-join": "round" },
+            paint: { "line-color": "#dccb93", "line-width": w, "line-offset": negHalf }
+        }, beforeLayer);
+    }
+    if (!map.getLayer("hf-shore-shallow")) {
+        map.addLayer({
+            id: "hf-shore-shallow", type: "line", source: "openmaptiles", "source-layer": "water", minzoom: 13,
+            filter: ["all", isPoly, ["!=", ["get", "brunnel"], "tunnel"]],
+            layout: { "line-join": "round" },
+            paint: { "line-color": "#6aa6d8", "line-width": w, "line-offset": half, "line-opacity": 0.85 }
+        }, beforeLayer);
+    }
+    if (!map.getLayer("hf-field-hedge")) {
+        map.addLayer({
+            id: "hf-field-hedge", type: "line", source: "openmaptiles", "source-layer": "landcover", minzoom: 14,
+            filter: ["all", isPoly, ["==", ["get", "class"], "farmland"]],
+            layout: { "line-join": "round" },
+            paint: { "line-color": "#3d6b31", "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 14, 1, 16, 2.5, 19, 7],
+                     "line-offset": ["interpolate", ["exponential", 1.5], ["zoom"], 14, 0.5, 16, 1.25, 19, 3.5] }
+        }, beforeLayer);
+    }
 }
 
 // Gør kortgrundlaget mindre "Google Maps" og mere computerspil: grænser, togbaner, vejnavne og
@@ -751,30 +786,39 @@ function styleBuildingsLikeGame() {
         ["<", h, 18], ["match", pick, 0, "img-roof-brown", 1, "img-roof-darkred", "img-roof-grey"],
         ["<", h, 30], "img-roof-grey",
         "img-roof-flat"];
-    const wall = ["case", ["<", h, 18], "img-wall-light", "img-wall-grey"];
-    const wallShift = ["interpolate", ["linear"], ["zoom"],
-        14, ["literal", [0, 0]], 16, ["literal", [0, 4]], 18, ["literal", [0, 9]], 20, ["literal", [0, 14]]];
-    const shadowShift = ["interpolate", ["linear"], ["zoom"],
-        14, ["literal", [0, 0]], 16, ["literal", [3, 7]], 18, ["literal", [6, 14]], 20, ["literal", [10, 22]]];
-
+    // Mur og skygge vokser med zoom, og høje bygninger får højere mur og længere skygge, så
+    // etageejendomme og fabrikker rejser sig over villaerne. (fill-translate kan ikke styres af
+    // bygningens egenskaber, så der er ét lag pr. højdeklasse.)
+    const shift = (k, x, y) => ["interpolate", ["linear"], ["zoom"],
+        14, ["literal", [0, 0]], 16, ["literal", [x * 4 * k, y * 4 * k]], 18, ["literal", [x * 9 * k, y * 9 * k]], 20, ["literal", [x * 14 * k, y * 14 * k]]];
+    const classes = [
+        { id: "low", filter: ["<", h, 10], k: 1, wall: "img-wall-light" },
+        { id: "mid", filter: ["all", [">=", h, 10], ["<", h, 18]], k: 1.7, wall: "img-wall-light" },
+        { id: "tall", filter: [">=", h, 18], k: 2.6, wall: "img-wall-grey" }
+    ];
     const base = { type: "fill", source: "openmaptiles", "source-layer": "building", minzoom: 12 };
-    if (!map.getLayer("hf-building-shadow")) {
-        map.addLayer({ ...base, id: "hf-building-shadow", paint: {
-            "fill-color": "#1a140c", "fill-opacity": 0.4, "fill-antialias": false,
-            "fill-translate": shadowShift, "fill-translate-anchor": "viewport"
-        } }, "building");
+    for (const c of classes) {
+        if (!map.getLayer("hf-building-shadow-" + c.id)) {
+            map.addLayer({ ...base, id: "hf-building-shadow-" + c.id, filter: c.filter, paint: {
+                "fill-color": "#1a140c", "fill-opacity": 0.4, "fill-antialias": false,
+                "fill-translate": shift(c.k, 0.75, 1.6), "fill-translate-anchor": "viewport"
+            } }, "building");
+        }
     }
-    if (!map.getLayer("hf-building-wall")) {
-        map.addLayer({ ...base, id: "hf-building-wall", paint: {
-            "fill-pattern": wall, "fill-translate": wallShift, "fill-translate-anchor": "viewport"
-        } }, "building");
-    }
-    if (!map.getLayer("hf-building-wall-edge")) {
-        map.addLayer({
-            id: "hf-building-wall-edge", type: "line", source: "openmaptiles", "source-layer": "building", minzoom: 15,
-            paint: { "line-color": "#4a3a26", "line-width": ["interpolate", ["linear"], ["zoom"], 15, 0.6, 18, 1.4],
-                     "line-translate": wallShift, "line-translate-anchor": "viewport" }
-        }, "building");
+    for (const c of classes) {
+        if (!map.getLayer("hf-building-wall-" + c.id)) {
+            map.addLayer({ ...base, id: "hf-building-wall-" + c.id, filter: c.filter, paint: {
+                "fill-pattern": c.wall, "fill-translate": shift(c.k, 0, 1), "fill-translate-anchor": "viewport"
+            } }, "building");
+        }
+        if (!map.getLayer("hf-building-wall-edge-" + c.id)) {
+            map.addLayer({
+                id: "hf-building-wall-edge-" + c.id, type: "line", source: "openmaptiles", "source-layer": "building", minzoom: 15,
+                filter: c.filter,
+                paint: { "line-color": "#4a3a26", "line-width": ["interpolate", ["linear"], ["zoom"], 15, 0.6, 18, 1.4],
+                         "line-translate": shift(c.k, 0, 1), "line-translate-anchor": "viewport" }
+            }, "building");
+        }
     }
     map.setPaintProperty("building", "fill-pattern", roof);
     map.setPaintProperty("building", "fill-antialias", false);
