@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 126;
+const APP_VERSION = 127;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -6824,12 +6824,23 @@ function soldierTilesHtml(g) {
                 <div class="soldier-bar"><div style="width:${pct}%;background:${energyColor(pct)}"></div></div>
             </div>`;
     };
+    // Navngivne soldater først (højeste rang øverst til venstre), med rang og navn på flisen.
+    const named = state.groupModal ? namedInGroup(state.groupModal.kind, g.id) : [];
+    let html = named.map(n => {
+        const parts = escapeHtml(n.name).split(" ");
+        return `
+            <div class="soldier-tile named-tile" title="${rankTitle(n.heals)} ${escapeHtml(n.name)} · ${n.heals} ${n.heals === 1 ? "heling" : "helinger"}">
+                <img src="assets/tropper.png" class="pixel-img" />
+                <div class="named-rank">${rankTitle(n.heals)}</div>
+                <div class="named-name">${parts[0]}<br>${parts.slice(1).join(" ")}</div>
+            </div>`;
+    }).join("");
     let nr = 0;
-    let html = wounded.map(e => tile(e, ++nr)).join("");
-    const showHealthy = g.count <= GROUP_MODAL_MAX_TILES ? healthy : 0;
+    html += wounded.map(e => tile(e, ++nr)).join("");
+    const showHealthy = g.count <= GROUP_MODAL_MAX_TILES ? Math.max(0, healthy - named.length) : 0;
     for (let i = 0; i < showHealthy; i++) html += tile(hp, ++nr);
     let more = "";
-    if (showHealthy < healthy) more = `<p class="muted-hint">+ ${healthy} raske soldater med fuld energi (${hp}).</p>`;
+    if (showHealthy < healthy - named.length) more = `<p class="muted-hint">+ ${healthy - named.length} raske menige med fuld energi (${hp}).</p>`;
     return `<div class="soldier-grid">${html}</div>${more}`;
 }
 
@@ -9737,22 +9748,22 @@ window.openSoldiersPage = async function(tab = "alive") {
     </div>`;
 
     if (tab === "alive") {
-        const rows = alive.map(n => {
+        const tiles = alive.map(n => {
             const w = namedWhere(n);
             const click = w.kind ? `onclick="closeModal(); jumpToPoint(${w.lat}, ${w.lon}); openGroupModal('${w.kind}', ${JSON.stringify(String(w.id))})"` : "";
-            return `<div class="item-row" ${click ? `style="cursor:pointer" ${click}` : ""}>
-                <div class="item-row-top">
-                    <strong>${rankTitle(n.heals)} ${escapeHtml(n.name)}</strong>
-                    <span class="muted-hint">${n.heals} ${n.heals === 1 ? "heling" : "helinger"}</span>
-                </div>
-                <div class="muted-hint">${w.text} · navngivet ${fmtWhen(n.created_at)}</div>
+            const parts = escapeHtml(n.name).split(" ");
+            return `<div class="soldier-tile named-tile" ${click ? `style="cursor:pointer" ${click}` : ""} title="${rankTitle(n.heals)} ${escapeHtml(n.name)} · ${n.heals} ${n.heals === 1 ? "heling" : "helinger"} · ${w.text.replace(/<[^>]+>/g, "")}">
+                <img src="assets/tropper.png" class="pixel-img" />
+                <div class="named-rank">${rankTitle(n.heals)}</div>
+                <div class="named-name">${parts[0]}<br>${parts.slice(1).join(" ")}</div>
+                <div class="named-where">${w.text.split(" ")[0]}</div>
             </div>`;
         }).join("");
         body.innerHTML = `
             ${tabs}
-            <p class="muted-hint">Du har <strong>${total.toLocaleString("da-DK")}</strong> soldater i alt, heraf <strong>${alive.length}</strong> navngivne med rang. Resten er menige uden navn. En såret soldat, der heles på felthospitalet, får navn og stiger i rang for hver heling.</p>
+            <p class="muted-hint">Du har <strong>${total.toLocaleString("da-DK")}</strong> soldater i alt, heraf <strong>${alive.length}</strong> navngivne med rang. Højeste rang står øverst til venstre. Tryk på en soldat i felten for at hoppe til gruppen. 🏠 i barakken · 🏥 på hospitalet · 🪖 på vagt · 🚶 på march.</p>
             ${rankBadges ? `<p>${rankBadges}</p>` : ""}
-            ${rows ? `<div class="list-stack">${rows}</div>` : `<p class="muted-hint">Ingen navngivne soldater endnu. Send sårede soldater hjem til hospitalet, så får de navn, når de er raske.</p>`}`;
+            ${tiles ? `<div class="soldier-grid named-grid">${tiles}</div>` : `<p class="muted-hint">Ingen navngivne soldater endnu. Send sårede soldater hjem til hospitalet, så får de navn, når de er raske.</p>`}`;
     } else {
         const rows = fallen.map(n => `<div class="item-row" ${n.died_lat != null ? `style="cursor:pointer" onclick="closeModal(); jumpToPoint(${n.died_lat}, ${n.died_lon})"` : ""}>
                 <div class="item-row-top">
