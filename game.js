@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 96;
+const APP_VERSION = 97;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -492,7 +492,8 @@ function loadPixelTexture(url, scale = 2) {
             resolve({ width: canvas.width, height: canvas.height, data: imageData.data });
         };
         img.onerror = () => resolve(null);
-        img.src = url;
+        // Versionsnummeret på adressen sikrer, at browseren henter nye teksturer efter en opdatering.
+        img.src = url + "?v=" + APP_VERSION;
     });
 }
 
@@ -573,7 +574,8 @@ async function installPixelLandscape() {
     const beforeLayer = map.getLayer("waterway") ? "waterway" : undefined;
     const surfaces = [
         { id: "land-town", sourceLayer: "landuse", filter: ["==", ["get", "class"], "residential"], pattern: "img-town" },
-        { id: "land-farm", sourceLayer: "landcover", filter: ["==", ["get", "class"], "farmland"], pattern: "img-farm-0" },
+        // Marker: ensfarvet pløjejord langt væk, afgrøderækker tæt på (ellers bliver det striber).
+        { id: "land-farm", sourceLayer: "landcover", filter: ["==", ["get", "class"], "farmland"], pattern: ["step", ["zoom"], "img-farm-1", 14, "img-farm-0"] },
         { id: "land-park", sourceLayer: "park", filter: null, pattern: "img-grass" },
         { id: "land-grass", sourceLayer: "landcover", filter: ["==", ["get", "class"], "grass"], pattern: "img-grass" },
         { id: "land-wood", sourceLayer: "landcover", filter: ["==", ["get", "class"], "wood"], pattern: "img-wood" },
