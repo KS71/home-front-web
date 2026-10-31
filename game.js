@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 103;
+const APP_VERSION = 104;
 
 const SUPABASE_URL = "https://gtajdqbqbcqqgooaqahe.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_vH5S1tfDep32Umb_Ofy5_A_vlq0pmH1";
@@ -452,27 +452,35 @@ function initMap() {
         await installPixelLandscape();
         installGameLayers();
         mapReady = true;
+        refreshLandscape3D(true);
         renderBookmarksOnMap();
         renderBattlesOnMap();
         refreshViewportData();
         renderTroopsOnMap();
     });
 
-    map.on("move", () => waterCache.clear());
+    // Indeksér nye z14-vektorfliser straks når de ankommer, så 3D-bygninger og træer
+    // tegnes med det samme uden at vente på 'idle'.
+    map.on("sourcedata", (e) => {
+        if (!mapReady || e.sourceId !== "openmaptiles") return;
+        if (e.tile || e.isSourceLoaded) scheduleLandscapeTileSync();
+    });
+
+    map.on("move", () => {
+        waterCache.clear();
+        if (mapReady) onMapMoveLandscape3D();
+    });
 
     map.on("moveend", () => {
         if (!mapReady) return;
-        treesDirty = true;
-        refreshHouses();
+        refreshLandscape3D(false);
         refreshViewportData();
         loadCratersSoon();
     });
 
-    // Når kortet er færdigt med at tegne, ses der efter kratere i kortets bygninger,
-    // og træerne drysses ud i de skove, der nu er på skærmen.
+    // Når kortet er færdigt med at tegne, ses der efter kratere i kortets bygninger.
     map.on("idle", () => {
         if (!mapReady) return;
-        if (treesDirty) { treesDirty = false; refreshHouses(); refreshTrees(); }
         checkCraterFires();
     });
 
@@ -890,7 +898,9 @@ function installChimneys() {}
 function installHouseLayer() {
     if (map.getSource("src-houses")) return;
     const empty = { type: "FeatureCollection", features: [] };
-    map.addSource("src-houses", { type: "geojson", data: empty });
+    // tolerance: 0 og buffer: 32 gør MapLibres Web Worker-klipning markant hurtigere,
+    // fordi vores 3D-bygningspolygoner allerede er forenklede til skarpe hjørner.
+    map.addSource("src-houses", { type: "geojson", data: empty, tolerance: 0, buffer: 24, maxzoom: 16 });
     const before = map.getLayer("waterway_line_label") ? "waterway_line_label" : undefined;
 
     // 1. Fodgængerfelter på vejene ved vejkryds
@@ -923,24 +933,24 @@ function installHouseLayer() {
         paint: { "fill-color": "#1a202e", "fill-opacity": 0.68 }
     }, before);
 
-    // 4. Sydfacade under taget
+    // 4. Sydfacade under taget (med skarp mørk underkant direkte i WebGL)
     map.addLayer({
         id: "lyr-b3d-wall",
         type: "fill",
         source: "src-houses",
         minzoom: HOUSE_MIN_ZOOM,
         filter: ["==", ["get", "k"], "wall"],
-        paint: { "fill-color": ["get", "c"] }
+        paint: { "fill-color": ["get", "c"], "fill-outline-color": "#252934" }
     }, before);
 
-    // 5. Lys tagkant / udhæng / parapet
+    // 5. Lys tagkant / udhæng / parapet (med skarp mørk yderkontur direkte i WebGL)
     map.addLayer({
         id: "lyr-b3d-eave",
         type: "fill",
         source: "src-houses",
         minzoom: HOUSE_MIN_ZOOM,
         filter: ["==", ["get", "k"], "eave"],
-        paint: { "fill-color": ["get", "c"] }
+        paint: { "fill-color": ["get", "c"], "fill-outline-color": "#262a34" }
     }, before);
 
     // 6. 3D-tagflader (solside, mellemtone, skyggeside og forsænket fladt tag)
@@ -950,7 +960,10 @@ function installHouseLayer() {
         source: "src-houses",
         minzoom: HOUSE_MIN_ZOOM,
         filter: ["==", ["get", "k"], "slope"],
-        paint: { "fill-color": ["get", "c"] }
+        paint: {
+            "fill-color": ["get", "c"],
+            "fill-outline-color": ["case", ["==", ["get", "o"], 1], "#555862", "rgba(0,0,0,0)"]
+        }
     }, before);
 
     // 7. Små slagskygger fra skorstene og tagopbygninger
@@ -963,24 +976,27 @@ function installHouseLayer() {
         paint: { "fill-color": "#1a202e", "fill-opacity": 0.62 }
     }, before);
 
-    // 8. Ovenlysvinduer, solceller og skorstene
+    // 8. Ovenlysvinduer, solceller og skorstene (med lys ramme om vinduer og mørk kant om skorstene)
     map.addLayer({
         id: "lyr-b3d-detail",
         type: "fill",
         source: "src-houses",
         minzoom: HOUSE_MIN_ZOOM,
         filter: ["==", ["get", "k"], "detail"],
-        paint: { "fill-color": ["get", "c"] }
+        paint: {
+            "fill-color": ["get", "c"],
+            "fill-outline-color": ["match", ["get", "c"], "#e6ddd0", "#262a34", "#dce4ec"]
+        }
     }, before);
 
-    // 9. Skarpe konturer, rygningslinjer og gratlinjer
+    // 9. Rygningslinjer og gratlinjer på skrå tage
     map.addLayer({
         id: "lyr-b3d-line",
         type: "line",
         source: "src-houses",
         minzoom: HOUSE_MIN_ZOOM,
         filter: ["==", ["get", "k"], "line"],
-        layout: { "line-join": "round", "line-cap": "round" },
+        layout: { "line-join": "bevel", "line-cap": "butt" },
         paint: {
             "line-color": ["get", "c"],
             "line-width": ["interpolate", ["linear"], ["zoom"], 15, ["*", ["get", "w"], 0.55], 17, ["get", "w"], 20, ["*", ["get", "w"], 2.2]],
@@ -989,19 +1005,47 @@ function installHouseLayer() {
     }, before);
 }
 
-function ringAreaM2(ring, cosLat) {
-    let a = 0;
-    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-        const xi = ring[i][0] * 111320 * cosLat, yi = ring[i][1] * 111320;
-        const xj = ring[j][0] * 111320 * cosLat, yj = ring[j][1] * 111320;
-        a += xj * yi - xi * yj;
-    }
-    return Math.abs(a) / 2;
+const TREE_MIN_ZOOM = 15;
+const TREE_GRID_M = 8.5;
+const TREE_MAX = 14000;
+
+function hash2(i, j) {
+    let h = (i * 374761393 + j * 668265263) | 0;
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return (h ^ (h >>> 16)) >>> 0;
 }
 
-// Gemmer aktuelle bygningers omrids på skærmen, så refreshTrees() kan sætte havetræer rundt om
-// husene uden nogensinde at placere et træ oven i et hus.
-let currentScreenBuildings = [];
+function pointInRings(lon, lat, rings) {
+    let inside = false;
+    for (const ring of rings) {
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+            const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+            if ((yi > lat) !== (yj > lat) && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) inside = !inside;
+        }
+    }
+    return inside;
+}
+
+const TREE_KINDS = {
+    wood: { density: 0.95, pick: r => r < 0.22 ? "img-pine-1" : r < 0.38 ? "img-pine-2" : r < 0.62 ? "img-tree-1" : r < 0.84 ? "img-tree-2" : r < 0.95 ? "img-tree-3" : "img-bush-1" },
+    park: { density: 0.30, pick: r => r < 0.38 ? "img-tree-1" : r < 0.68 ? "img-tree-2" : r < 0.88 ? "img-tree-3" : "img-bush-2" },
+    town: { density: 0.36, pick: r => r < 0.34 ? "img-tree-1" : r < 0.64 ? "img-tree-2" : r < 0.84 ? "img-tree-3" : r < 0.92 ? "img-bush-1" : "img-bush-2" },
+    grass: { density: 0.16, pick: r => r < 0.45 ? "img-tree-2" : r < 0.75 ? "img-tree-3" : "img-bush-1" }
+};
+
+function installTreeLayer() {
+    if (map.getSource("src-trees")) return;
+    map.addSource("src-trees", { type: "geojson", data: { type: "FeatureCollection", features: [] }, tolerance: 0, maxzoom: 16 });
+    map.addLayer({
+        id: "lyr-trees", type: "symbol", source: "src-trees", minzoom: TREE_MIN_ZOOM,
+        layout: {
+            "icon-image": ["get", "sprite"], "icon-anchor": "center",
+            "icon-allow-overlap": true, "icon-ignore-placement": true,
+            "icon-size": metreIconSize(28, 0.25),
+            "symbol-sort-key": ["get", "sort"]
+        }
+    }, map.getLayer("waterway_line_label") ? "waterway_line_label" : undefined);
+}
 
 function slopeColorForNormal(nx, ny, pal) {
     // Sollys kommer fra nordvest: (-0.68, +0.73)
@@ -1040,122 +1084,315 @@ function insetPolygonCCW(pts, insetM) {
     return out;
 }
 
-function buildCrosswalkFeatures(b, out) {
-    if (map.getZoom() < 15.6) return;
-    const roadLayers = ["highway_minor", "highway_major_inner"].filter(id => map.getLayer(id));
-    if (!roadLayers.length) return;
-    const rFeats = map.queryRenderedFeatures({ layers: roadLayers });
-    const nodes = new Map();
-    const cosLat = Math.max(Math.cos(((b.getNorth() + b.getSouth()) * 0.5) * RAD_PER_DEG), MIN_COS);
-    const seenSegs = new Set();
+// ---------------------------------------------------------------------------
+// Lynhurtig chunk-cache og forudindlæsning (overscan) til 3D-bygninger og træer (v104):
+//  1) Hver z14-vektorflise fra OpenMapTiles afkodes KUN én gang og fordeles i ~335×335 m felter (chunks).
+//  2) Hvert felt beregner og gemmer sine 3D-tage, mure, skygger, fodgængerfelter og træer i hukommelsen,
+//     samlet i få MultiPolygon/MultiLineString-grupper pr. 670×670 m stor-felt (~90 features i stedet for 25.000).
+//  3) En bred buffer uden for skærmkanten tegnes på forhånd og opdateres løbende under panorering,
+//     så bygninger og træer allerede står klar, når man trækker kortet.
+// ---------------------------------------------------------------------------
+const CHUNK_LAT = 0.0016; // ~178 m nord-syd
+const CHUNK_LON = 0.0028; // ~176 m øst-vest i Danmark
+const LANDSCAPE_DETAIL_ZOOM = 15.65;
 
-    const addSeg = (p1, p2) => {
-        const k1 = Math.round(p1[1] * 2e4) + ":" + Math.round(p1[0] * 1.4e4);
-        const k2 = Math.round(p2[1] * 2e4) + ":" + Math.round(p2[0] * 1.4e4);
-        if (k1 === k2) return;
-        const sk = k1 < k2 ? k1 + "|" + k2 : k2 + "|" + k1;
-        if (seenSegs.has(sk)) return;
-        seenSegs.add(sk);
-        if (!nodes.has(k1)) nodes.set(k1, { lon: p1[0], lat: p1[1], dirs: [] });
-        if (!nodes.has(k2)) nodes.set(k2, { lon: p2[0], lat: p2[1], dirs: [] });
-        nodes.get(k1).dirs.push(p2);
-        nodes.get(k2).dirs.push(p1);
-    };
+const indexedSourceTiles = new Set();
+const seenRawBuildings = new Set();
+const seenRawRoadSegs = new Set();
+const rawRoadNodes = new Map();
+const rawChunks = new Map();       // "cx:cy" -> { rawBlds, roadSegs, roadNodes, lands }
+const bldChunkCache = new Map();   // "cx:cy" -> { corePolys, detailPolys, lines, blds }
+const fullChunkCache = new Map();  // "cx:cy" -> { corePolys, detailPolys, lines, treesLo, treesHi }
 
-    for (const rf of rFeats) {
-        const cls = rf.properties?.class;
-        if (cls === "service" || cls === "track" || cls === "path") continue;
-        const lines = rf.geometry.type === "LineString" ? [rf.geometry.coordinates]
-            : rf.geometry.type === "MultiLineString" ? rf.geometry.coordinates : [];
-        for (const line of lines) {
-            for (let i = 0; i < line.length - 1; i++) addSeg(line[i], line[i + 1]);
-        }
+let landscapeTileGen = 0;
+let landscapeTileTimer = null;
+let lastLandscapeMovePushMs = 0;
+let renderedLandscapeWin = {
+    valid: false,
+    cx0: 0, cx1: -1, cy0: 0, cy1: -1,
+    south: 0, north: 0, west: 0, east: 0,
+    detailHi: false,
+    tileGen: -1
+};
+
+function getOrCreateRawChunk(cx, cy) {
+    const ck = cx + ":" + cy;
+    let ch = rawChunks.get(ck);
+    if (!ch) {
+        ch = { rawBlds: [], roadSegs: [], roadNodes: [], lands: [] };
+        rawChunks.set(ck, ch);
     }
+    return ch;
+}
 
-    let xwCount = 0;
-    for (const node of nodes.values()) {
-        if (node.dirs.length < 3) continue; // Kun rigtige vejkryds
-        if (node.lat < b.getSouth() || node.lat > b.getNorth() || node.lon < b.getWest() || node.lon > b.getEast()) continue;
-        for (const target of node.dirs) {
-            const dx = (target[0] - node.lon) * 111320 * cosLat;
-            const dy = (target[1] - node.lat) * 111320;
-            const len = Math.hypot(dx, dy);
-            if (len < 18) continue;
-            const ux = dx / len, uy = dy / len;
-            const nx = -uy, ny = ux;
-            const distFromCorner = 7.8; // meter fra krydsets midte
-            const cx = ux * distFromCorner, cy = uy * distFromCorner;
-            const stripeHalfLen = 1.25;
-            const stripeHalfW = 0.28;
-            for (const off of [-2.1, -1.05, 0, 1.05, 2.1]) {
-                const sx = cx + nx * off, sy = cy + ny * off;
-                const c0 = [node.lon + (sx - ux * stripeHalfLen - nx * stripeHalfW) / (111320 * cosLat), node.lat + (sy - uy * stripeHalfLen - ny * stripeHalfW) / 111320];
-                const c1 = [node.lon + (sx + ux * stripeHalfLen - nx * stripeHalfW) / (111320 * cosLat), node.lat + (sy + uy * stripeHalfLen - ny * stripeHalfW) / 111320];
-                const c2 = [node.lon + (sx + ux * stripeHalfLen + nx * stripeHalfW) / (111320 * cosLat), node.lat + (sy + uy * stripeHalfLen + ny * stripeHalfW) / 111320];
-                const c3 = [node.lon + (sx - ux * stripeHalfLen + nx * stripeHalfW) / (111320 * cosLat), node.lat + (sy - uy * stripeHalfLen + ny * stripeHalfW) / 111320];
-                out.push({ type: "Feature", properties: { k: "xwalk" }, geometry: { type: "Polygon", coordinates: [[c0, c1, c2, c3, c0]] } });
-            }
-            if (++xwCount > 160) return;
+function invalidateChunkAndNeighbors(cx, cy) {
+    const ck = cx + ":" + cy;
+    bldChunkCache.delete(ck);
+    for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+            fullChunkCache.delete((cx + dx) + ":" + (cy + dy));
         }
     }
 }
 
-function refreshHouses() {
-    if (!mapReady || !map.getSource("src-houses")) return;
-    const z = map.getZoom();
-    const empty = { type: "FeatureCollection", features: [] };
-    if (z < HOUSE_MIN_ZOOM) {
-        currentScreenBuildings = [];
-        map.getSource("src-houses").setData(empty);
-        return;
-    }
-    const feats = [
-        ...map.queryRenderedFeatures({ layers: ["building"] }),
-        ...map.querySourceFeatures("openmaptiles", { sourceLayer: "building" })
-    ];
-    const seen = new Set();
-    const out = [];
-    const screenBlds = [];
-    const b = map.getBounds();
-    const padLat = (b.getNorth() - b.getSouth()) * 0.22, padLon = (b.getEast() - b.getWest()) * 0.22;
-    const south = b.getSouth() - padLat, north = b.getNorth() + padLat, west = b.getWest() - padLon, east = b.getEast() + padLon;
+function resetLandscapeCachesIfHuge() {
+    if (rawChunks.size <= 8000) return;
+    indexedSourceTiles.clear();
+    seenRawBuildings.clear();
+    seenRawRoadSegs.clear();
+    rawRoadNodes.clear();
+    rawChunks.clear();
+    bldChunkCache.clear();
+    fullChunkCache.clear();
+    renderedLandscapeWin.valid = false;
+}
 
-    const polyFeat = (coords, props) => ({
-        type: "Feature",
-        properties: props,
-        geometry: { type: "Polygon", coordinates: [coords] }
-    });
-    const lineFeat = (coords, c, w = 1.1, op = 0.92) => ({
-        type: "Feature",
-        properties: { k: "line", c, w, op },
-        geometry: { type: "LineString", coordinates: coords }
-    });
+function syncVectorTilesToChunks() {
+    if (!map || !map.getSource("openmaptiles")) return false;
+    resetLandscapeCachesIfHuge();
 
-    buildCrosswalkFeatures(b, out);
+    let addedAny = false;
+    const dirtyChunks = new Set();
+    const markDirty = (cx, cy) => dirtyChunks.add(cx + ":" + cy);
 
-    for (const f of feats) {
-        const h = f.properties.render_height || 6;
-        const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.type === "MultiPolygon" ? f.geometry.coordinates : [];
-        for (const rings of polys) {
+    // Hjælper: hent kun nye z14-vektorfliser pr. kildelag uden at røre f.geometry på allerede kendte fliser
+    const collectNewLayerFeatures = (sourceLayer, filterObj) => {
+        const feats = map.querySourceFeatures("openmaptiles", filterObj ? { sourceLayer, filter: filterObj } : { sourceLayer });
+        const fresh = [];
+        const newTileIds = new Set();
+        for (let i = 0; i < feats.length; i++) {
+            const f = feats[i];
+            const vtf = f._vectorTileFeature;
+            if (vtf && vtf._z !== undefined) {
+                const tid = sourceLayer + ":" + vtf._z + "/" + vtf._x + "/" + vtf._y;
+                if (indexedSourceTiles.has(tid)) continue;
+                newTileIds.add(tid);
+            }
+            fresh.push(f);
+        }
+        for (const tid of newTileIds) indexedSourceTiles.add(tid);
+        return fresh;
+    };
+
+    // 1. Bygninger
+    const newBlds = collectNewLayerFeatures("building", null);
+    for (let idx = 0; idx < newBlds.length; idx++) {
+        const f = newBlds[idx];
+        const h = f.properties?.render_height || 6;
+        const g = f.geometry;
+        if (!g) continue;
+        const polys = g.type === "Polygon" ? [g.coordinates] : g.type === "MultiPolygon" ? g.coordinates : [];
+        for (let p = 0; p < polys.length; p++) {
+            const rings = polys[p];
             const raw = rings[0];
             if (!raw || raw.length < 4) continue;
             let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
-            for (const [x, y] of raw) {
+            for (let k = 0; k < raw.length; k++) {
+                const x = raw[k][0], y = raw[k][1];
                 if (x < minLon) minLon = x; if (x > maxLon) maxLon = x;
                 if (y < minLat) minLat = y; if (y > maxLat) maxLat = y;
             }
-            const lat0 = (minLat + maxLat) / 2, lon0 = (minLon + maxLon) / 2;
-            if (lat0 < south || lat0 > north || lon0 < west || lon0 > east) continue;
-            const key = Math.round(lat0 * 5e4) + ":" + Math.round(lon0 * 3e4);
-            if (seen.has(key)) continue;
-            seen.add(key);
+            const lat0 = (minLat + maxLat) * 0.5, lon0 = (minLon + maxLon) * 0.5;
+            const bKey = Math.round(lat0 * 5e4) + ":" + Math.round(lon0 * 3e4);
+            if (seenRawBuildings.has(bKey)) continue;
+            seenRawBuildings.add(bKey);
+            const cx = Math.floor(lon0 / CHUNK_LON);
+            const cy = Math.floor(lat0 / CHUNK_LAT);
+            getOrCreateRawChunk(cx, cy).rawBlds.push({
+                raw, h, multi: rings.length > 1,
+                minLon, maxLon, minLat, maxLat, lon0, lat0
+            });
+            markDirty(cx, cy);
+            addedAny = true;
+        }
+    }
 
+    // 2. Vejnet (til træ-afstand og fodgængerfelter ved vejkryds)
+    const newRoads = collectNewLayerFeatures("transportation", null);
+    const roadClasses = new Set(["motorway", "trunk", "primary", "secondary", "tertiary", "minor", "service"]);
+    const xwalkClasses = new Set(["trunk", "primary", "secondary", "tertiary", "minor"]);
+    for (let idx = 0; idx < newRoads.length; idx++) {
+        const rf = newRoads[idx];
+        const props = rf.properties;
+        if (!props || props.brunnel === "tunnel") continue;
+        const cls = props.class;
+        if (!roadClasses.has(cls)) continue;
+        const g = rf.geometry;
+        if (!g) continue;
+        const lines = g.type === "LineString" ? [g.coordinates] : g.type === "MultiLineString" ? g.coordinates : [];
+        const forXwalk = xwalkClasses.has(cls);
+
+        for (let l = 0; l < lines.length; l++) {
+            const line = lines[l];
+            for (let i = 0; i < line.length - 1; i++) {
+                const p1 = line[i], p2 = line[i + 1];
+                const k1 = Math.round(p1[1] * 2e4) + ":" + Math.round(p1[0] * 1.4e4);
+                const k2 = Math.round(p2[1] * 2e4) + ":" + Math.round(p2[0] * 1.4e4);
+                if (k1 === k2) continue;
+                const sk = k1 < k2 ? k1 + "|" + k2 : k2 + "|" + k1;
+                if (seenRawRoadSegs.has(sk)) continue;
+                seenRawRoadSegs.add(sk);
+
+                const seg = {
+                    x1: p1[0], y1: p1[1], x2: p2[0], y2: p2[1],
+                    minX: Math.min(p1[0], p2[0]) - 0.00012,
+                    maxX: Math.max(p1[0], p2[0]) + 0.00012,
+                    minY: Math.min(p1[1], p2[1]) - 0.00008,
+                    maxY: Math.max(p1[1], p2[1]) + 0.00008
+                };
+                const cx0 = Math.floor(seg.minX / CHUNK_LON), cx1 = Math.floor(seg.maxX / CHUNK_LON);
+                const cy0 = Math.floor(seg.minY / CHUNK_LAT), cy1 = Math.floor(seg.maxY / CHUNK_LAT);
+                for (let cy = cy0; cy <= cy1; cy++) {
+                    for (let cx = cx0; cx <= cx1; cx++) {
+                        getOrCreateRawChunk(cx, cy).roadSegs.push(seg);
+                        markDirty(cx, cy);
+                    }
+                }
+                addedAny = true;
+
+                if (forXwalk) {
+                    let n1 = rawRoadNodes.get(k1);
+                    if (!n1) {
+                        const ncx = Math.floor(p1[0] / CHUNK_LON), ncy = Math.floor(p1[1] / CHUNK_LAT);
+                        n1 = { lon: p1[0], lat: p1[1], cx: ncx, cy: ncy, dirs: [] };
+                        rawRoadNodes.set(k1, n1);
+                        getOrCreateRawChunk(ncx, ncy).roadNodes.push(n1);
+                    }
+                    n1.dirs.push(p2);
+                    markDirty(n1.cx, n1.cy);
+
+                    let n2 = rawRoadNodes.get(k2);
+                    if (!n2) {
+                        const ncx = Math.floor(p2[0] / CHUNK_LON), ncy = Math.floor(p2[1] / CHUNK_LAT);
+                        n2 = { lon: p2[0], lat: p2[1], cx: ncx, cy: ncy, dirs: [] };
+                        rawRoadNodes.set(k2, n2);
+                        getOrCreateRawChunk(ncx, ncy).roadNodes.push(n2);
+                    }
+                    n2.dirs.push(p1);
+                    markDirty(n2.cx, n2.cy);
+                }
+            }
+        }
+    }
+
+    // 3. Arealtyper til skov-, park- og havetræer (prioritet: wood=0, park=1, town=2, grass=3)
+    const addLandPolys = (feats, getKind) => {
+        for (let idx = 0; idx < feats.length; idx++) {
+            const f = feats[idx];
+            const kindKey = getKind(f);
+            if (!kindKey) continue;
+            const g = f.geometry;
+            if (!g) continue;
+            const polys = g.type === "Polygon" ? [g.coordinates] : g.type === "MultiPolygon" ? g.coordinates : [];
+            const prio = kindKey === "wood" ? 0 : kindKey === "park" ? 1 : kindKey === "town" ? 2 : 3;
+            for (let p = 0; p < polys.length; p++) {
+                const rings = polys[p];
+                const outer = rings[0];
+                if (!outer || outer.length < 4) continue;
+                let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
+                for (let k = 0; k < outer.length; k++) {
+                    const x = outer[k][0], y = outer[k][1];
+                    if (x < minLon) minLon = x; if (x > maxLon) maxLon = x;
+                    if (y < minLat) minLat = y; if (y > maxLat) maxLat = y;
+                }
+                const item = { kindKey, prio, isWood: kindKey === "wood", rings, minLon, maxLon, minLat, maxLat };
+                const cx0 = Math.floor(minLon / CHUNK_LON), cx1 = Math.floor(maxLon / CHUNK_LON);
+                const cy0 = Math.floor(minLat / CHUNK_LAT), cy1 = Math.floor(maxLat / CHUNK_LAT);
+                for (let cy = cy0; cy <= cy1; cy++) {
+                    for (let cx = cx0; cx <= cx1; cx++) {
+                        getOrCreateRawChunk(cx, cy).lands.push(item);
+                        markDirty(cx, cy);
+                    }
+                }
+                addedAny = true;
+            }
+        }
+    };
+
+    addLandPolys(collectNewLayerFeatures("landcover", null), f => {
+        const c = f.properties?.class;
+        return c === "wood" ? "wood" : c === "grass" ? "grass" : null;
+    });
+    addLandPolys(collectNewLayerFeatures("park", null), () => "park");
+    addLandPolys(collectNewLayerFeatures("landuse", null), f => f.properties?.class === "residential" ? "town" : null);
+
+    if (dirtyChunks.size > 0) {
+        for (const ck of dirtyChunks) {
+            const sep = ck.indexOf(":");
+            invalidateChunkAndNeighbors(Number(ck.slice(0, sep)), Number(ck.slice(sep + 1)));
+        }
+        landscapeTileGen++;
+    }
+    return addedAny;
+}
+
+function buildChunkBuildings(cx, cy) {
+    const ck = cx + ":" + cy;
+    let cached = bldChunkCache.get(ck);
+    if (cached) return cached;
+
+    const corePolys = new Map();   // "k|c|o" -> Array<[ring]>
+    const detailPolys = new Map(); // "k|c|o" -> Array<[ring]>
+    const lines = new Map();       // "c|w"   -> Array<coords>
+    const blds = [];
+
+    const pushPoly = (targetMap, ring, k, c = "", o = 0) => {
+        const key = k + "|" + c + "|" + o;
+        let arr = targetMap.get(key);
+        if (!arr) { arr = []; targetMap.set(key, arr); }
+        arr.push([ring]);
+    };
+    const pushLine = (coords, c, w = 1.1) => {
+        const key = c + "|" + w;
+        let arr = lines.get(key);
+        if (!arr) { arr = []; lines.set(key, arr); }
+        arr.push(coords);
+    };
+
+    const rawCh = rawChunks.get(ck);
+    if (rawCh) {
+        // 1. Fodgængerfelter ved vejkryds i dette felt
+        const cSouth = cy * CHUNK_LAT, cNorth = (cy + 1) * CHUNK_LAT;
+        const cWest = cx * CHUNK_LON, cEast = (cx + 1) * CHUNK_LON;
+        const cosChunk = Math.max(Math.cos(((cSouth + cNorth) * 0.5) * RAD_PER_DEG), MIN_COS);
+        let xwCount = 0;
+        for (let nIdx = 0; nIdx < rawCh.roadNodes.length && xwCount < 14; nIdx++) {
+            const node = rawCh.roadNodes[nIdx];
+            if (node.dirs.length < 3) continue;
+            if (node.lat < cSouth || node.lat >= cNorth || node.lon < cWest || node.lon >= cEast) continue;
+            for (let dIdx = 0; dIdx < node.dirs.length && xwCount < 14; dIdx++) {
+                const target = node.dirs[dIdx];
+                const dx = (target[0] - node.lon) * 111320 * cosChunk;
+                const dy = (target[1] - node.lat) * 111320;
+                const len = Math.hypot(dx, dy);
+                if (len < 18) continue;
+                const ux = dx / len, uy = dy / len;
+                const nx = -uy, ny = ux;
+                const cxM = ux * 7.8, cyM = uy * 7.8;
+                const stripeHalfLen = 1.25, stripeHalfW = 0.28;
+                const invLon = 1 / (111320 * cosChunk), invLat = 1 / 111320;
+                for (const off of [-2.1, -1.05, 0, 1.05, 2.1]) {
+                    const sx = cxM + nx * off, sy = cyM + ny * off;
+                    const c0 = [node.lon + (sx - ux * stripeHalfLen - nx * stripeHalfW) * invLon, node.lat + (sy - uy * stripeHalfLen - ny * stripeHalfW) * invLat];
+                    const c1 = [node.lon + (sx + ux * stripeHalfLen - nx * stripeHalfW) * invLon, node.lat + (sy + uy * stripeHalfLen - ny * stripeHalfW) * invLat];
+                    const c2 = [node.lon + (sx + ux * stripeHalfLen + nx * stripeHalfW) * invLon, node.lat + (sy + uy * stripeHalfLen + ny * stripeHalfW) * invLat];
+                    const c3 = [node.lon + (sx - ux * stripeHalfLen + ny * stripeHalfW) * invLon, node.lat + (sy - uy * stripeHalfLen + ny * stripeHalfW) * invLat];
+                    pushPoly(detailPolys, [c0, c1, c2, c3, c0], "xwalk");
+                }
+                xwCount++;
+            }
+        }
+
+        // 2. 3D-bygninger i dette felt
+        for (let bIdx = 0; bIdx < rawCh.rawBlds.length; bIdx++) {
+            const rb = rawCh.rawBlds[bIdx];
+            const { raw, h, multi, minLon, maxLon, minLat, maxLat, lon0, lat0 } = rb;
             const cosLat = Math.max(Math.cos(lat0 * RAD_PER_DEG), MIN_COS);
             const mPerLon = 111320 * cosLat;
             const mPerLat = 111320;
-            const toLL = (x, y) => [lon0 + x / mPerLon, lat0 + y / mPerLat];
+            const invMLon = 1 / mPerLon, invMLat = 1 / mPerLat;
+            const toLL = (x, y) => [lon0 + x * invMLon, lat0 + y * invMLat];
 
-            // Konverter til lokale meter omkring bygningens midtpunkt og rens næsten-identiske punkter
             let pts = [];
             for (let i = 0; i < raw.length - 1; i++) {
                 const px = (raw[i][0] - lon0) * mPerLon;
@@ -1169,7 +1406,6 @@ function refreshHouses() {
             }
             if (pts.length < 3) continue;
 
-            // Sikr mod-urs (CCW) omløbsretning og beregn faktisk grundareal
             let signed2 = 0;
             for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
                 signed2 += pts[j].x * pts[i].y - pts[i].x * pts[j].y;
@@ -1178,7 +1414,6 @@ function refreshHouses() {
             if (polyArea < HOUSE_MIN_AREA) continue;
             if (signed2 < 0) pts.reverse();
 
-            // Fjern kollineære mellempunkter på lige mure
             const clean = [];
             for (let i = 0; i < pts.length; i++) {
                 const p0 = pts[(i - 1 + pts.length) % pts.length];
@@ -1191,7 +1426,6 @@ function refreshHouses() {
             }
             if (clean.length >= 3) pts = clean;
 
-            // Find bygningens hovedretning (theta) vægtet efter murenes længde
             let sC = 0, sS = 0;
             for (let i = 0; i < pts.length; i++) {
                 const a = pts[i], bPt = pts[(i + 1) % pts.length];
@@ -1207,7 +1441,8 @@ function refreshHouses() {
 
             const projBounds = (ux_, uy_, vx_, vy_) => {
                 let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
-                for (const p of pts) {
+                for (let i = 0; i < pts.length; i++) {
+                    const p = pts[i];
                     const u = p.x * ux_ + p.y * uy_;
                     const v = p.x * vx_ + p.y * vy_;
                     if (u < u0) u0 = u; if (u > u1) u1 = u;
@@ -1227,26 +1462,23 @@ function refreshHouses() {
             const uvToXY = (u, v) => ({ x: u * ux + v * vx, y: u * uy + v * vy });
             const uvToLL = (u, v) => toLL(u * ux + v * vx, u * uy + v * vy);
 
-            // Vælg arkitektonisk stil ud fra husets faste GPS-koordinat
             const hSeed = hash2(Math.round(lat0 * 1e5), Math.round(lon0 * 1e5));
             let styleIdx;
             if (h >= 14 || polyArea > 900) {
                 const bigChoices = [0, 2, 5, 6, 7, 2, 6];
                 styleIdx = bigChoices[hSeed % bigChoices.length];
             } else {
-                // Fordeling som i referencebilledet: terrakotta, skifer, grøn, brun og moderne flade tage
                 const houseChoices = [0, 0, 1, 2, 2, 3, 4, 5, 6, 7];
                 styleIdx = houseChoices[hSeed % houseChoices.length];
             }
             const pal = BUILDING_PALETTES[styleIdx];
 
             const obbArea = Math.max(1, obb.L * obb.W);
-            const isRect = rings.length === 1 && polyArea <= 680 && (polyArea / obbArea) >= 0.72;
+            const isRect = !multi && polyArea <= 680 && (polyArea / obbArea) >= 0.72;
             const scale = isRect ? Math.sqrt(polyArea / obbArea) : 1.0;
             const hl = Math.max(2.2, 0.5 * obb.L * scale);
             const hw = Math.max(2.0, 0.5 * obb.W * scale);
 
-            // Bygningens hjørner i meter (enten det skarpe orienterede rektangel eller det præcise polygon)
             const bPts = isRect ? [
                 uvToXY(uMid - hl, vMid - hw),
                 uvToXY(uMid + hl, vMid - hw),
@@ -1254,11 +1486,10 @@ function refreshHouses() {
                 uvToXY(uMid - hl, vMid + hw)
             ] : pts;
 
-            // Gem husets boks til træ-kollisionstjek (lille margin så træer kan stå tæt ved huset)
             const padM = 0.6;
-            screenBlds.push({
-                minLon: minLon - padM / mPerLon, maxLon: maxLon + padM / mPerLon,
-                minLat: minLat - (padM + 1.4) / mPerLat, maxLat: maxLat + padM / mPerLat,
+            blds.push({
+                minLon: minLon - padM * invMLon, maxLon: maxLon + padM * invMLon,
+                minLat: minLat - (padM + 1.4) * invMLat, maxLat: maxLat + padM * invMLat,
                 lon0, lat0
             });
 
@@ -1269,39 +1500,64 @@ function refreshHouses() {
                 const pV0 = pSide > 0 ? vMid + hw : vMid - hw - 2.6;
                 const pV1 = pSide > 0 ? vMid + hw + 2.6 : vMid - hw;
                 const patioCoords = [uvToLL(pU0, pV0), uvToLL(pU1, pV0), uvToLL(pU1, pV1), uvToLL(pU0, pV1), uvToLL(pU0, pV0)];
-                out.push(polyFeat(patioCoords, { k: "patio", c: "#cbc3b4" }));
+                pushPoly(detailPolys, patioCoords, "patio", "#cbc3b4");
             }
 
-            // 2. Dyb slagskygge mod sydøst (+shDx, -shDy) og 3D-sydfacade (-wallH)
+            // 2. Dyb slagskygge mod sydøst og 3D-sydfacade
             const wallH = Math.min(9.5, Math.max(2.5, h * 0.40));
             const shDx = wallH * 1.15;
             const shDy = -wallH * 1.25;
+            const shOffY = -wallH * 0.55 + shDy;
 
-            const shRing = bPts.map(p => toLL(p.x + shDx, p.y - wallH * 0.55 + shDy));
-            shRing.push(shRing[0]);
-            out.push(polyFeat(shRing, { k: "shadow" }));
+            if (isRect) {
+                // Eksakt konveks 6-punkts slagskygge for rektangulære huse (3× færre skyggepolygoner)
+                const front = [false, false, false, false];
+                for (let i = 0; i < 4; i++) {
+                    const A = bPts[i], B = bPts[(i + 1) & 3];
+                    front[i] = ((B.y - A.y) * shDx - (B.x - A.x) * shOffY) > 0;
+                }
+                const hull = [];
+                for (let i = 0; i < 4; i++) {
+                    const pf = front[(i + 3) & 3], cf = front[i];
+                    const P = bPts[i];
+                    if (!pf && !cf) {
+                        hull.push(toLL(P.x, P.y));
+                    } else if (!pf && cf) {
+                        hull.push(toLL(P.x, P.y), toLL(P.x + shDx, P.y + shOffY));
+                    } else if (pf && cf) {
+                        hull.push(toLL(P.x + shDx, P.y + shOffY));
+                    } else {
+                        hull.push(toLL(P.x + shDx, P.y + shOffY), toLL(P.x, P.y));
+                    }
+                }
+                if (hull.length >= 3) {
+                    hull.push(hull[0]);
+                    pushPoly(corePolys, hull, "shadow");
+                }
+            } else {
+                const shRing = bPts.map(p => toLL(p.x + shDx, p.y + shOffY));
+                shRing.push(shRing[0]);
+                pushPoly(corePolys, shRing, "shadow");
+            }
 
             for (let i = 0; i < bPts.length; i++) {
                 const A = bPts[i], B = bPts[(i + 1) % bPts.length];
                 const edx = B.x - A.x, edy = B.y - A.y;
                 const elen = Math.hypot(edx, edy);
                 if (elen < 0.4) continue;
-                // Udadrettet normal for CCW polygon: (edy, -edx) / elen
                 const nx = edy / elen, ny = -edx / elen;
 
-                // Slagskyggens sideflade fra bygningen ud til skyggen
-                if (nx * shDx + ny * shDy > 0) {
+                if (!isRect && (nx * shDx + ny * shDy > 0)) {
                     const sq = [
                         toLL(A.x, A.y),
                         toLL(B.x, B.y),
-                        toLL(B.x + shDx, B.y - wallH * 0.55 + shDy),
-                        toLL(A.x + shDx, A.y - wallH * 0.55 + shDy),
+                        toLL(B.x + shDx, B.y + shOffY),
+                        toLL(A.x + shDx, A.y + shOffY),
                         toLL(A.x, A.y)
                     ];
-                    out.push(polyFeat(sq, { k: "shadow" }));
+                    pushPoly(corePolys, sq, "shadow");
                 }
 
-                // Sydfacade på alle sydvendte mure
                 if (ny < -0.10) {
                     const wColor = nx < -0.18 ? pal.wallL : nx > 0.18 ? pal.wallD : pal.wallM;
                     const wq = [
@@ -1311,15 +1567,14 @@ function refreshHouses() {
                         toLL(A.x, A.y - wallH),
                         toLL(A.x, A.y)
                     ];
-                    out.push(polyFeat(wq, { k: "wall", c: wColor }));
-                    out.push(lineFeat([toLL(A.x, A.y - wallH), toLL(B.x, B.y - wallH)], "#252934", 1.15, 0.92));
+                    pushPoly(corePolys, wq, "wall", wColor);
                 }
             }
 
             // 3. Ydre tagkant / gesims / parapet
             const outerRing = bPts.map(p => toLL(p.x, p.y));
             outerRing.push(outerRing[0]);
-            out.push(polyFeat(outerRing, { k: "eave", c: pal.trim }));
+            pushPoly(corePolys, outerRing, "eave", pal.trim);
 
             // 4. Tagflader (3D-valmtag, saddeltag eller forsænket fladt tag)
             if (isRect) {
@@ -1338,10 +1593,8 @@ function refreshHouses() {
                         uvToLL(uMid - dl, vMid + dw),
                         uvToLL(uMid - dl, vMid - dw)
                     ];
-                    out.push(polyFeat(deckCoords, { k: "slope", c: pal.deck }));
-                    out.push(lineFeat(deckCoords, "#555862", 0.85, 0.75));
+                    pushPoly(corePolys, deckCoords, "slope", pal.deck, 1);
 
-                    // Indvendig skyggekant langs nord-/vest-parapet
                     const shW = Math.min(0.75, dw * 0.35);
                     const edgesUV = [
                         { c: [[-dl, dw - shW], [dl, dw - shW], [dl, dw], [-dl, dw]], nx: vx, ny: vy },
@@ -1349,15 +1602,15 @@ function refreshHouses() {
                         { c: [[-dl, -dw], [-dl + shW, -dw], [-dl + shW, dw], [-dl, dw]], nx: -ux, ny: -uy },
                         { c: [[dl - shW, -dw], [dl, -dw], [dl, dw], [dl - shW, dw]], nx: ux, ny: uy }
                     ];
-                    for (const e of edgesUV) {
+                    for (let eIdx = 0; eIdx < edgesUV.length; eIdx++) {
+                        const e = edgesUV[eIdx];
                         if (e.nx * -0.68 + e.ny * 0.73 > 0.05) {
                             const sc = e.c.map(([u, v]) => uvToLL(uMid + u, vMid + v));
                             sc.push(sc[0]);
-                            out.push(polyFeat(sc, { k: "slope", c: pal.innerShade }));
+                            pushPoly(corePolys, sc, "slope", pal.innerShade, 0);
                         }
                     }
 
-                    // Ovenlysvinduer / solcelle-sektion på det flade tag
                     if (dl > 2.4 && dw > 2.0) {
                         const cols = dl > 5.0 ? 3 : 2;
                         const paneW = Math.min(1.5, (dl * 0.9) / cols);
@@ -1373,12 +1626,10 @@ function refreshHouses() {
                                 uvToLL(cu - paneW * 0.5, baseV + paneH * 0.5),
                                 uvToLL(cu - paneW * 0.5, baseV - paneH * 0.5)
                             ];
-                            out.push(polyFeat(pCoords, { k: "detail", c: "#2e4154" }));
-                            out.push(lineFeat(pCoords, "#dce4ec", 0.75, 0.85));
+                            pushPoly(detailPolys, pCoords, "detail", "#2e4154");
                         }
                     }
                 } else {
-                    // Valmtag (hipped) eller saddeltag (gabled) med 4 sol-/skyggebelyste tagflader
                     const isGabled = (hSeed % 3) === 0;
                     const hipInset = isGabled ? Math.min(0.6, il * 0.12) : Math.min(iw * 0.88, il * 0.72);
                     const rU = Math.max(0.2, il - hipInset);
@@ -1391,23 +1642,22 @@ function refreshHouses() {
                     const R2 = [uMid + rU, vMid];
 
                     const facets = [
-                        { pts: [NW, R1, R2, NE], nx: vx, ny: vy },     // +v langside
-                        { pts: [SW, SE, R2, R1], nx: -vx, ny: -vy },   // -v langside
-                        { pts: [SW, R1, NW], nx: -ux, ny: -uy },       // -u valmgavl
-                        { pts: [SE, NE, R2], nx: ux, ny: uy }          // +u valmgavl
+                        { pts: [NW, R1, R2, NE], nx: vx, ny: vy },
+                        { pts: [SW, SE, R2, R1], nx: -vx, ny: -vy },
+                        { pts: [SW, R1, NW], nx: -ux, ny: -uy },
+                        { pts: [SE, NE, R2], nx: ux, ny: uy }
                     ];
-                    for (const fc of facets) {
+                    for (let fIdx = 0; fIdx < facets.length; fIdx++) {
+                        const fc = facets[fIdx];
                         const coords = fc.pts.map(([u, v]) => uvToLL(u, v));
                         coords.push(coords[0]);
-                        out.push(polyFeat(coords, { k: "slope", c: slopeColorForNormal(fc.nx, fc.ny, pal) }));
+                        pushPoly(corePolys, coords, "slope", slopeColorForNormal(fc.nx, fc.ny, pal), 0);
                     }
 
-                    // Rygningslinje og gratlinjer (lys kant + mørk fuge)
-                    out.push(lineFeat([uvToLL(...R1), uvToLL(...R2)], pal.trim, 1.35, 0.9));
-                    out.push(lineFeat([uvToLL(...NW), uvToLL(...R1), uvToLL(...SW)], pal.trim, 0.9, 0.75));
-                    out.push(lineFeat([uvToLL(...NE), uvToLL(...R2), uvToLL(...SE)], pal.trim, 0.9, 0.75));
+                    pushLine([uvToLL(R1[0], R1[1]), uvToLL(R2[0], R2[1])], pal.trim, 1.35);
+                    pushLine([uvToLL(NW[0], NW[1]), uvToLL(R1[0], R1[1]), uvToLL(SW[0], SW[1])], pal.trim, 0.9);
+                    pushLine([uvToLL(NE[0], NE[1]), uvToLL(R2[0], R2[1]), uvToLL(SE[0], SE[1])], pal.trim, 0.9);
 
-                    // Ovenlysvinduer / solceller på den ene tagflade
                     if (il > 2.6 && iw > 2.2) {
                         const numWin = (hSeed & 1) && il > 4.2 ? 2 : 1;
                         const winSide = (hSeed & 2) ? 1 : -1;
@@ -1423,12 +1673,10 @@ function refreshHouses() {
                                 uvToLL(wu - wU, winV + wV),
                                 uvToLL(wu - wU, winV - wV)
                             ];
-                            out.push(polyFeat(wc, { k: "detail", c: "#2c3f52" }));
-                            out.push(lineFeat(wc, "#dce4ec", 0.7, 0.85));
+                            pushPoly(detailPolys, wc, "detail", "#2c3f52");
                         }
                     }
 
-                    // Skorsten med lille slagskygge på halvdelen af husene
                     if ((hSeed % 5) < 3 && il > 2.5) {
                         const cu = uMid + ((hSeed & 8) ? 0.32 : -0.32) * rU;
                         const cv = vMid + ((hSeed & 16) ? 0.22 : -0.22) * iw;
@@ -1441,7 +1689,7 @@ function refreshHouses() {
                             toLL(chXY.x - cs, chXY.y + cs),
                             toLL(chXY.x - cs, chXY.y - cs)
                         ];
-                        out.push(polyFeat(shCoords, { k: "dshadow" }));
+                        pushPoly(detailPolys, shCoords, "dshadow");
                         const chCoords = [
                             toLL(chXY.x - cs, chXY.y - cs),
                             toLL(chXY.x + cs, chXY.y - cs),
@@ -1449,12 +1697,10 @@ function refreshHouses() {
                             toLL(chXY.x - cs, chXY.y + cs),
                             toLL(chXY.x - cs, chXY.y - cs)
                         ];
-                        out.push(polyFeat(chCoords, { k: "detail", c: "#e6ddd0" }));
-                        out.push(lineFeat(chCoords, "#262a34", 0.75, 0.9));
+                        pushPoly(detailPolys, chCoords, "detail", "#e6ddd0");
                     }
                 }
             } else {
-                // Sammensatte, L-formede og store bygninger: ægte 3D-skråflader langs hver mur
                 const trimPts = insetPolygonCCW(bPts, 0.48);
                 const slopeW = pal.type === "flat" ? 1.15 : Math.min(4.5, Math.max(2.0, obb.W * 0.28));
                 const innerPts = insetPolygonCCW(trimPts, slopeW);
@@ -1462,7 +1708,7 @@ function refreshHouses() {
                 if (pal.type === "flat") {
                     const innerRing = innerPts.map(p => toLL(p.x, p.y));
                     innerRing.push(innerRing[0]);
-                    out.push(polyFeat(innerRing, { k: "slope", c: pal.deck }));
+                    pushPoly(corePolys, innerRing, "slope", pal.deck, 1);
                     for (let i = 0; i < trimPts.length; i++) {
                         const A = trimPts[i], B = trimPts[(i + 1) % trimPts.length];
                         const A2 = innerPts[i], B2 = innerPts[(i + 1) % innerPts.length];
@@ -1470,10 +1716,9 @@ function refreshHouses() {
                         const nx = edy / elen, ny = -edx / elen;
                         if (nx * -0.68 + ny * 0.73 < -0.05) {
                             const sc = [toLL(A.x, A.y), toLL(B.x, B.y), toLL(B2.x, B2.y), toLL(A2.x, A2.y), toLL(A.x, A.y)];
-                            out.push(polyFeat(sc, { k: "slope", c: pal.innerShade }));
+                            pushPoly(corePolys, sc, "slope", pal.innerShade, 0);
                         }
                     }
-                    out.push(lineFeat(innerRing, "#555862", 0.85, 0.75));
                 } else {
                     for (let i = 0; i < trimPts.length; i++) {
                         const A = trimPts[i], B = trimPts[(i + 1) % trimPts.length];
@@ -1481,185 +1726,197 @@ function refreshHouses() {
                         const edx = B.x - A.x, edy = B.y - A.y, elen = Math.hypot(edx, edy) || 1;
                         const nx = edy / elen, ny = -edx / elen;
                         const quad = [toLL(A.x, A.y), toLL(B.x, B.y), toLL(B2.x, B2.y), toLL(A2.x, A2.y), toLL(A.x, A.y)];
-                        out.push(polyFeat(quad, { k: "slope", c: slopeColorForNormal(nx, ny, pal) }));
-                        out.push(lineFeat([toLL(A.x, A.y), toLL(A2.x, A2.y)], pal.trim, 0.8, 0.65));
+                        pushPoly(corePolys, quad, "slope", slopeColorForNormal(nx, ny, pal), 0);
+                        pushLine([toLL(A.x, A.y), toLL(A2.x, A2.y)], pal.trim, 0.8);
                     }
                     const innerRing = innerPts.map(p => toLL(p.x, p.y));
                     innerRing.push(innerRing[0]);
-                    out.push(polyFeat(innerRing, { k: "slope", c: pal.midL }));
-                    out.push(lineFeat(innerRing, pal.trim, 1.15, 0.85));
+                    pushPoly(corePolys, innerRing, "slope", pal.midL, 0);
+                    pushLine(innerRing, pal.trim, 1.15);
                 }
             }
-
-            // Skarp mørk yderkontur rundt om taget
-            out.push(lineFeat(outerRing, "#262a34", 1.15, 0.92));
         }
     }
-    currentScreenBuildings = screenBlds;
-    map.getSource("src-houses").setData({ type: "FeatureCollection", features: out });
+
+    cached = { corePolys, detailPolys, lines, blds };
+    bldChunkCache.set(ck, cached);
+    return cached;
 }
 
-// ---------------------------------------------------------------------------
-// Fyldige træer i skove, parker OG i villahaver/langs veje (som i referencebilledet).
-// Træerne undgår automatisk alle bygningers fodaftryk samt selve kørebanen/fortovet.
-// ---------------------------------------------------------------------------
-const TREE_MIN_ZOOM = 15;
-const TREE_GRID_M = 8.5;
-const TREE_MAX = 9000;
-let treesDirty = true;
+function buildFullChunk3D(cx, cy) {
+    const ck = cx + ":" + cy;
+    let full = fullChunkCache.get(ck);
+    if (full) return full;
 
-function hash2(i, j) {
-    let h = (i * 374761393 + j * 668265263) | 0;
-    h = Math.imul(h ^ (h >>> 13), 1274126177);
-    return (h ^ (h >>> 16)) >>> 0;
-}
+    const centerBld = buildChunkBuildings(cx, cy);
+    const cSouth = cy * CHUNK_LAT, cNorth = (cy + 1) * CHUNK_LAT;
+    const cWest = cx * CHUNK_LON, cEast = (cx + 1) * CHUNK_LON;
+    const cosLat0 = Math.max(Math.cos(((cSouth + cNorth) * 0.5) * RAD_PER_DEG), MIN_COS);
+    const mPerLon0 = 111320 * cosLat0;
 
-function pointInRings(lon, lat, rings) {
-    let inside = false;
-    for (const ring of rings) {
-        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-            const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
-            if ((yi > lat) !== (yj > lat) && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) inside = !inside;
+    // Byg et lokalt ~20 m rumligt gitter (spatial hash) over bygninger og veje i dette felt + nabokanten,
+    // så hvert træs kollisionstjek klares i O(1) tid i stedet for lineær søgning.
+    const CELL_LAT = 0.00018; // ~20 m
+    const CELL_LON = 0.00032; // ~20 m
+    const padLon = 0.00025, padLat = 0.00018;
+    const gWest = cWest - padLon, gEast = cEast + padLon;
+    const gSouth = cSouth - padLat, gNorth = cNorth + padLat;
+    const gxCols = Math.max(1, Math.ceil((gEast - gWest) / CELL_LON) + 1);
+    const gyRows = Math.max(1, Math.ceil((gNorth - gSouth) / CELL_LAT) + 1);
+    const bldGrid = new Array(gxCols * gyRows);
+    const roadGrid = new Array(gxCols * gyRows);
+
+    const clampI = (v, hi) => v < 0 ? 0 : v >= hi ? hi - 1 : v;
+
+    for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+            const nb = buildChunkBuildings(cx + dx, cy + dy);
+            for (let i = 0; i < nb.blds.length; i++) {
+                const sb = nb.blds[i];
+                if (sb.maxLon < gWest || sb.minLon > gEast || sb.maxLat < gSouth || sb.minLat > gNorth) continue;
+                const x0 = clampI(Math.floor((sb.minLon - gWest) / CELL_LON), gxCols);
+                const x1 = clampI(Math.floor((sb.maxLon - gWest) / CELL_LON), gxCols);
+                const y0 = clampI(Math.floor((sb.minLat - gSouth) / CELL_LAT), gyRows);
+                const y1 = clampI(Math.floor((sb.maxLat - gSouth) / CELL_LAT), gyRows);
+                for (let gy = y0; gy <= y1; gy++) {
+                    const rowOff = gy * gxCols;
+                    for (let gx = x0; gx <= x1; gx++) {
+                        let cell = bldGrid[rowOff + gx];
+                        if (!cell) { cell = []; bldGrid[rowOff + gx] = cell; }
+                        cell.push(sb);
+                    }
+                }
+            }
         }
     }
-    return inside;
-}
 
-const TREE_KINDS = {
-    wood: { density: 0.95, pick: r => r < 0.22 ? "img-pine-1" : r < 0.38 ? "img-pine-2" : r < 0.62 ? "img-tree-1" : r < 0.84 ? "img-tree-2" : r < 0.95 ? "img-tree-3" : "img-bush-1" },
-    park: { density: 0.30, pick: r => r < 0.38 ? "img-tree-1" : r < 0.68 ? "img-tree-2" : r < 0.88 ? "img-tree-3" : "img-bush-2" },
-    town: { density: 0.36, pick: r => r < 0.34 ? "img-tree-1" : r < 0.64 ? "img-tree-2" : r < 0.84 ? "img-tree-3" : r < 0.92 ? "img-bush-1" : "img-bush-2" },
-    grass: { density: 0.16, pick: r => r < 0.45 ? "img-tree-2" : r < 0.75 ? "img-tree-3" : "img-bush-1" }
-};
-
-function installTreeLayer() {
-    if (map.getSource("src-trees")) return;
-    map.addSource("src-trees", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-    map.addLayer({
-        id: "lyr-trees", type: "symbol", source: "src-trees", minzoom: TREE_MIN_ZOOM,
-        layout: {
-            "icon-image": ["get", "sprite"], "icon-anchor": "center",
-            "icon-allow-overlap": true, "icon-ignore-placement": true,
-            "icon-size": metreIconSize(28, 0.25),
-            "symbol-sort-key": ["get", "sort"]
-        }
-    }, map.getLayer("waterway_line_label") ? "waterway_line_label" : undefined);
-}
-
-function refreshTrees() {
-    if (!mapReady || !map.getSource("src-trees")) return;
-    const z = map.getZoom();
-    const empty = { type: "FeatureCollection", features: [] };
-    if (z < TREE_MIN_ZOOM) { map.getSource("src-trees").setData(empty); return; }
-    const step = z < 15.6 ? 2 : 1;
-    const b = map.getBounds();
-    const cosLat0 = Math.max(Math.cos(((b.getNorth() + b.getSouth()) * 0.5) * RAD_PER_DEG), MIN_COS);
-
-    // Saml vejsegmenter på skærmen, så havetræer ikke sættes midt ude på kørebanen
-    const roadLayers = ["highway_minor", "highway_major_inner", "highway_motorway_inner"].filter(id => map.getLayer(id));
-    const roadSegs = [];
-    if (roadLayers.length) {
-        for (const rf of map.queryRenderedFeatures({ layers: roadLayers })) {
-            const lines = rf.geometry.type === "LineString" ? [rf.geometry.coordinates]
-                : rf.geometry.type === "MultiLineString" ? rf.geometry.coordinates : [];
-            for (const line of lines) {
-                for (let i = 0; i < line.length - 1; i++) {
-                    const p1 = line[i], p2 = line[i + 1];
-                    roadSegs.push({
-                        x1: p1[0], y1: p1[1], x2: p2[0], y2: p2[1],
-                        minX: Math.min(p1[0], p2[0]) - 0.00012, maxX: Math.max(p1[0], p2[0]) + 0.00012,
-                        minY: Math.min(p1[1], p2[1]) - 0.00008, maxY: Math.max(p1[1], p2[1]) + 0.00008
-                    });
+    const rawCh = rawChunks.get(ck);
+    if (rawCh) {
+        for (let i = 0; i < rawCh.roadSegs.length; i++) {
+            const seg = rawCh.roadSegs[i];
+            if (seg.maxX < gWest || seg.minX > gEast || seg.maxY < gSouth || seg.minY > gNorth) continue;
+            const x0 = clampI(Math.floor((seg.minX - gWest) / CELL_LON), gxCols);
+            const x1 = clampI(Math.floor((seg.maxX - gWest) / CELL_LON), gxCols);
+            const y0 = clampI(Math.floor((seg.minY - gSouth) / CELL_LAT), gyRows);
+            const y1 = clampI(Math.floor((seg.maxY - gSouth) / CELL_LAT), gyRows);
+            for (let gy = y0; gy <= y1; gy++) {
+                const rowOff = gy * gxCols;
+                for (let gx = x0; gx <= x1; gx++) {
+                    let cell = roadGrid[rowOff + gx];
+                    if (!cell) { cell = []; roadGrid[rowOff + gx] = cell; }
+                    cell.push(seg);
                 }
             }
         }
     }
 
     const hitsBuildingOrRoad = (lon, lat) => {
-        for (const sb of currentScreenBuildings) {
-            if (lon >= sb.minLon && lon <= sb.maxLon && lat >= sb.minLat && lat <= sb.maxLat) return true;
+        if (lon < gWest || lon > gEast || lat < gSouth || lat > gNorth) return false;
+        const idx = clampI(Math.floor((lat - gSouth) / CELL_LAT), gyRows) * gxCols + clampI(Math.floor((lon - gWest) / CELL_LON), gxCols);
+        const bCell = bldGrid[idx];
+        if (bCell) {
+            for (let i = 0; i < bCell.length; i++) {
+                const sb = bCell[i];
+                if (lon >= sb.minLon && lon <= sb.maxLon && lat >= sb.minLat && lat <= sb.maxLat) return true;
+            }
         }
-        for (const seg of roadSegs) {
-            if (lon < seg.minX || lon > seg.maxX || lat < seg.minY || lat > seg.maxY) continue;
-            const vx = (seg.x2 - seg.x1) * 111320 * cosLat0, vy = (seg.y2 - seg.y1) * 111320;
-            const wx = (lon - seg.x1) * 111320 * cosLat0, wy = (lat - seg.y1) * 111320;
-            const l2 = vx * vx + vy * vy;
-            const t = l2 > 0 ? Math.max(0, Math.min(1, (wx * vx + wy * vy) / l2)) : 0;
-            const dx = wx - t * vx, dy = wy - t * vy;
-            if (dx * dx + dy * dy < 18) return true; // mindst ~4.2 m fra vejmidten
+        const rCell = roadGrid[idx];
+        if (rCell) {
+            for (let i = 0; i < rCell.length; i++) {
+                const seg = rCell[i];
+                if (lon < seg.minX || lon > seg.maxX || lat < seg.minY || lat > seg.maxY) continue;
+                const vx = (seg.x2 - seg.x1) * mPerLon0, vy = (seg.y2 - seg.y1) * 111320;
+                const wx = (lon - seg.x1) * mPerLon0, wy = (lat - seg.y1) * 111320;
+                const l2 = vx * vx + vy * vy;
+                const t = l2 > 0 ? Math.max(0, Math.min(1, (wx * vx + wy * vy) / l2)) : 0;
+                const dx = wx - t * vx, dy = wy - t * vy;
+                if (dx * dx + dy * dy < 18) return true;
+            }
         }
         return false;
     };
 
-    const layerIds = ["land-wood", "land-park", "land-town", "land-grass"].filter(id => map.getLayer(id));
-    const feats = map.queryRenderedFeatures({ layers: layerIds });
-    const seen = new Set();
-    const out = [];
-    const dLat = TREE_GRID_M / 111320;
-    for (const f of feats) {
-        if (out.length >= TREE_MAX) break;
-        const kind = f.layer.id === "land-wood" ? TREE_KINDS.wood
-            : f.layer.id === "land-park" ? TREE_KINDS.park
-            : f.layer.id === "land-town" ? TREE_KINDS.town
-            : TREE_KINDS.grass;
-        const isWood = f.layer.id === "land-wood";
-        const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.type === "MultiPolygon" ? f.geometry.coordinates : [];
-        for (const rings of polys) {
-            let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
-            for (const [x, y] of rings[0]) { if (x < minLon) minLon = x; if (x > maxLon) maxLon = x; if (y < minLat) minLat = y; if (y > maxLat) maxLat = y; }
-            minLon = Math.max(minLon, b.getWest()); maxLon = Math.min(maxLon, b.getEast());
-            minLat = Math.max(minLat, b.getSouth()); maxLat = Math.min(maxLat, b.getNorth());
-            if (minLon > maxLon || minLat > maxLat) continue;
-            const cosLat = Math.max(Math.cos(((minLat + maxLat) / 2) * RAD_PER_DEG), MIN_COS);
-            const dLon = dLat / cosLat;
+    const treeSpacingGrid = new Array(gxCols * gyRows);
+    const registerTreePos = (lon, lat) => {
+        const idx = clampI(Math.floor((lat - gSouth) / CELL_LAT), gyRows) * gxCols + clampI(Math.floor((lon - gWest) / CELL_LON), gxCols);
+        let cell = treeSpacingGrid[idx];
+        if (!cell) { cell = []; treeSpacingGrid[idx] = cell; }
+        cell.push(lon, lat);
+    };
+    const tooCloseToTree = (lon, lat) => {
+        const cxI = clampI(Math.floor((lon - gWest) / CELL_LON), gxCols);
+        const cyI = clampI(Math.floor((lat - gSouth) / CELL_LAT), gyRows);
+        for (let gy = Math.max(0, cyI - 1); gy <= Math.min(gyRows - 1, cyI + 1); gy++) {
+            const rowOff = gy * gxCols;
+            for (let gx = Math.max(0, cxI - 1); gx <= Math.min(gxCols - 1, cxI + 1); gx++) {
+                const cell = treeSpacingGrid[rowOff + gx];
+                if (!cell) continue;
+                for (let k = 0; k < cell.length; k += 2) {
+                    const dx = (lon - cell[k]) * mPerLon0;
+                    const dy = (lat - cell[k + 1]) * 111320;
+                    if (dx * dx + dy * dy < 22) return true;
+                }
+            }
+        }
+        return false;
+    };
+
+    const treesLo = [];
+    const treesHi = [];
+
+    if (rawCh && rawCh.lands.length) {
+        const lands = rawCh.lands.slice().sort((a, b) => a.prio - b.prio);
+        const seenGrid = new Set();
+        const dLat = TREE_GRID_M / 111320;
+        const dLon = dLat / cosLat0;
+
+        for (let lIdx = 0; lIdx < lands.length; lIdx++) {
+            const land = lands[lIdx];
+            const minLon = Math.max(land.minLon, cWest), maxLon = Math.min(land.maxLon, cEast);
+            const minLat = Math.max(land.minLat, cSouth), maxLat = Math.min(land.maxLat, cNorth);
+            if (minLon >= maxLon || minLat >= maxLat) continue;
+            const kind = TREE_KINDS[land.kindKey];
             const i0 = Math.floor(minLat / dLat), i1 = Math.floor(maxLat / dLat);
             const j0 = Math.floor(minLon / dLon), j1 = Math.floor(maxLon / dLon);
+
             for (let i = i0; i <= i1; i++) {
-                if (i % step) continue;
                 for (let j = j0; j <= j1; j++) {
-                    if (j % step) continue;
                     const key = i * 4000000 + j;
-                    if (seen.has(key)) continue;
+                    if (seenGrid.has(key)) continue;
                     const h = hash2(i, j);
                     if ((h & 1023) / 1024 > kind.density) continue;
                     const lat = (i + 0.18 + ((h >>> 10) & 63) / 100) * dLat;
                     const lon = (j + 0.18 + ((h >>> 16) & 63) / 100) * dLon;
-                    if (!pointInRings(lon, lat, rings)) continue;
-                    if (!isWood && hitsBuildingOrRoad(lon, lat)) continue;
-                    seen.add(key);
+                    if (lon < cWest || lon >= cEast || lat < cSouth || lat >= cNorth) continue;
+                    if (!pointInRings(lon, lat, land.rings)) continue;
+                    if (!land.isWood && hitsBuildingOrRoad(lon, lat)) continue;
+                    seenGrid.add(key);
+                    registerTreePos(lon, lat);
                     const r = ((h >>> 22) & 1023) / 1024;
                     const sprite = kind.pick(r);
                     const size = sprite.startsWith("img-bush") ? 5.5 : sprite.startsWith("img-pine") ? 8.8 : (8.8 + (h & 3) * 0.7);
-                    out.push({ type: "Feature", properties: { sprite, m: size / cosLat, sort: -lat },
-                               geometry: { type: "Point", coordinates: [lon, lat] } });
-                    if (out.length >= TREE_MAX) break;
+                    const feat = {
+                        type: "Feature",
+                        properties: { sprite, m: size / cosLat0, sort: -lat },
+                        geometry: { type: "Point", coordinates: [lon, lat] }
+                    };
+                    if ((i & 1) === 0 && (j & 1) === 0) treesLo.push(feat);
+                    else treesHi.push(feat);
                 }
-                if (out.length >= TREE_MAX) break;
             }
         }
     }
-    // Sæt også frodige havetræer rundt om husene i villakvarterer (også hvor kortet ikke har en
-    // særskilt 'residential'-flade), så haverne omkring husene får træer som i referencebilledet.
-    const placedTrees = out.map(f => f.geometry.coordinates);
-    const tooCloseToTree = (lon, lat, cosL) => {
-        for (let k = placedTrees.length - 1; k >= 0; k--) {
-            const p = placedTrees[k];
-            const dx = (lon - p[0]) * 111320 * cosL;
-            const dy = (lat - p[1]) * 111320;
-            if (dx * dx + dy * dy < 22) return true; // mindst ~4.7 m mellem træer
-        }
-        return false;
-    };
-    for (const sb of currentScreenBuildings) {
-        if (out.length >= TREE_MAX) break;
+
+    // Havetræer rundt om alle bygninger i feltet
+    for (let bIdx = 0; bIdx < centerBld.blds.length; bIdx++) {
+        const sb = centerBld.blds[bIdx];
         const h0 = hash2(Math.round(sb.lat0 * 1e5), Math.round(sb.lon0 * 1e5));
-        const cosL = Math.max(Math.cos(sb.lat0 * RAD_PER_DEG), MIN_COS);
-        const bw = (sb.maxLon - sb.minLon) * 111320 * cosL;
+        const bw = (sb.maxLon - sb.minLon) * mPerLon0;
         const bh = (sb.maxLat - sb.minLat) * 111320;
         const count = bw * bh > 450 ? 9 : 6;
         for (let k = 0; k < count; k++) {
             const hk = hash2(h0 + k * 97, k * 131 + 17);
-            const side = k % 4; // 0: nord, 1: syd, 2: øst, 3: vest
+            const side = k & 3;
             const along = (((hk & 1023) / 1023) - 0.5) * 1.15;
             const outDist = 1.4 + ((hk >>> 10) & 255) / 255 * 4.2;
             let rx, ry;
@@ -1667,24 +1924,235 @@ function refreshTrees() {
             else if (side === 1) { rx = along * bw; ry = -bh * 0.5 - outDist; }
             else if (side === 2) { rx = bw * 0.5 + outDist; ry = along * bh; }
             else { rx = -bw * 0.5 - outDist; ry = along * bh; }
-            const lon = sb.lon0 + rx / (111320 * cosL);
+            const lon = sb.lon0 + rx / mPerLon0;
             const lat = sb.lat0 + ry / 111320;
-            if (lon < b.getWest() || lon > b.getEast() || lat < b.getSouth() || lat > b.getNorth()) continue;
+            if (lon < gWest || lon > gEast || lat < gSouth || lat > gNorth) continue;
             if (hitsBuildingOrRoad(lon, lat)) continue;
-            if (tooCloseToTree(lon, lat, cosL)) continue;
-            placedTrees.push([lon, lat]);
+            if (tooCloseToTree(lon, lat)) continue;
+            registerTreePos(lon, lat);
             const r = ((hk >>> 18) & 1023) / 1024;
             const sprite = TREE_KINDS.town.pick(r);
             const size = sprite.startsWith("img-bush") ? 6.2 : (9.2 + (hk & 3) * 0.85);
-            out.push({
+            const feat = {
                 type: "Feature",
-                properties: { sprite, m: size / cosL, sort: -lat },
+                properties: { sprite, m: size / cosLat0, sort: -lat },
                 geometry: { type: "Point", coordinates: [lon, lat] }
+            };
+            if ((k & 1) === 0) treesLo.push(feat);
+            else treesHi.push(feat);
+        }
+    }
+
+    full = {
+        corePolys: centerBld.corePolys,
+        detailPolys: centerBld.detailPolys,
+        lines: centerBld.lines,
+        treesLo,
+        treesHi
+    };
+    fullChunkCache.set(ck, full);
+    return full;
+}
+
+function scheduleLandscapeTileSync() {
+    if (landscapeTileTimer) return;
+    landscapeTileTimer = setTimeout(() => {
+        landscapeTileTimer = null;
+        if (!mapReady) return;
+        const prevGen = landscapeTileGen;
+        syncVectorTilesToChunks();
+        if (!renderedLandscapeWin.valid || landscapeTileGen !== prevGen) {
+            refreshLandscape3D(true);
+        }
+    }, 35);
+}
+
+function onMapMoveLandscape3D() {
+    const z = map.getZoom();
+    if (z < HOUSE_MIN_ZOOM) {
+        if (renderedLandscapeWin.valid) refreshLandscape3D(true);
+        return;
+    }
+    const now = performance.now();
+    if (now - lastLandscapeMovePushMs < 110) return;
+
+    if (!renderedLandscapeWin.valid) {
+        lastLandscapeMovePushMs = now;
+        refreshLandscape3D(true);
+        return;
+    }
+
+    const b = map.getBounds();
+    const vLat = b.getNorth() - b.getSouth();
+    const vLon = b.getEast() - b.getWest();
+    const lookLat = Math.max(vLat * 0.22, CHUNK_LAT * 0.35);
+    const lookLon = Math.max(vLon * 0.22, CHUNK_LON * 0.35);
+    const detailHi = z >= LANDSCAPE_DETAIL_ZOOM;
+
+    if (detailHi !== renderedLandscapeWin.detailHi ||
+        b.getSouth() - lookLat < renderedLandscapeWin.south ||
+        b.getNorth() + lookLat > renderedLandscapeWin.north ||
+        b.getWest() - lookLon < renderedLandscapeWin.west ||
+        b.getEast() + lookLon > renderedLandscapeWin.east) {
+        lastLandscapeMovePushMs = now;
+        refreshLandscape3D(false);
+    }
+}
+
+function refreshLandscape3D(force) {
+    if (!mapReady || !map.getSource("src-houses") || !map.getSource("src-trees")) return;
+    const z = map.getZoom();
+    const empty = { type: "FeatureCollection", features: [] };
+    if (z < HOUSE_MIN_ZOOM) {
+        if (renderedLandscapeWin.valid || force) {
+            renderedLandscapeWin.valid = false;
+            map.getSource("src-houses").setData(empty);
+            map.getSource("src-trees").setData(empty);
+        }
+        return;
+    }
+
+    syncVectorTilesToChunks();
+
+    const b = map.getBounds();
+    const vLat = b.getNorth() - b.getSouth();
+    const vLon = b.getEast() - b.getWest();
+    const detailHi = z >= LANDSCAPE_DETAIL_ZOOM;
+
+    // Tjek om nuværende skærm + sikkerhedsmargin allerede ligger trygt inde i den tegnede buffer
+    if (!force && renderedLandscapeWin.valid &&
+        renderedLandscapeWin.detailHi === detailHi &&
+        renderedLandscapeWin.tileGen === landscapeTileGen) {
+        const safeLat = Math.max(vLat * 0.32, CHUNK_LAT * 0.45);
+        const safeLon = Math.max(vLon * 0.32, CHUNK_LON * 0.45);
+        if (b.getSouth() - safeLat >= renderedLandscapeWin.south &&
+            b.getNorth() + safeLat <= renderedLandscapeWin.north &&
+            b.getWest() - safeLon >= renderedLandscapeWin.west &&
+            b.getEast() + safeLon <= renderedLandscapeWin.east) {
+            return;
+        }
+    }
+
+    // Tilpas forudindlæsnings-buffer rundt om skærmen (~65% skærmbredde uden for alle kanter)
+    const padFactor = z >= 16.8 ? 0.68 : z >= 15.8 ? 0.50 : 0.34;
+    const padLat = Math.max(vLat * padFactor, CHUNK_LAT * 0.95);
+    const padLon = Math.max(vLon * padFactor, CHUNK_LON * 0.95);
+
+    let cx0 = Math.floor((b.getWest() - padLon) / CHUNK_LON);
+    let cx1 = Math.floor((b.getEast() + padLon) / CHUNK_LON);
+    let cy0 = Math.floor((b.getSouth() - padLat) / CHUNK_LAT);
+    let cy1 = Math.floor((b.getNorth() + padLat) / CHUNK_LAT);
+
+    // Sikr rimeligt loft ved lavt zoom (~15.0)
+    const maxSpanX = 17, maxSpanY = 15;
+    if (cx1 - cx0 > maxSpanX) {
+        const midX = (cx0 + cx1) >> 1;
+        cx0 = midX - (maxSpanX >> 1);
+        cx1 = cx0 + maxSpanX;
+    }
+    if (cy1 - cy0 > maxSpanY) {
+        const midY = (cy0 + cy1) >> 1;
+        cy0 = midY - (maxSpanY >> 1);
+        cy1 = cy0 + maxSpanY;
+    }
+
+    if (!force && renderedLandscapeWin.valid &&
+        renderedLandscapeWin.cx0 === cx0 && renderedLandscapeWin.cx1 === cx1 &&
+        renderedLandscapeWin.cy0 === cy0 && renderedLandscapeWin.cy1 === cy1 &&
+        renderedLandscapeWin.detailHi === detailHi &&
+        renderedLandscapeWin.tileGen === landscapeTileGen) {
+        return;
+    }
+
+    // Saml 2×2 nabofelter (~670×670 m stor-felter) i MultiPolygon / MultiLineString,
+    // så MapLibres Web Worker kun skal indeksere ~80-220 samlede objekter i stedet for 15.000-40.000.
+    const superBuckets = new Map();
+    const treeFeatures = [];
+
+    const mergePolysInto = (srcMap, dstPolys) => {
+        for (const [key, polyArr] of srcMap.entries()) {
+            let acc = dstPolys.get(key);
+            if (!acc) { acc = []; dstPolys.set(key, acc); }
+            for (let i = 0; i < polyArr.length; i++) acc.push(polyArr[i]);
+        }
+    };
+
+    for (let cy = cy0; cy <= cy1; cy++) {
+        for (let cx = cx0; cx <= cx1; cx++) {
+            const ch = buildFullChunk3D(cx, cy);
+            const sk = (cx >> 2) + ":" + (cy >> 2);
+            let sb = superBuckets.get(sk);
+            if (!sb) {
+                sb = { polys: new Map(), lines: new Map() };
+                superBuckets.set(sk, sb);
+            }
+            mergePolysInto(ch.corePolys, sb.polys);
+            if (detailHi) mergePolysInto(ch.detailPolys, sb.polys);
+
+            for (const [lKey, lineArr] of ch.lines.entries()) {
+                let acc = sb.lines.get(lKey);
+                if (!acc) { acc = []; sb.lines.set(lKey, acc); }
+                for (let i = 0; i < lineArr.length; i++) acc.push(lineArr[i]);
+            }
+
+            if (treeFeatures.length < TREE_MAX) {
+                for (let i = 0; i < ch.treesLo.length && treeFeatures.length < TREE_MAX; i++) {
+                    treeFeatures.push(ch.treesLo[i]);
+                }
+                if (detailHi) {
+                    for (let i = 0; i < ch.treesHi.length && treeFeatures.length < TREE_MAX; i++) {
+                        treeFeatures.push(ch.treesHi[i]);
+                    }
+                }
+            }
+        }
+    }
+
+    const houseFeatures = [];
+    for (const sb of superBuckets.values()) {
+        for (const [key, coords] of sb.polys.entries()) {
+            const p1 = key.indexOf("|");
+            const p2 = key.indexOf("|", p1 + 1);
+            const k = key.slice(0, p1);
+            const c = key.slice(p1 + 1, p2);
+            const o = Number(key.slice(p2 + 1));
+            const props = { k };
+            if (c) props.c = c;
+            if (o) props.o = o;
+            houseFeatures.push({
+                type: "Feature",
+                properties: props,
+                geometry: { type: "MultiPolygon", coordinates: coords }
+            });
+        }
+        for (const [lKey, coords] of sb.lines.entries()) {
+            const p1 = lKey.indexOf("|");
+            houseFeatures.push({
+                type: "Feature",
+                properties: { k: "line", c: lKey.slice(0, p1), w: Number(lKey.slice(p1 + 1)) },
+                geometry: { type: "MultiLineString", coordinates: coords }
             });
         }
     }
-    map.getSource("src-trees").setData({ type: "FeatureCollection", features: out });
+
+    renderedLandscapeWin = {
+        valid: true,
+        cx0, cx1, cy0, cy1,
+        south: cy0 * CHUNK_LAT,
+        north: (cy1 + 1) * CHUNK_LAT,
+        west: cx0 * CHUNK_LON,
+        east: (cx1 + 1) * CHUNK_LON,
+        detailHi,
+        tileGen: landscapeTileGen
+    };
+    lastLandscapeMovePushMs = performance.now();
+
+    map.getSource("src-houses").setData({ type: "FeatureCollection", features: houseFeatures });
+    map.getSource("src-trees").setData({ type: "FeatureCollection", features: treeFeatures });
 }
+
+function refreshHouses() { refreshLandscape3D(false); }
+function refreshTrees() { refreshLandscape3D(false); }
 
 // Bygnings-sprites er 56×56 px og indlæses med scale=4 → 224×224 px. Hver bygning har egenskaben
 // "m" = sidelængde i meter / cos(breddegrad), fordi én meter fylder 1/cos(lat) gange flere
