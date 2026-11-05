@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 139;
+const APP_VERSION = 140;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -1313,6 +1313,7 @@ function syncVectorTilesToChunks() {
 
                 const seg = {
                     x1: p1[0], y1: p1[1], x2: p2[0], y2: p2[1],
+                    bridge: props.brunnel === "bridge",
                     clearM2,
                     minX: Math.min(p1[0], p2[0]) - padSegLon,
                     maxX: Math.max(p1[0], p2[0]) + padSegLon,
@@ -3662,6 +3663,24 @@ function hasLineOfSight(lat1, lon1, lat2, lon2) {
     return shotBlockedAt(lat1, lon1, lat2, lon2) === null;
 }
 
+// Er punktet på en bro (vej eller sti mærket som bro i kortet)? Så kan man gå der, selv om der er vand under.
+function isNearBridgeFast(lat, lon, maxDistM = 6) {
+    const cx = Math.floor(lon / CHUNK_LON), cy = Math.floor(lat / CHUNK_LAT);
+    const ch = rawChunks.get(cx + ":" + cy);
+    if (!ch || !ch.roadSegs.length) return false;
+    const cosLat = Math.max(Math.cos(lat * RAD_PER_DEG), MIN_COS);
+    const mPerLon = 111320 * cosLat;
+    const maxSq = maxDistM * maxDistM;
+    for (let i = 0; i < ch.roadSegs.length; i++) {
+        const s = ch.roadSegs[i];
+        if (!s.bridge || lon < s.minX || lon > s.maxX || lat < s.minY || lat > s.maxY) continue;
+        const ax = (s.x1 - lon) * mPerLon, ay = (s.y1 - lat) * 111320;
+        const bx = (s.x2 - lon) * mPerLon, by = (s.y2 - lat) * 111320;
+        if (pointToSegDistSq2D(0, 0, ax, ay, bx, by) <= maxSq) return true;
+    }
+    return false;
+}
+
 function isNearRoadFast(lat, lon, maxDistM = 7.5) {
     const cx = Math.floor(lon / CHUNK_LON), cy = Math.floor(lat / CHUNK_LAT);
     const ch = rawChunks.get(cx + ":" + cy);
@@ -3765,8 +3784,10 @@ function findTacticalBuildingPath(startLat, startLon, endLat, endLon) {
         let st = stateCache[idx];
         if (st !== 0) return st;
         const la = cellLat(r), lo = cellLon(c);
-        if (isWaterAt(la, lo) || pointInsideAnyBuilding(la, lo, 1.35, ignorePts)) {
+        if (pointInsideAnyBuilding(la, lo, 1.35, ignorePts)) {
             st = 3;
+        } else if (isWaterAt(la, lo)) {
+            st = isNearBridgeFast(la, lo, 6) ? 2 : 3;   // bro over vandet: man kan gå der
         } else {
             st = isNearRoadFast(la, lo, 6.5) ? 2 : 1;
         }
@@ -4213,8 +4234,10 @@ async function findLandPathAsync(startLat, startLon, endLat, endLon) {
         return [[startLat, startLon], [endLat, endLon]];
     }
 
-    // 2. Taktisk gade- og bygningsrute i nærområdet (<= 1,5 km): hurtig lokal A* rundt om huse og ad gader
-    if (!crossesWater && !unloadedTown && distM <= 1500) {
+    // 2. Taktisk gade- og bygningsrute i nærområdet (<= 1,5 km): hurtig lokal A* rundt om huse og ad gader.
+    //    Også over vand: kortets broer (brunnel = bridge) kan bruges, så en nærliggende gangbro vælges
+    //    frem for en lang omvej fra rutetjenesten.
+    if (!unloadedTown && distM <= 1500) {
         const localStreetPath = findTacticalBuildingPath(startLat, startLon, endLat, endLon);
         if (localStreetPath && localStreetPath.length >= 2) {
             return localStreetPath;
@@ -8494,8 +8517,8 @@ async function rerouteNpcsAroundBuildings() {
         // hurtige lokale rute uden om husene.
         let route = Geo.distanceM(from[0], from[1], dest[0], dest[1]) < 2
             ? [from, dest]
-            : (crossW ? await osrmFootRoute(from[0], from[1], dest[0], dest[1])
-                      : findTacticalBuildingPath(from[0], from[1], dest[0], dest[1]));
+            : (findTacticalBuildingPath(from[0], from[1], dest[0], dest[1])
+                || (crossW ? await osrmFootRoute(from[0], from[1], dest[0], dest[1]) : null));
         if (!route) continue;
         if (inStart) route = [pos, ...route];
         if (inEnd) route = [...route, to];
