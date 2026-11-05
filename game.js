@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 142;
+const APP_VERSION = 143;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -3190,7 +3190,7 @@ const computerImgPromise = new Promise((resolve) => {
 function troopBadgeId(count, style = "own", pct = 100, status = "guard", truck = false, facingLeft = false, hasHowitzer = false, medic = false, mortar = false) {
     const bucket = pct >= 100 ? "100" : pct < 40 ? `red-${Math.ceil(pct / 10)}` : `orange-${Math.ceil(pct / 10)}`;
     const truckSuffix = truck ? (hasHowitzer ? (facingLeft ? "-truck-h-left" : "-truck-h") : (facingLeft ? "-truck-left" : "-truck")) : (hasHowitzer ? "-gun" : "");
-    return `img-${style}-${status}-${count}-${bucket}${truckSuffix}${medic ? "-med" : ""}${mortar ? "-mor" : ""}`;
+    return `img-${style}-${status}-${count}-${bucket}${truckSuffix}${medic ? "-med" : ""}${mortar ? "-mor-" + mortar : ""}`;
 }
 
 async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard", truck = false, facingLeft = false, hasHowitzer = false, medic = false, mortar = false) {
@@ -3265,7 +3265,7 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
     ctx.textBaseline = "middle";
     ctx.fillText(text, canvas.width / 2 + crossW / 2 - mortarW / 2, 2 + badgeH / 2);
     if (medic) drawBadgeRedCross(ctx, bx + 4, 2 + (badgeH - 14) / 2, 14);
-    if (mortar) drawBadgeMortar(ctx, bx + badgeW - 18, 2 + (badgeH - 14) / 2, 14);
+    if (mortar) drawBadgeMortar(ctx, bx + badgeW - 18, 2 + (badgeH - 14) / 2, 14, mortar);
 
     // Energibjælke under tallet: grøn → gul → rød.
     const step = Math.ceil(pct / 10) / 10;
@@ -4461,9 +4461,16 @@ function troopStatusStrokeColor(style, status) {
     return "#39FF14";
 }
 
-// Lille gult morter-tegn (skråt rør på en bundplade) i skiltet over en gruppe med morterer.
-const MORTAR_BADGE_COLOR = "#FFD54F";
-function drawBadgeMortar(ctx, x, y, size) {
+// Lille morter-tegn (skråt rør på en bundplade) i skiltet over en gruppe med morterer.
+// Farve: grøn = egne med granater, rød = egne uden granater, gul = andres (granater ukendte).
+const MORTAR_BADGE_COLORS = { ok: "#5FE35F", empty: "#FF5252", unk: "#FFD54F" };
+function mortarBadgeState(group, style) {
+    if (!((group?.mortars || 0) > 0)) return "";
+    if (style !== "own") return "unk";
+    return (group.shells || 0) > 0 ? "ok" : "empty";
+}
+function drawBadgeMortar(ctx, x, y, size, state = "unk") {
+    const MORTAR_BADGE_COLOR = MORTAR_BADGE_COLORS[state] || MORTAR_BADGE_COLORS.unk;
     const s = size / 14;
     ctx.save();
     ctx.translate(x, y);
@@ -4767,7 +4774,7 @@ async function ensureStreetUnitSprites(style = "own") {
 
 function streetBadgeId(count, strokeColor, pct, tag = "", medic = false, mortar = false) {
     const bucket = pct >= 100 ? "100" : pct < 40 ? `r${Math.ceil(pct / 10)}` : `o${Math.ceil(pct / 10)}`;
-    return `st-lbl-${strokeColor.slice(1)}-${count}-${bucket}${tag ? "-" + tag : ""}${medic ? "-med" : ""}${mortar ? "-mor" : ""}`;
+    return `st-lbl-${strokeColor.slice(1)}-${count}-${bucket}${tag ? "-" + tag : ""}${medic ? "-med" : ""}${mortar ? "-mor-" + mortar : ""}`;
 }
 
 function ensureStreetBadge(count, strokeColor, pct, tag = "", medic = false, mortar = false) {
@@ -4800,7 +4807,7 @@ function ensureStreetBadge(count, strokeColor, pct, tag = "", medic = false, mor
     ctx.textBaseline = "middle";
     ctx.fillText(label, 2 + w / 2 + crossW / 2 - mortarW / 2, 1.5 + pillH / 2 + 0.5);
     if (medic) drawBadgeRedCross(ctx, 5, 3, 12);
-    if (mortar) drawBadgeMortar(ctx, 2 + w - 15, 3, 12);
+    if (mortar) drawBadgeMortar(ctx, 2 + w - 15, 3, 12, mortar);
 
     const step = Math.max(0.08, Math.ceil(pct / 10) / 10);
     const by = pillH + 2.5;
@@ -5145,7 +5152,7 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
     const stroke = troopStatusStrokeColor(style, status);
     const pct = energyPct(group);
     const tag = trucks > 0 ? `${trucks}L` : (howitzers > 0 ? `${howitzers}H` : "");
-    const badgeImg = ensureStreetBadge(group.count, stroke, pct, tag, medic, (group.mortars || 0) > 0);
+    const badgeImg = ensureStreetBadge(group.count, stroke, pct, tag, medic, mortarBadgeState(group, style));
     const labelLat = lat + (shiftMeters ? (nearestRoadDirection(lat, lon).uy * shiftMeters) * invLat : 0);
     const labelLon = lon + (shiftMeters ? (nearestRoadDirection(lat, lon).ux * shiftMeters) * invLon : 0);
 
@@ -5244,7 +5251,7 @@ async function renderTroopsOnMap() {
         const pct = energyPct(group);
         const truck = truckCount(group) > 0;
         const hasHowitzer = (group.howitzers || 0) > 0;
-        const hasMortar = (group.mortars || 0) > 0;
+        const hasMortar = mortarBadgeState(group, style);
         await ensureTroopBadge(group.count, style, pct, status, truck, facingLeft, hasHowitzer, medic, hasMortar);
         troopFeatures.push({
             type: "Feature",
