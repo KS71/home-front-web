@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 137;
+const APP_VERSION = 138;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -3538,14 +3538,14 @@ function pointInsideAnyBuilding(lat, lon, padM = 1.0, ignorePts = null) {
 }
 
 // Skubber et klik på et hustag ud på nærmeste frie fortov/gade/have lige uden for muren
-function snapOutsideMapBuilding(lat, lon, marginM = 2.2) {
+function snapOutsideMapBuilding(lat, lon, marginM = 2.2, maxM = 26) {
     syncVectorTilesToChunks();
     if (!pointInsideMapBuilding(lat, lon, 1.1)) return [lat, lon];
     const cosLat = Math.max(Math.cos(lat * RAD_PER_DEG), MIN_COS);
     const mPerLon = 111320 * cosLat;
     const mPerLat = 111320;
 
-    for (let dist = marginM; dist <= 26; dist += 2.2) {
+    for (let dist = marginM; dist <= maxM; dist += 2.2) {
         const steps = 16;
         let best = null;
         let bestRoadScore = Infinity;
@@ -5304,13 +5304,15 @@ function findShotPairs(foes, ownList) {
             // et hus. (Nærkamps-reglen fire_close_m gælder kampen, ikke tegningen.)
             // Husene tegnes i 3D med sydmuren hængende op til ca. 9 m syd for grundplanen, så linjen
             // tjekkes også flyttet 3 og 6 m mod nord (= huset forlænget mod syd med muren).
+            // Kortets huse spærrer altid for tegningen – også når en soldat står inde i huset (fx en
+            // patrulje, der går på serverens lige streg gennem huset). Kampen følger stadig serverens regel.
             const SHIFTS = [0, 3 / 111320, 6 / 111320];
             const visualHit = (a, b, forPoint = false) => {
                 let best = null;
                 // Skyder man mod syd, rammer skuddet først taget/nordmuren (grundplanen); kun skud mod
                 // nord rammer den tegnede sydmur, der ligger foran grundplanen.
                 for (const d of SHIFTS) {
-                    const h = firstBuildingHitOnSegment(a[0] + d, a[1], b[0] + d, b[1], 0.3, true);
+                    const h = firstBuildingHitOnSegment(a[0] + d, a[1], b[0] + d, b[1], 0.3, false);
                     if (!h) continue;
                     const hit = { t: h.t, hitLat: h.hitLat - d, hitLon: h.hitLon };
                     if (d === 0 && forPoint && b[0] < a[0]) return hit;
@@ -8470,9 +8472,24 @@ async function rerouteNpcsAroundBuildings() {
         if (Geo.distanceM(pos[0], pos[1], to[0], to[1]) < 8) continue;
         if (!areBuildingsLoadedAlong(pos[0], pos[1], to[0], to[1])) continue;
         npcRerouteTried.set(n.id, n.arrives_at);
-        if (!segmentCrossesBuilding(pos[0], pos[1], to[0], to[1])) continue;
-        const route = findTacticalBuildingPath(pos[0], pos[1], to[0], to[1]);
-        if (!route || route.length < 3 || route.length > 80) continue;
+        // Også når patruljen allerede står inde i et hus (så får den en rute ud og uden om).
+        if (!segmentCrossesBuilding(pos[0], pos[1], to[0], to[1], 1.15, false)) continue;
+        // Rutefinderen kan ikke starte eller slutte inde i et hus: gå først det korteste stykke ud af
+        // huset, og læg ruten derfra. Ligger målet inde i et hus, går ruten til nærmeste sted udenfor
+        // og derfra det sidste stykke ind (serveren kræver, at ruten ender ved målet).
+        const inStart = pointInsideMapBuilding(pos[0], pos[1], 0.3);
+        const inEnd = pointInsideMapBuilding(to[0], to[1], 0.3);
+        const from = inStart ? snapOutsideMapBuilding(pos[0], pos[1], 1.8, 80) : pos;
+        const dest = inEnd ? snapOutsideMapBuilding(to[0], to[1], 1.8, 80) : to;
+        if (Geo.distanceM(from[0], from[1], pos[0], pos[1]) > 14) continue;
+        if (inEnd && pointInsideMapBuilding(dest[0], dest[1], 0.3)) continue;
+        let route = Geo.distanceM(from[0], from[1], dest[0], dest[1]) < 2
+            ? [from, dest]
+            : findTacticalBuildingPath(from[0], from[1], dest[0], dest[1]);
+        if (!route) continue;
+        if (inStart) route = [pos, ...route];
+        if (inEnd) route = [...route, to];
+        if (route.length < 3 || route.length > 80) continue;
         const pts = route.map(p => [Number(p[0].toFixed(7)), Number(p[1].toFixed(7))]);
         pts[pts.length - 1] = [to[0], to[1]];
         const { data, error } = await sb.rpc("npc_reroute", { p_id: n.id, p_path: pts });
