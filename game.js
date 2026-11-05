@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 129;
+const APP_VERSION = 130;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -3172,6 +3172,17 @@ const npcImgPromise = new Promise((resolve) => {
     img.src = "assets/fjende.png";
 });
 
+// Computerens soldater (patruljer, invasionen og den svenske hær) har grå uniform,
+// så man kan kende dem fra andre spilleres røde.
+const NPC_COLOR = "#B0BEC5";
+let computerSoldierImg = null;
+const computerImgPromise = new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => { computerSoldierImg = img; resolve(img); };
+    img.onerror = () => resolve(null);
+    img.src = "assets/npc.png";
+});
+
 // style: "own" (dine), "enemy" (andre spillere) eller "npc" (computerstyret patrulje).
 // status for egne: "guard" (grøn), "patrol" (blå), "march" (orange), "combat" (rød hvis i/har været i kamp).
 function troopBadgeId(count, style = "own", pct = 100, status = "guard", truck = false, facingLeft = false, hasHowitzer = false) {
@@ -3189,12 +3200,13 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
     const redUniform = style === "npc" || style === "enemy";
     // Allierede: "ally-<farve uden #>"; uniformen og ringen får vennens farve.
     const allyHex = style.startsWith("ally-") ? "#" + style.slice(5) : null;
-    if (redUniform) await npcImgPromise;
+    if (redUniform) await Promise.all([npcImgPromise, computerImgPromise]);
     if (truck && hasHowitzer) await truckHowitzerImgPromise;
     if (truck) await truckImgPromise;
     if (!truck && hasHowitzer) await howitzerImgPromise;
     const gunImg = !truck && hasHowitzer ? howitzerImg : null;
-    let soldierImg = truck && hasHowitzer && truckHowitzerImg ? truckHowitzerImg : (truck && truckImg ? truckImg : (redUniform && npcSoldierImg ? npcSoldierImg : baseSoldierImg));
+    const enemyImg = style === "npc" && computerSoldierImg ? computerSoldierImg : npcSoldierImg;
+    let soldierImg = truck && hasHowitzer && truckHowitzerImg ? truckHowitzerImg : (truck && truckImg ? truckImg : (redUniform && enemyImg ? enemyImg : baseSoldierImg));
     if (allyHex && !truck && soldierImg) soldierImg = tintedUniform(soldierImg, allyHex);
     if (!soldierImg) return;
 
@@ -3224,7 +3236,7 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
     // og rød hvis den har været i kamp (eller fjende).
     let strokeColor = "#39FF14"; // grøn standard (står vagt)
     if (style === "npc") {
-        strokeColor = "#FF5252"; // Sverige og andre computerstyrede fjender er altid røde
+        strokeColor = NPC_COLOR; // Sverige og andre computerstyrede fjender er grå
     } else if (allyHex) {
         strokeColor = allyHex;
     } else if (style === "enemy") {
@@ -4412,7 +4424,8 @@ const registeredStreetSprites = new Set();
 const registeredStreetBadges = new Set();
 
 function troopStatusStrokeColor(style, status) {
-    if (style === "npc" || style === "enemy") return "#FF5252";
+    if (style === "npc") return NPC_COLOR;
+    if (style === "enemy") return "#FF5252";
     if (style.startsWith("ally-")) return "#" + style.slice(5);
     if (status === "combat") return "#FF5252";
     if (status === "patrol") return "#4FC3F7";
@@ -4442,7 +4455,7 @@ function kneelingSprite(img) {
 async function ensureStreetUnitSprites(style = "own") {
     const redUniform = style === "npc" || style === "enemy";
     const allyHex = style.startsWith("ally-") ? "#" + style.slice(5) : null;
-    await Promise.all([soldierImgPromise, npcImgPromise, truckImgPromise, truckHowitzerImgPromise, howitzerImgPromise]);
+    await Promise.all([soldierImgPromise, npcImgPromise, computerImgPromise, truckImgPromise, truckHowitzerImgPromise, howitzerImgPromise]);
 
     const addShadowedSprite = (id, srcImg, scale, flipX = false, dimAlpha = 1) => {
         if (!srcImg || !mapReady || registeredStreetSprites.has(id)) return;
@@ -4477,9 +4490,10 @@ async function ensureStreetUnitSprites(style = "own") {
         }
     };
 
-    let solImg = redUniform && npcSoldierImg ? npcSoldierImg : baseSoldierImg;
+    const enemyImg = style === "npc" && computerSoldierImg ? computerSoldierImg : npcSoldierImg;
+    let solImg = redUniform && enemyImg ? enemyImg : baseSoldierImg;
     if (allyHex && solImg) solImg = tintedUniform(solImg, allyHex);
-    const solKey = redUniform ? "enemy" : (allyHex ? style : "own");
+    const solKey = style === "npc" ? "npc" : (redUniform ? "enemy" : (allyHex ? style : "own"));
     addShadowedSprite(`st-sol-${solKey}`, solImg, 2, false);
     addShadowedSprite(`st-sol-${solKey}-l`, solImg, 2, true);
     const kneelImg = kneelingSprite(solImg);
@@ -4693,7 +4707,7 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
     const invLon = 1 / (111320 * cosLat);
     const invLat = 1 / 111320;
     const redUniform = style === "npc" || style === "enemy";
-    const solKey = redUniform ? "enemy" : (style.startsWith("ally-") ? style : "own");
+    const solKey = style === "npc" ? "npc" : (redUniform ? "enemy" : (style.startsWith("ally-") ? style : "own"));
 
     const trucks = truckCount(group);
     const howitzers = group.howitzers || 0;
@@ -4862,7 +4876,8 @@ async function renderTroopsOnMap() {
     activeStreetFormations.clear();
     await Promise.all([
         ensureStreetUnitSprites("own"),
-        ensureStreetUnitSprites("enemy")
+        ensureStreetUnitSprites("enemy"),
+        ensureStreetUnitSprites("npc")
     ]);
 
     // Patruljerne går jævnt videre mellem opdateringerne (strækning + tider fra serveren).
@@ -5859,7 +5874,7 @@ function renderPointBox(lat, lon, box, badge) {
             html += `
                 <div class="item-row" style="margin-top:8px;">
                     <div class="item-row-top">
-                        <img src="assets/fjende.png" class="pixel-img item-sprite" />
+                        <img src="assets/npc.png" class="pixel-img item-sprite" />
                         <div class="item-info">
                             <div class="item-title enemy-title">${npcLabel(n)}: ${n.count} soldater</div>
                             <div class="item-sub">${npcAbout(n)}</div>
@@ -8443,7 +8458,7 @@ function renderContactsSidebar() {
         rows.push(`
             <div class="item-row">
                 <div class="item-row-top">
-                    <img src="assets/fjende.png" class="pixel-img item-sprite" />
+                    <img src="assets/npc.png" class="pixel-img item-sprite" />
                     <div class="item-info">
                         <div class="item-title enemy-title">${npcLabel(n)}: ${n.count} soldater</div>
                         <div class="item-sub">${n.fighting ? "💥 i kamp med dine soldater" : who(n)} · ${energyText(n)}${npcGear(n) ? ` · ${npcGear(n)}` : ""}</div>
@@ -9648,9 +9663,9 @@ function codexEnemiesHtml() {
             <summary><span class="codex-sum-title">☠ Fjender</span><span class="codex-sum-sub">patruljer, den svenske hær og andre spillere</span></summary>
             <div class="codex-grid codex-grid-3">
                 <div class="codex-card">
-                    <div class="codex-card-head"><h3>Fjendtlig patrulje</h3><span class="badge">computerstyret</span></div>
-                    <div class="codex-weapon-img"><img src="assets/fjende.png" class="pixel-img" alt="" /></div>
-                    <p class="muted-hint">Strejfer rundt omkring spillerne og angriber dine soldater, når de ser dem. Har gevær ligesom dine soldater.</p>
+                    <div class="codex-card-head"><h3>Fjendtlig patrulje</h3><span class="badge">grå uniform</span></div>
+                    <div class="codex-weapon-img"><img src="assets/npc.png" class="pixel-img" alt="" /></div>
+                    <p class="muted-hint">Computerstyret. Strejfer rundt omkring spillerne og angriber dine soldater, når de ser dem. Har gevær ligesom dine soldater.</p>
                     ${codexStats([
                         ["Soldater pr. patrulje", `${fmtNum(codexRule("npc_size_min", 3))}–${fmtNum(codexRule("npc_size_max", 12))}`],
                         ["Gå-fart på patrulje", fmtKmh(codexRule("npc_speed_mps", 1.2))],
