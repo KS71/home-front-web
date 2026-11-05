@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 136;
+const APP_VERSION = 137;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -3017,6 +3017,7 @@ function installGameLayers() {
                 22, ["get", "s22"]
             ],
             "icon-rotate": ["coalesce", ["get", "rot"], 0],
+            "icon-offset": ["coalesce", ["get", "off"], ["literal", [0, 0]]],
             "icon-rotation-alignment": "map",
             "icon-pitch-alignment": "map",
             "symbol-sort-key": ["coalesce", ["get", "sort"], 0],
@@ -4454,6 +4455,27 @@ function marchToHospital(m) {
     return state.myBuildings.some(b => b.kind === "hospital" && Geo.distanceM(b.lat, b.lon, m.toLat, m.toLon) <= reach);
 }
 
+// Skridt-billede til gang: benene (de nederste 4 rækker i 16×14-billedet) spredes 1 px til hver side.
+// Skiftevis det almindelige billede og dette, så benene går.
+const walkCache = new WeakMap();
+function walkSprite(img) {
+    if (!img) return null;
+    if (walkCache.has(img)) return walkCache.get(img);
+    const c = document.createElement("canvas");
+    c.width = img.width;
+    c.height = img.height;
+    const ctx = c.getContext("2d");
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(img, 0, 0);
+    const legTop = img.height - 4;
+    const half = img.width / 2;
+    ctx.clearRect(0, legTop, img.width, 4);
+    ctx.drawImage(img, 0, legTop, half, 4, -1, legTop, half, 4);
+    ctx.drawImage(img, half, legTop, half, 4, half + 1, legTop, half, 4);
+    walkCache.set(img, c);
+    return c;
+}
+
 // Knælende soldat i kamp: samme figur, men bukserne (række 10-11 i 16×14-billedet) er taget ud,
 // så overkroppen sidder lavere ned mod støvlerne.
 const kneelCache = new WeakMap();
@@ -4517,6 +4539,9 @@ async function ensureStreetUnitSprites(style = "own") {
     const solKey = style === "npc" ? "npc" : (redUniform ? "enemy" : (allyHex ? style : "own"));
     addShadowedSprite(`st-sol-${solKey}`, solImg, 2, false);
     addShadowedSprite(`st-sol-${solKey}-l`, solImg, 2, true);
+    const walkImg = walkSprite(solImg);
+    addShadowedSprite(`st-sol-${solKey}-w`, walkImg, 2, false);
+    addShadowedSprite(`st-sol-${solKey}-w-l`, walkImg, 2, true);
     const kneelImg = kneelingSprite(solImg);
     addShadowedSprite(`st-sol-${solKey}-k`, kneelImg, 2, false);
     addShadowedSprite(`st-sol-${solKey}-k-l`, kneelImg, 2, true);
@@ -4723,6 +4748,19 @@ function coverFormationSlots(groupKey, lat, lon, nSol, seed, keepCenterFree) {
     return slots;
 }
 
+// Vejens retning ved et punkt huskes, så animationen ikke gennemsøger vejene 7 gange i sekundet.
+const roadDirCache = new Map();
+function cachedRoadDirection(lat, lon) {
+    const key = `${lat.toFixed(6)}|${lon.toFixed(6)}|${rawChunks.size}`;
+    let rd = roadDirCache.get(key);
+    if (!rd) {
+        if (roadDirCache.size > 600) roadDirCache.clear();
+        rd = nearestRoadDirection(lat, lon);
+        roadDirCache.set(key, rd);
+    }
+    return rd;
+}
+
 function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marchObj, now, isSelected, shiftMeters = 0, faceTarget = null, medic = false) {
     const unitFeats = [];
     const positions = [];
@@ -4737,13 +4775,14 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
     const isMoving = !!marchObj && (marchObj.arrivesAtMillis > marchObj.startedAtMillis + 500) && now < marchObj.arrivesAtMillis;
     const isDriving = trucks > 0 && (marchObj ? (marchObj.driving !== false && truckCanDrive(group.count, trucks)) : truckCanDrive(group.count, trucks));
 
-    const pushUnit = (uLat, uLon, img, kind, rot = 0) => {
+    const pushUnit = (uLat, uLon, img, kind, rot = 0, off = null) => {
         positions.push([uLat, uLon]);
         unitFeats.push({
             type: "Feature",
             properties: {
                 img,
                 rot,
+                off,
                 sort: -uLat,
                 ...streetUnitScaleProps(kind)
             },
@@ -4768,23 +4807,29 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
             }
         } else {
             // Soldater på march i 2-geleds gadekolonne langs ruten (drejer pænt rundt om hushjørner!)
+            // Soldaterne går med benene (to billeder skiftevis), hver i sin egen takt, lidt ujævnt i
+            // geleddet, og de bagerste halter en smule efter.
             const nSol = visibleSoldierCount(group.count);
             const rows = Math.ceil(nSol / 2);
             const headOff = Math.min(8, (rows - 1) * 1.4);
+            const gid = Number(group.id) || 1;
             for (let i = 0; i < nSol; i++) {
                 const row = Math.floor(i / 2);
                 const side = (i % 2 === 0) ? -1 : 1;
-                const pt = pointAlongMarchByMeters(marchObj, now, headOff - row * 3.4);
+                const jitter = (((i * 73 + gid * 19) % 11) - 5) * 0.05;
+                const lag = row * 0.2 + Math.sin(now / 1500 + i * 2.1) * 0.4;
+                const sideM = 1.3 + (((i * 13 + gid) % 5) - 2) * 0.12 + Math.sin(now / 2300 + i * 1.7) * 0.2;
+                const pt = pointAlongMarchByMeters(marchObj, now, headOff - row * 3.4 - lag);
                 const nx = -pt.uy, ny = pt.ux;
-                const jitter = (((i * 73 + (Number(group.id) || 1) * 19) % 11) - 5) * 0.05;
-                let latS = pt.lat + (ny * side * 1.3 + pt.uy * jitter) * invLat;
-                let lonS = pt.lon + (nx * side * 1.3 + pt.ux * jitter) * invLon;
+                let latS = pt.lat + (ny * side * sideM + pt.uy * jitter) * invLat;
+                let lonS = pt.lon + (nx * side * sideM + pt.ux * jitter) * invLon;
                 if (pointInsideMapBuilding(latS, lonS, 0.55)) {
                     latS = pt.lat;
                     lonS = pt.lon;
                 }
                 const faceL = pt.ux < -0.05;
-                pushUnit(latS, lonS, faceL ? `st-sol-${solKey}-l` : `st-sol-${solKey}`, "sol", 0);
+                const step = Math.floor(now / 420 + ((i * 7 + gid * 3) % 10) / 5) % 2;
+                pushUnit(latS, lonS, `st-sol-${solKey}${step ? "-w" : ""}${faceL ? "-l" : ""}`, "sol", 0, step ? [0, -1.5] : null);
             }
             // Eventuelle medfølgende lastbiler i gåtempo bagerst i kolonnen
             const nTr = Math.min(trucks, 3);
@@ -4797,7 +4842,7 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
         }
     } else {
         // Stående vagtstyrke / stoppet enhed: ret ind langs nærmeste gade og undgå hustage!
-        const rd = nearestRoadDirection(lat, lon);
+        const rd = cachedRoadDirection(lat, lon);
         const nx = -rd.uy, ny = rd.ux;
         const baseLat = lat + (rd.uy * shiftMeters) * invLat;
         const baseLon = lon + (rd.ux * shiftMeters) * invLon;
@@ -4846,16 +4891,35 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
             } else {
                 // Gruppen spreder sig løst og søger dækning ved husmure i stedet for at stå i en stiv blok.
                 // I kamp knæler soldaterne og vender mod fjenden. Kun udseende: kampen afgøres på serveren.
+                // Liv i vagten (uden for kamp): soldaterne vender sig en gang imellem, en eller to går en
+                // lille runde frem og tilbage langs gaden, og én hviler (knæler) det meste af tiden.
                 const seed = (Number(group.id) || 3) * 31;
                 const slots = coverFormationSlots(groupKey, baseLat, baseLon, nSol, seed, nGuns > 0);
                 const kneel = status === "combat";
                 for (let s = 0; s < nSol; s++) {
-                    const [cLat, cLon] = slots[s % Math.max(1, slots.length)] || [baseLat, baseLon];
-                    const faceL = faceTarget
-                        ? faceTarget[1] < cLon
-                        : ((s + seed) & 1) === 1;
-                    const img = `st-sol-${solKey}${kneel ? "-k" : ""}${faceL ? "-l" : ""}`;
-                    pushUnit(cLat, cLon, img, "sol", 0);
+                    let [cLat, cLon] = slots[s % Math.max(1, slots.length)] || [baseLat, baseLon];
+                    let faceL, step = 0, pose = kneel ? "-k" : "";
+                    const sentry = !kneel && nSol >= 4 && (s === 0 || (nSol >= 10 && s === nSol - 1));
+                    if (sentry) {
+                        const T = 14000 + (s % 3) * 2000;
+                        const u = ((now / T) + s * 0.37) % 1;
+                        const tri = u < 0.5 ? u * 2 : 2 - u * 2;           // 0 → 1 → 0: frem og tilbage
+                        const walking = tri > 0.04 && tri < 0.96;            // lille pause i hver ende
+                        const pLat = cLat + rd.uy * 5.5 * tri * invLat;
+                        const pLon = cLon + rd.ux * 5.5 * tri * invLon;
+                        if (!pointInsideMapBuilding(pLat, pLon, 0.6)) { cLat = pLat; cLon = pLon; }
+                        const dir = u < 0.5 ? 1 : -1;
+                        faceL = rd.ux * dir < -0.02;
+                        if (walking) step = Math.floor(now / 420 + s) % 2;
+                    } else {
+                        const T = 5000 + (s % 4) * 1500;
+                        faceL = faceTarget
+                            ? faceTarget[1] < cLon
+                            : (hash2(Math.floor(now / T), s * 31 + seed) & 1) === 1;
+                        if (!kneel && nSol >= 3 && s === 1 && Math.floor(now / 20000 + seed) % 3 !== 0) pose = "-k";
+                    }
+                    const img = `st-sol-${solKey}${pose}${step ? "-w" : ""}${faceL ? "-l" : ""}`;
+                    pushUnit(cLat, cLon, img, "sol", 0, step ? [0, -1.5] : null);
                 }
             }
         }
@@ -4886,6 +4950,27 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
     return { unitFeats, badgeFeat, ringFeat };
 }
 
+// Animation på gadeniveau: soldaterne går med benene, kolonnen bølger, og vagterne rører på sig.
+// Kun de små figurer tegnes om (7 gange i sekundet); skilte, ringe og skud passer sig selv.
+let streetAnimState = null;
+let streetAnimTimer = null;
+function ensureStreetAnimTimer() {
+    if (streetAnimTimer) return;
+    streetAnimTimer = setInterval(streetAnimTick, 140);
+}
+function streetAnimTick() {
+    if (!mapReady || !streetAnimState || document.hidden) return;
+    if (map.getZoom() < STREET_TACTICAL_ZOOM || !streetAnimState.groups.length) return;
+    const now = serverNow();
+    const feats = [];
+    for (const a of streetAnimState.groups) {
+        const st = buildStreetSquadFeatures(a.groupKey, a.group, a.lat, a.lon, a.style, a.status, a.marchObj, now, a.isSelected, a.shiftMeters, a.faceTarget, a.medic);
+        for (let i = 0; i < st.unitFeats.length; i++) feats.push(st.unitFeats[i]);
+    }
+    for (const f of streetAnimState.statics) feats.push(f);
+    map.getSource("src-street-units")?.setData({ type: "FeatureCollection", features: feats });
+}
+
 async function renderTroopsOnMap() {
     if (!mapReady) return;
     syncVectorTilesToChunks();
@@ -4895,6 +4980,8 @@ async function renderTroopsOnMap() {
     const streetUnits = [];
     const streetBadges = [];
     const streetRings = [];
+    const animGroups = [];
+    const parkedStreetUnits = [];
 
     activeStreetFormations.clear();
     await Promise.all([
@@ -4959,6 +5046,7 @@ async function renderTroopsOnMap() {
             if (d < bestD) { bestD = d; faceTarget = p; }
         }
         const st = buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marchObj, now, isSelected, shiftMeters, faceTarget, medic);
+        animGroups.push({ groupKey, group, lat, lon, style, status, marchObj, isSelected, shiftMeters, faceTarget, medic });
         for (let i = 0; i < st.unitFeats.length; i++) streetUnits.push(st.unitFeats[i]);
         streetBadges.push(st.badgeFeat);
         if (st.ringFeat) streetRings.push(st.ringFeat);
@@ -5088,7 +5176,7 @@ async function renderTroopsOnMap() {
             const tLat = p.lat + (rd.uy * along + ny * 2.0) * invLat;
             const tLon = p.lon + (rd.ux * along + nx * 2.0) * invLon;
             pPositions.push([tLat, tLon]);
-            streetUnits.push({
+            const pf = {
                 type: "Feature",
                 properties: {
                     img: hasGun ? "st-parked-h" : "st-parked",
@@ -5097,7 +5185,9 @@ async function renderTroopsOnMap() {
                     ...streetUnitScaleProps(hasGun ? "truck-h" : "truck")
                 },
                 geometry: { type: "Point", coordinates: [tLon, tLat] }
-            });
+            };
+            streetUnits.push(pf);
+            parkedStreetUnits.push(pf);
         }
         activeStreetFormations.set(`parked:${p.id}`, pPositions);
     }
@@ -5106,6 +5196,8 @@ async function renderTroopsOnMap() {
     map.getSource("src-parked-trucks")?.setData({ type: "FeatureCollection", features: parkedFeatures });
     map.getSource("src-march-lines")?.setData({ type: "FeatureCollection", features: lineFeatures });
     map.getSource("src-street-units")?.setData({ type: "FeatureCollection", features: streetUnits });
+    streetAnimState = { groups: animGroups, statics: parkedStreetUnits };
+    ensureStreetAnimTimer();
     map.getSource("src-street-badges")?.setData({ type: "FeatureCollection", features: streetBadges });
     map.getSource("src-street-rings")?.setData({ type: "FeatureCollection", features: streetRings });
 
