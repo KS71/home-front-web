@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 143;
+const APP_VERSION = 144;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -10264,12 +10264,13 @@ function namedLineHtml(kind, g) {
     if (!namedData.loaded) return "";
     const list = namedInGroup(kind, g.id);
     if (!list.length) return "";
-    const shown = list.slice(0, 8).map(n => `<span title="${n.heals} ${n.heals === 1 ? "heling" : "helinger"}">${rankTitle(n.heals)} ${escapeHtml(n.name)}</span>`).join(", ");
-    const more = list.length > 8 ? ` og ${list.length - 8} til` : "";
+    // Kort linje: antal med rang, antal menige (aldrig været på hospitalet) og rangens ekstra ildkraft.
+    // Navnene ses under "📋 Soldater".
     const fb = codexRule("rank_fire_bonus", 0.10), fmax = codexRule("rank_fire_max", 1.0);
     const bonus = list.reduce((sum, n) => sum + Math.min(n.heals * fb, fmax), 0);
     const pct = g.count > 0 ? Math.round(bonus / g.count * 100) : 0;
-    return `<p class="muted-hint">🎖️ ${list.length} ${list.length === 1 ? "navngiven soldat" : "navngivne soldater"}${pct > 0 ? ` (+${pct} % ildkraft)` : ""}: ${shown}${more}.</p>`;
+    const privates = Math.max(0, (g.count || 0) - list.length);
+    return `<p class="muted-hint"><span title="Soldater med rang (har været såret og helet)">🎖️ ${list.length} med rang</span> · <span title="Menige: har endnu ikke været på hospitalet">🪖 ${privates} menige</span>${pct > 0 ? ` · +${pct} % ildkraft` : ""}</p>`;
 }
 
 // Nærmeste by til et punkt (til "vagt i Glostrup"), hvis byerne er hentet.
