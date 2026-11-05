@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 140;
+const APP_VERSION = 141;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -3207,12 +3207,12 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
     if (truck) await truckImgPromise;
     if (!truck && hasHowitzer) await howitzerImgPromise;
     const gunImg = !truck && hasHowitzer ? howitzerImg : null;
-    const enemyImg = style === "npc" && computerSoldierImg ? computerSoldierImg : npcSoldierImg;
-    let soldierImg = truck && hasHowitzer && truckHowitzerImg ? truckHowitzerImg : (truck && truckImg ? truckImg : (redUniform && enemyImg ? enemyImg : baseSoldierImg));
-    if (allyHex && !truck && soldierImg) soldierImg = tintedUniform(soldierImg, allyHex);
+    let soldierImg = truck && hasHowitzer && truckHowitzerImg
+        ? truckHowitzerImg
+        : (truck && truckImg ? truckImg : vectorSoldierCanvas(style, "stand", 1.75));
     if (!soldierImg) return;
 
-    const scale = truck ? 2 : 3;
+    const scale = truck ? 2 : 1;
     const sw = soldierImg.width * scale;
     const sh = soldierImg.height * scale;
     // Haubitsen står til venstre for soldaten; soldaten står stadig midt på sin position.
@@ -3229,7 +3229,7 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
     canvas.height = Math.max(sh, gh) + badgeH + barH + 8;
 
     const ctx = canvas.getContext("2d");
-    ctx.imageSmoothingEnabled = false;
+    ctx.imageSmoothingEnabled = !truck;
 
     const bx = (canvas.width - badgeW) / 2;
     ctx.fillStyle = "rgba(17, 22, 28, 0.92)";
@@ -4478,50 +4478,206 @@ function marchToHospital(m) {
     return state.myBuildings.some(b => b.kind === "hospital" && Geo.distanceM(b.lat, b.lon, m.toLat, m.toLon) <= reach);
 }
 
-// Skridt-billede til gang: benene (de nederste 4 rækker i 16×14-billedet) spredes 1 px til hver side.
-// Skiftevis det almindelige billede og dette, så benene går.
-const walkCache = new WeakMap();
-function walkSprite(img) {
-    if (!img) return null;
-    if (walkCache.has(img)) return walkCache.get(img);
-    const c = document.createElement("canvas");
-    c.width = img.width;
-    c.height = img.height;
-    const ctx = c.getContext("2d");
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(img, 0, 0);
-    const legTop = img.height - 4;
-    const half = img.width / 2;
-    ctx.clearRect(0, legTop, img.width, 4);
-    ctx.drawImage(img, 0, legTop, half, 4, -1, legTop, half, 4);
-    ctx.drawImage(img, half, legTop, half, 4, half + 1, legTop, half, 4);
-    walkCache.set(img, c);
-    return c;
+// Tegner den kompakte soldat (bud A) med rene streger, flade farver, mørk kant (#252934)
+// og skygge mod sydøst i samme stil som kortets 3D-huse.
+function soldierPalette(style) {
+    if (style === "npc") return { u: "#8b8e93", ud: "#5c5f64", h: "#6e7176" };
+    if (style === "enemy") return { u: "#8b3b30", ud: "#5e2820", h: "#7a3228" };
+    if (style && style.startsWith("ally-")) {
+        const hex = "#" + style.slice(5);
+        const r = parseInt(hex.slice(1, 3), 16) || 100;
+        const g = parseInt(hex.slice(3, 5), 16) || 100;
+        const b = parseInt(hex.slice(5, 7), 16) || 100;
+        const shade = (f) => "#" + [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v * f))).toString(16).padStart(2, "0")).join("");
+        return { u: shade(0.85), ud: shade(0.58), h: shade(0.72) };
+    }
+    return { u: "#6b7f45", ud: "#4a5a2e", h: "#5c6932" };
 }
 
-// Knælende soldat i kamp: samme figur, men bukserne (række 10-11 i 16×14-billedet) er taget ud,
-// så overkroppen sidder lavere ned mod støvlerne.
-const kneelCache = new WeakMap();
-function kneelingSprite(img) {
-    if (!img) return null;
-    if (kneelCache.has(img)) return kneelCache.get(img);
-    const c = document.createElement("canvas");
-    const cut = 2;
-    const top = Math.max(1, img.height - 4);
-    c.width = img.width;
-    c.height = img.height - cut;
-    const ctx = c.getContext("2d");
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(img, 0, 0, img.width, top, 0, 0, img.width, top);
-    ctx.drawImage(img, 0, top + cut, img.width, img.height - top - cut, 0, top, img.width, img.height - top - cut);
-    kneelCache.set(img, c);
-    return c;
+const vectorSoldierCache = new Map();
+function vectorSoldierCanvas(style = "own", pose = "stand", scale = 1.35, flipX = false, withShadow = false) {
+    const key = `${style}|${pose}|${scale}|${flipX ? 1 : 0}|${withShadow ? 1 : 0}`;
+    if (vectorSoldierCache.has(key)) return vectorSoldierCache.get(key);
+
+    const pal = soldierPalette(style);
+    const outline = "#252934";
+    const skin = "#e8c39e";
+    const pack = "#6b5a3e";
+    const belt = "#4a3a28";
+    const boot = "#2b2420";
+    const gunStock = "#2a2320";
+    const gunBarrel = "#555555";
+
+    const w = Math.round(28 * scale);
+    const h = Math.round(32 * scale);
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    ctx.save();
+    ctx.translate(w / 2, Math.round(25 * scale));
+    ctx.scale(scale, scale);
+
+    // Skygge på jorden mod sydøst (som husene), uafhængigt af hvilken vej soldaten kigger
+    if (withShadow) {
+        ctx.fillStyle = "rgba(26, 32, 46, 0.50)";
+        ctx.beginPath();
+        ctx.ellipse(2, 4, pose === "kneel" ? 7.5 : 7, 2.6, 0, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    if (flipX) ctx.scale(-1, 1);
+
+    const fillStrokeRect = (x, y, rw, rh, rx, fill, lw = 1) => {
+        ctx.fillStyle = fill;
+        ctx.strokeStyle = outline;
+        ctx.lineWidth = lw;
+        ctx.beginPath();
+        ctx.roundRect(x, y, rw, rh, rx);
+        ctx.fill();
+        ctx.stroke();
+    };
+
+    const drawLeg = (hipX, hipY, deg, leftSide) => {
+        ctx.save();
+        ctx.translate(hipX, hipY);
+        ctx.rotate((deg * Math.PI) / 180);
+        ctx.translate(-hipX, -hipY);
+        if (leftSide) {
+            fillStrokeRect(-4.5, -7, 4.2, 10, 1.6, pal.ud, 1);
+            fillStrokeRect(-5, 1.5, 5.2, 2.6, 1, boot, 0.8);
+        } else {
+            fillStrokeRect(0.3, -7, 4.2, 10, 1.6, pal.ud, 1);
+            fillStrokeRect(0, 1.5, 5.2, 2.6, 1, boot, 0.8);
+        }
+        ctx.restore();
+    };
+
+    if (pose === "kneel") {
+        // Knælende ben
+        fillStrokeRect(-6, -2, 9, 4, 1.6, pal.ud, 1);
+        fillStrokeRect(2, -6, 4.2, 8, 1.6, pal.ud, 1);
+        // Rygsæk og overkrop lavere nede
+        fillStrokeRect(-8.5, -8, 4.5, 7, 1.5, pack, 1);
+        fillStrokeRect(-6, -10, 12, 9, 3, pal.u, 1);
+        // Gevær i skudstilling
+        ctx.strokeStyle = gunStock;
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.moveTo(-2, -6);
+        ctx.lineTo(10, -9);
+        ctx.stroke();
+        // Hånd
+        ctx.fillStyle = skin;
+        ctx.strokeStyle = outline;
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        ctx.arc(4, -7, 1.9, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        // Hoved
+        ctx.fillStyle = skin;
+        ctx.strokeStyle = outline;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(0, -14, 4.6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        // Hjelm
+        ctx.fillStyle = pal.h;
+        ctx.strokeStyle = outline;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(0, -14.5, 5.3, Math.PI, 0, false);
+        ctx.lineTo(5.8, -13.3);
+        ctx.lineTo(-5.8, -13.3);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        // Lysrefleks på hjelmen
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.arc(-1.2, -14.5, 3.8, Math.PI * 1.15, Math.PI * 1.55);
+        ctx.stroke();
+    } else {
+        const degL = pose === "walk1" ? -22 : (pose === "walk2" ? 22 : 0);
+        const degR = pose === "walk1" ? 22 : (pose === "walk2" ? -22 : 0);
+        const bobY = (pose === "walk1" || pose === "walk2") ? -0.8 : 0;
+
+        drawLeg(-2, -6, degL, true);
+        drawLeg(2, -6, degR, false);
+
+        ctx.save();
+        ctx.translate(0, bobY);
+        // Rygsæk
+        fillStrokeRect(-8.5, -13, 4.5, 8, 1.5, pack, 1);
+        // Overkrop (uniform)
+        fillStrokeRect(-6, -15, 12, 10, 3, pal.u, 1);
+        // Bælte
+        ctx.fillStyle = belt;
+        ctx.fillRect(-5.4, -8, 10.8, 2);
+        // Gevær og løb
+        ctx.strokeStyle = gunStock;
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.moveTo(-3, -9);
+        ctx.lineTo(9, -16);
+        ctx.stroke();
+        ctx.strokeStyle = gunBarrel;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(7, -15);
+        ctx.lineTo(10.5, -17);
+        ctx.stroke();
+        // Hånd
+        ctx.fillStyle = skin;
+        ctx.strokeStyle = outline;
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        ctx.arc(3.5, -9.5, 1.9, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        // Hoved
+        ctx.fillStyle = skin;
+        ctx.strokeStyle = outline;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(0, -19, 4.6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        // Hjelm
+        ctx.fillStyle = pal.h;
+        ctx.strokeStyle = outline;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(0, -19.5, 5.3, Math.PI, 0, false);
+        ctx.lineTo(5.8, -18.3);
+        ctx.lineTo(-5.8, -18.3);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        // Lysrefleks på hjelmen
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.arc(-1.2, -19.5, 3.8, Math.PI * 1.15, Math.PI * 1.55);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    ctx.restore();
+    vectorSoldierCache.set(key, canvas);
+    return canvas;
 }
 
 async function ensureStreetUnitSprites(style = "own") {
     const redUniform = style === "npc" || style === "enemy";
     const allyHex = style.startsWith("ally-") ? "#" + style.slice(5) : null;
-    await Promise.all([soldierImgPromise, npcImgPromise, computerImgPromise, truckImgPromise, truckHowitzerImgPromise, howitzerImgPromise]);
+    await Promise.all([truckImgPromise, truckHowitzerImgPromise, howitzerImgPromise]);
 
     const addShadowedSprite = (id, srcImg, scale, flipX = false, dimAlpha = 1) => {
         if (!srcImg || !mapReady || registeredStreetSprites.has(id)) return;
@@ -4556,18 +4712,25 @@ async function ensureStreetUnitSprites(style = "own") {
         }
     };
 
-    const enemyImg = style === "npc" && computerSoldierImg ? computerSoldierImg : npcSoldierImg;
-    let solImg = redUniform && enemyImg ? enemyImg : baseSoldierImg;
-    if (allyHex && solImg) solImg = tintedUniform(solImg, allyHex);
+    const addVectorSoldier = (id, pose, flipX) => {
+        if (!mapReady || registeredStreetSprites.has(id)) return;
+        registeredStreetSprites.add(id);
+        const c = vectorSoldierCanvas(style, pose, 1.35, flipX, true);
+        if (!map.hasImage(id)) {
+            const d = c.getContext("2d").getImageData(0, 0, c.width, c.height);
+            map.addImage(id, { width: c.width, height: c.height, data: d.data });
+        }
+    };
+
     const solKey = style === "npc" ? "npc" : (redUniform ? "enemy" : (allyHex ? style : "own"));
-    addShadowedSprite(`st-sol-${solKey}`, solImg, 2, false);
-    addShadowedSprite(`st-sol-${solKey}-l`, solImg, 2, true);
-    const walkImg = walkSprite(solImg);
-    addShadowedSprite(`st-sol-${solKey}-w`, walkImg, 2, false);
-    addShadowedSprite(`st-sol-${solKey}-w-l`, walkImg, 2, true);
-    const kneelImg = kneelingSprite(solImg);
-    addShadowedSprite(`st-sol-${solKey}-k`, kneelImg, 2, false);
-    addShadowedSprite(`st-sol-${solKey}-k-l`, kneelImg, 2, true);
+    addVectorSoldier(`st-sol-${solKey}`, "stand", false);
+    addVectorSoldier(`st-sol-${solKey}-l`, "stand", true);
+    addVectorSoldier(`st-sol-${solKey}-w`, "walk1", false);
+    addVectorSoldier(`st-sol-${solKey}-w-l`, "walk1", true);
+    addVectorSoldier(`st-sol-${solKey}-w2`, "walk2", false);
+    addVectorSoldier(`st-sol-${solKey}-w2-l`, "walk2", true);
+    addVectorSoldier(`st-sol-${solKey}-k`, "kneel", false);
+    addVectorSoldier(`st-sol-${solKey}-k-l`, "kneel", true);
 
     addShadowedSprite("st-truck", truckImg, 2, false);
     addShadowedSprite("st-truck-l", truckImg, 2, true);
@@ -4851,8 +5014,9 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
                     lonS = pt.lon;
                 }
                 const faceL = pt.ux < -0.05;
-                const step = Math.floor(now / 420 + ((i * 7 + gid * 3) % 10) / 5) % 2;
-                pushUnit(latS, lonS, `st-sol-${solKey}${step ? "-w" : ""}${faceL ? "-l" : ""}`, "sol", 0, step ? [0, -1.5] : null);
+                const phase = Math.floor(now / 150 + (i * 7 + gid * 3) * 0.6) % 4;
+                const stepSuf = phase === 1 ? "-w" : (phase === 3 ? "-w2" : "");
+                pushUnit(latS, lonS, `st-sol-${solKey}${stepSuf}${faceL ? "-l" : ""}`, "sol", 0, stepSuf ? [0, -1] : null);
             }
             // Eventuelle medfølgende lastbiler i gåtempo bagerst i kolonnen
             const nTr = Math.min(trucks, 3);
@@ -4921,7 +5085,7 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
                 const kneel = status === "combat";
                 for (let s = 0; s < nSol; s++) {
                     let [cLat, cLon] = slots[s % Math.max(1, slots.length)] || [baseLat, baseLon];
-                    let faceL, step = 0, pose = kneel ? "-k" : "";
+                    let faceL, stepSuf = "", pose = kneel ? "-k" : "";
                     const sentry = !kneel && nSol >= 4 && (s === 0 || (nSol >= 10 && s === nSol - 1));
                     if (sentry) {
                         const T = 14000 + (s % 3) * 2000;
@@ -4933,7 +5097,10 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
                         if (!pointInsideMapBuilding(pLat, pLon, 0.6)) { cLat = pLat; cLon = pLon; }
                         const dir = u < 0.5 ? 1 : -1;
                         faceL = rd.ux * dir < -0.02;
-                        if (walking) step = Math.floor(now / 420 + s) % 2;
+                        if (walking) {
+                            const ph = Math.floor(now / 150 + s * 1.3) % 4;
+                            stepSuf = ph === 1 ? "-w" : (ph === 3 ? "-w2" : "");
+                        }
                     } else {
                         const T = 5000 + (s % 4) * 1500;
                         faceL = faceTarget
@@ -4941,8 +5108,8 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
                             : (hash2(Math.floor(now / T), s * 31 + seed) & 1) === 1;
                         if (!kneel && nSol >= 3 && s === 1 && Math.floor(now / 20000 + seed) % 3 !== 0) pose = "-k";
                     }
-                    const img = `st-sol-${solKey}${pose}${step ? "-w" : ""}${faceL ? "-l" : ""}`;
-                    pushUnit(cLat, cLon, img, "sol", 0, step ? [0, -1.5] : null);
+                    const img = `st-sol-${solKey}${pose}${stepSuf}${faceL ? "-l" : ""}`;
+                    pushUnit(cLat, cLon, img, "sol", 0, stepSuf ? [0, -1] : null);
                 }
             }
         }
