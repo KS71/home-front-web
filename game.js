@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 138;
+const APP_VERSION = 139;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -8471,9 +8471,16 @@ async function rerouteNpcsAroundBuildings() {
         const to = n.path[1];
         if (Geo.distanceM(pos[0], pos[1], to[0], to[1]) < 8) continue;
         if (!areBuildingsLoadedAlong(pos[0], pos[1], to[0], to[1])) continue;
+        // Huse kendes overalt, hvor kortet er hentet; vand kendes kun på skærmen. Krydser stregen
+        // hverken hus eller vand, prøves den først igen, når den er på skærmen.
+        const onScreen = isPointOnScreen(pos[0], pos[1]) && isPointOnScreen(to[0], to[1]);
+        const crossB = segmentCrossesBuilding(pos[0], pos[1], to[0], to[1], 1.15, false);
+        const crossW = onScreen && segmentCrossesWater(pos[0], pos[1], to[0], to[1]);
+        if (!crossB && !crossW) {
+            if (onScreen) npcRerouteTried.set(n.id, n.arrives_at);
+            continue;
+        }
         npcRerouteTried.set(n.id, n.arrives_at);
-        // Også når patruljen allerede står inde i et hus (så får den en rute ud og uden om).
-        if (!segmentCrossesBuilding(pos[0], pos[1], to[0], to[1], 1.15, false)) continue;
         // Rutefinderen kan ikke starte eller slutte inde i et hus: gå først det korteste stykke ud af
         // huset, og læg ruten derfra. Ligger målet inde i et hus, går ruten til nærmeste sted udenfor
         // og derfra det sidste stykke ind (serveren kræver, at ruten ender ved målet).
@@ -8483,13 +8490,21 @@ async function rerouteNpcsAroundBuildings() {
         const dest = inEnd ? snapOutsideMapBuilding(to[0], to[1], 1.8, 80) : to;
         if (Geo.distanceM(from[0], from[1], pos[0], pos[1]) > 14) continue;
         if (inEnd && pointInsideMapBuilding(dest[0], dest[1], 0.3)) continue;
+        // Over vand: rutetjenesten kender broer og stier (som dine egne soldater). Ellers den
+        // hurtige lokale rute uden om husene.
         let route = Geo.distanceM(from[0], from[1], dest[0], dest[1]) < 2
             ? [from, dest]
-            : findTacticalBuildingPath(from[0], from[1], dest[0], dest[1]);
+            : (crossW ? await osrmFootRoute(from[0], from[1], dest[0], dest[1])
+                      : findTacticalBuildingPath(from[0], from[1], dest[0], dest[1]));
         if (!route) continue;
         if (inStart) route = [pos, ...route];
         if (inEnd) route = [...route, to];
-        if (route.length < 3 || route.length > 80) continue;
+        if (route.length < 3) continue;
+        if (route.length > 118) route = [route[0], ...simplifyPolyline(route.slice(1, -1), 0.0003), route[route.length - 1]];
+        if (route.length > 120) continue;
+        // Serverens grænser (0053): højst 4 × den lige afstand + 300 m. Spar kaldet, hvis omvejen er længere.
+        const straight = Geo.distanceM(pos[0], pos[1], to[0], to[1]);
+        if (pathDistanceM(route) > straight * 4 + 300) continue;
         const pts = route.map(p => [Number(p[0].toFixed(7)), Number(p[1].toFixed(7))]);
         pts[pts.length - 1] = [to[0], to[1]];
         const { data, error } = await sb.rpc("npc_reroute", { p_id: n.id, p_path: pts });
@@ -8502,6 +8517,22 @@ async function rerouteNpcsAroundBuildings() {
     }
     if (npcRerouteTried.size > 500) npcRerouteTried.clear();
     if (changed) setTimeout(() => pollWorld(), 400);
+}
+
+// Gangrute fra rutetjenesten (OSRM, til fods) som [lat, lon]-punkter, eller null.
+async function osrmFootRoute(aLat, aLon, bLat, bLon) {
+    try {
+        const url = `https://router.project-osrm.org/route/v1/foot/${aLon.toFixed(6)},${aLat.toFixed(6)};${bLon.toFixed(6)},${bLat.toFixed(6)}?overview=full&geometries=geojson`;
+        const resp = await fetch(url);
+        if (!resp.ok) return null;
+        const json = await resp.json();
+        const coords = json?.routes?.[0]?.geometry?.coordinates;
+        if (!Array.isArray(coords) || coords.length < 2) return null;
+        const simplified = simplifyPolyline(coords.map(c => [c[1], c[0]]), 0.00008);
+        return [[aLat, aLon], ...simplified.slice(1, -1), [bLat, bLon]];
+    } catch (_) {
+        return null;
+    }
 }
 
 // Henter alt fjendtligt, du kan se lige nu (telefonen + egne soldater), og melder nye fund.
