@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 133;
+const APP_VERSION = 134;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -3208,7 +3208,6 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
     const enemyImg = style === "npc" && computerSoldierImg ? computerSoldierImg : npcSoldierImg;
     let soldierImg = truck && hasHowitzer && truckHowitzerImg ? truckHowitzerImg : (truck && truckImg ? truckImg : (redUniform && enemyImg ? enemyImg : baseSoldierImg));
     if (allyHex && !truck && soldierImg) soldierImg = tintedUniform(soldierImg, allyHex);
-    if (medic && !truck && soldierImg) soldierImg = medicSprite(soldierImg);
     if (!soldierImg) return;
 
     const scale = truck ? 2 : 3;
@@ -4436,26 +4435,6 @@ function troopStatusStrokeColor(style, status) {
     return "#39FF14";
 }
 
-// Soldat på vej til felthospitalet: hvidt felt med rødt kors på hjelmen (16×14-billedet).
-const medicCache = new WeakMap();
-function medicSprite(img) {
-    if (!img) return null;
-    if (medicCache.has(img)) return medicCache.get(img);
-    const c = document.createElement("canvas");
-    c.width = img.width;
-    c.height = img.height;
-    const ctx = c.getContext("2d");
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(img, 0, 0);
-    ctx.fillStyle = "#FFFFFF";
-    ctx.fillRect(6, 0, 5, 5);
-    ctx.fillStyle = "#E53935";
-    ctx.fillRect(8, 1, 1, 3);
-    ctx.fillRect(7, 2, 3, 1);
-    medicCache.set(img, c);
-    return c;
-}
-
 // Lille rødt kors i et hvidt felt, tegnet på et mærke (gruppens tal) ved x, y.
 function drawBadgeRedCross(ctx, x, y, size) {
     ctx.fillStyle = "#FFFFFF";
@@ -4538,11 +4517,6 @@ async function ensureStreetUnitSprites(style = "own") {
     const solKey = style === "npc" ? "npc" : (redUniform ? "enemy" : (allyHex ? style : "own"));
     addShadowedSprite(`st-sol-${solKey}`, solImg, 2, false);
     addShadowedSprite(`st-sol-${solKey}-l`, solImg, 2, true);
-    if (solKey === "own") {
-        const medImg = medicSprite(solImg);
-        addShadowedSprite("st-sol-own-med", medImg, 2, false);
-        addShadowedSprite("st-sol-own-med-l", medImg, 2, true);
-    }
     const kneelImg = kneelingSprite(solImg);
     addShadowedSprite(`st-sol-${solKey}-k`, kneelImg, 2, false);
     addShadowedSprite(`st-sol-${solKey}-k-l`, kneelImg, 2, true);
@@ -4810,8 +4784,7 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
                     lonS = pt.lon;
                 }
                 const faceL = pt.ux < -0.05;
-                const solImgKey = medic && solKey === "own" ? "own-med" : solKey;
-                pushUnit(latS, lonS, faceL ? `st-sol-${solImgKey}-l` : `st-sol-${solImgKey}`, "sol", 0);
+                pushUnit(latS, lonS, faceL ? `st-sol-${solKey}-l` : `st-sol-${solKey}`, "sol", 0);
             }
             // Eventuelle medfølgende lastbiler i gåtempo bagerst i kolonnen
             const nTr = Math.min(trucks, 3);
