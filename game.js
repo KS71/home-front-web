@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 144;
+const APP_VERSION = 145;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -5569,10 +5569,22 @@ function findShotPairs(foes, ownList) {
                     });
                 }
             }
+            // Zoomet ud tegnes ét spor mellem gruppernes midter. Står et hus imellem (nærkamp om
+            // hjørnet), skyder begge sider ind i muren i stedet for tværs over taget.
+            const oc = [o.lat, o.lon];
+            const hitOc = visualHit(oc, pos, true);
+            const hitNc = hitOc ? visualHit(pos, oc, true) : null;
+            const centerLane = {
+                own: [o.lon, o.lat],
+                npc: [pos[1], pos[0]],
+                ownTo: hitOc ? [hitOc.hitLon, hitOc.hitLat] : null,
+                npcTo: hitNc ? [hitNc.hitLon, hitNc.hitLat] : null
+            };
             activeShots.push({
                 own: [o.lon, o.lat],
                 npc: [pos[1], pos[0]],
                 lanes,
+                centerLane,
                 seed: f.seed || 0
             });
         }
@@ -5591,7 +5603,7 @@ function shotFeatures(now) {
     for (const p of shotPairs) {
         const nLanes = streetMode && p.lanes ? p.lanes.length : 3;
         for (let k = 0; k < nLanes; k++) {
-            const lane = (streetMode && p.lanes && p.lanes[k]) ? p.lanes[k] : p;
+            const lane = (streetMode && p.lanes && p.lanes[k]) ? p.lanes[k] : (p.centerLane || p);
             for (const [from, a, b, offset] of [["own", lane.own, lane.ownTo || lane.npc, 0], ["npc", lane.npc, lane.npcTo || lane.own, 0.5]]) {
                 // Krudtrøg, der stiger op og breder sig fra skytten (kun nede på gadeniveau).
                 if (streetMode) {
