@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 135;
+const APP_VERSION = 136;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -8360,6 +8360,41 @@ async function loadReports() {
     }
 }
 
+// Fjender (patruljer og den svenske hær til fods) får fra serveren en lige strækning, fordi serveren
+// ikke kender kortets huse. Skærer strækningen et hus, regner browseren en rute uden om husene og
+// sender den til serveren (npc_reroute, 0052), som tjekker den. Hver strækning prøves kun én gang.
+const npcRerouteTried = new Map(); // id -> arrives_at for den strækning, der er prøvet
+let npcRerouteOff = false;
+async function rerouteNpcsAroundBuildings() {
+    if (npcRerouteOff || !mapReady) return;
+    const now = serverNow();
+    let changed = false;
+    for (const n of state.enemies.npcs) {
+        if (!Array.isArray(n.path) || n.path.length !== 2 || n.driving) continue;
+        if (npcRerouteTried.get(n.id) === n.arrives_at) continue;
+        if (now >= Date.parse(n.arrives_at) - 3000) continue;
+        const pos = npcCurrentPos(n, now);
+        const to = n.path[1];
+        if (Geo.distanceM(pos[0], pos[1], to[0], to[1]) < 8) continue;
+        if (!areBuildingsLoadedAlong(pos[0], pos[1], to[0], to[1])) continue;
+        npcRerouteTried.set(n.id, n.arrives_at);
+        if (!segmentCrossesBuilding(pos[0], pos[1], to[0], to[1])) continue;
+        const route = findTacticalBuildingPath(pos[0], pos[1], to[0], to[1]);
+        if (!route || route.length < 3 || route.length > 80) continue;
+        const pts = route.map(p => [Number(p[0].toFixed(7)), Number(p[1].toFixed(7))]);
+        pts[pts.length - 1] = [to[0], to[1]];
+        const { data, error } = await sb.rpc("npc_reroute", { p_id: n.id, p_path: pts });
+        if (error) {
+            // Databasen har ikke fået 0052 endnu: prøv ikke igen før næste genindlæsning.
+            if (/npc_reroute/i.test(error.message || "")) npcRerouteOff = true;
+            continue;
+        }
+        if (data) changed = true;
+    }
+    if (npcRerouteTried.size > 500) npcRerouteTried.clear();
+    if (changed) setTimeout(() => pollWorld(), 400);
+}
+
 // Henter alt fjendtligt, du kan se lige nu (telefonen + egne soldater), og melder nye fund.
 let pollingWorld = false;
 let lastWorldPoll = 0;
@@ -8396,6 +8431,7 @@ async function pollWorld() {
         renderTroopsOnMap();
         renderContactsSidebar();
         if (state.selected) renderSelectedBox();
+        rerouteNpcsAroundBuildings();
     } finally {
         pollingWorld = false;
     }
