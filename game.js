@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 134;
+const APP_VERSION = 135;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -5210,7 +5210,23 @@ function findShotPairs(foes, ownList) {
             const nLanes = Math.min(6, Math.max(3, Math.ceil(Math.min(ownUnits.length, npcUnits.length) / 2)));
             // Lyssporene tegnes kun mellem soldater, der faktisk kan se hinanden, så de aldrig går gennem
             // et hus. (Nærkamps-reglen fire_close_m gælder kampen, ikke tegningen.)
-            const clear = (a, b) => !firstBuildingHitOnSegment(a[0], a[1], b[0], b[1], 0.2, true);
+            // Husene tegnes i 3D med sydmuren hængende op til ca. 9 m syd for grundplanen, så linjen
+            // tjekkes også flyttet 3 og 6 m mod nord (= huset forlænget mod syd med muren).
+            const SHIFTS = [0, 3 / 111320, 6 / 111320];
+            const visualHit = (a, b, forPoint = false) => {
+                let best = null;
+                // Skyder man mod syd, rammer skuddet først taget/nordmuren (grundplanen); kun skud mod
+                // nord rammer den tegnede sydmur, der ligger foran grundplanen.
+                for (const d of SHIFTS) {
+                    const h = firstBuildingHitOnSegment(a[0] + d, a[1], b[0] + d, b[1], 0.3, true);
+                    if (!h) continue;
+                    const hit = { t: h.t, hitLat: h.hitLat - d, hitLon: h.hitLon };
+                    if (d === 0 && forPoint && b[0] < a[0]) return hit;
+                    if (!best || hit.t < best.t) best = hit;
+                }
+                return best;
+            };
+            const clear = (a, b) => !visualHit(a, b);
             const seen = new Set();
             const tries = Math.min(48, ownUnits.length * npcUnits.length);
             for (let a = 0; a < tries && lanes.length < nLanes; a++) {
@@ -5226,8 +5242,8 @@ function findShotPairs(foes, ownList) {
                 for (let k = 0; k < 3; k++) {
                     const ou = ownUnits[(k * 3) % ownUnits.length];
                     const nu = npcUnits[(k * 2) % npcUnits.length];
-                    const hitO = firstBuildingHitOnSegment(ou[0], ou[1], nu[0], nu[1], 0.2, true);
-                    const hitN = firstBuildingHitOnSegment(nu[0], nu[1], ou[0], ou[1], 0.2, true);
+                    const hitO = visualHit(ou, nu, true);
+                    const hitN = visualHit(nu, ou, true);
                     lanes.push({
                         own: [ou[1], ou[0]],
                         npc: [nu[1], nu[0]],
