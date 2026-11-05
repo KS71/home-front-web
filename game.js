@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 132;
+const APP_VERSION = 133;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -3262,7 +3262,7 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(text, canvas.width / 2 + crossW / 2, 2 + badgeH / 2);
-    if (medic) drawRedCross(ctx, bx + 4, 2 + (badgeH - 14) / 2, 14);
+    if (medic) drawBadgeRedCross(ctx, bx + 4, 2 + (badgeH - 14) / 2, 14);
 
     // Energibjælke under tallet: grøn → gul → rød.
     const step = Math.ceil(pct / 10) / 10;
@@ -4457,7 +4457,7 @@ function medicSprite(img) {
 }
 
 // Lille rødt kors i et hvidt felt, tegnet på et mærke (gruppens tal) ved x, y.
-function drawRedCross(ctx, x, y, size) {
+function drawBadgeRedCross(ctx, x, y, size) {
     ctx.fillStyle = "#FFFFFF";
     ctx.beginPath();
     ctx.roundRect(x, y, size, size, 2);
@@ -4590,7 +4590,7 @@ function ensureStreetBadge(count, strokeColor, pct, tag = "", medic = false) {
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(label, 2 + w / 2 + crossW / 2, 1.5 + pillH / 2 + 0.5);
-    if (medic) drawRedCross(ctx, 5, 3, 12);
+    if (medic) drawBadgeRedCross(ctx, 5, 3, 12);
 
     const step = Math.max(0.08, Math.ceil(pct / 10) / 10);
     const by = pillH + 2.5;
