@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 130;
+const APP_VERSION = 131;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -5184,13 +5184,32 @@ function findShotPairs(foes, ownList) {
             const lanes = [];
             // Flere skytter i store grupper: 3 til 6 skudlinjer mellem de enkelte små soldater.
             const nLanes = Math.min(6, Math.max(3, Math.ceil(Math.min(ownUnits.length, npcUnits.length) / 2)));
-            for (let k = 0; k < nLanes; k++) {
-                const ou = ownUnits[(k * 3) % ownUnits.length];
-                const nu = npcUnits[(k * 2) % npcUnits.length];
-                if (hasLineOfSight(ou[0], ou[1], nu[0], nu[1])) {
-                    lanes.push({ own: [ou[1], ou[0]], npc: [nu[1], nu[0]] });
-                } else {
-                    lanes.push({ own: [o.lon, o.lat], npc: [pos[1], pos[0]] });
+            // Lyssporene tegnes kun mellem soldater, der faktisk kan se hinanden, så de aldrig går gennem
+            // et hus. (Nærkamps-reglen fire_close_m gælder kampen, ikke tegningen.)
+            const clear = (a, b) => !firstBuildingHitOnSegment(a[0], a[1], b[0], b[1], 0.2, true);
+            const seen = new Set();
+            const tries = Math.min(48, ownUnits.length * npcUnits.length);
+            for (let a = 0; a < tries && lanes.length < nLanes; a++) {
+                const oi = (a * 3) % ownUnits.length;
+                const ni = (a * 2 + Math.floor(a / ownUnits.length)) % npcUnits.length;
+                if (seen.has(oi + ":" + ni)) continue;
+                seen.add(oi + ":" + ni);
+                const ou = ownUnits[oi], nu = npcUnits[ni];
+                if (clear(ou, nu)) lanes.push({ own: [ou[1], ou[0]], npc: [nu[1], nu[0]] });
+            }
+            // Ingen fri skudlinje (nærkamp rundt om et hus): begge sider skyder ind i muren foran sig.
+            if (!lanes.length) {
+                for (let k = 0; k < 3; k++) {
+                    const ou = ownUnits[(k * 3) % ownUnits.length];
+                    const nu = npcUnits[(k * 2) % npcUnits.length];
+                    const hitO = firstBuildingHitOnSegment(ou[0], ou[1], nu[0], nu[1], 0.2, true);
+                    const hitN = firstBuildingHitOnSegment(nu[0], nu[1], ou[0], ou[1], 0.2, true);
+                    lanes.push({
+                        own: [ou[1], ou[0]],
+                        npc: [nu[1], nu[0]],
+                        ownTo: hitO ? [hitO.hitLon, hitO.hitLat] : null,
+                        npcTo: hitN ? [hitN.hitLon, hitN.hitLat] : null
+                    });
                 }
             }
             activeShots.push({
@@ -5216,7 +5235,7 @@ function shotFeatures(now) {
         const nLanes = streetMode && p.lanes ? p.lanes.length : 3;
         for (let k = 0; k < nLanes; k++) {
             const lane = (streetMode && p.lanes && p.lanes[k]) ? p.lanes[k] : p;
-            for (const [from, a, b, offset] of [["own", lane.own, lane.npc, 0], ["npc", lane.npc, lane.own, 0.5]]) {
+            for (const [from, a, b, offset] of [["own", lane.own, lane.ownTo || lane.npc, 0], ["npc", lane.npc, lane.npcTo || lane.own, 0.5]]) {
                 // Krudtrøg, der stiger op og breder sig fra skytten (kun nede på gadeniveau).
                 if (streetMode) {
                     const ph = (now / 2600 + p.seed * 1.7 + k * 0.29 + offset * 0.5) % 1;
