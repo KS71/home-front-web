@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 145;
+const APP_VERSION = 146;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -6171,6 +6171,7 @@ function garrisonRowsHtml(list) {
                 <button class="btn btn-small btn-primary" onclick="sendFromGarrison(${g.id})">🪖 Send videre</button>
                 ${g.mortars > 0 ? `<button class="btn btn-small btn-gold" onclick="startMortarAim(${g.id})">💣 Affyr morter</button>` : ""}
                 ${g.howitzers > 0 ? `<button class="btn btn-small btn-danger" onclick="startHowitzerAimGarrison(${g.id})">💥 Affyr haubits</button>` : ""}
+                ${resupplyButtonHtml(g, "btn btn-small btn-gold")}
             </div>
         </div>
     `).join("");
@@ -6709,6 +6710,7 @@ function renderTroopsSidebar() {
                     <button class="btn btn-small btn-primary" onclick="event.stopPropagation(); sendFromGarrison(${g.id})">🪖 Send videre</button>
                     ${g.mortars > 0 ? `<button class="btn btn-small btn-gold" onclick="event.stopPropagation(); startMortarAim(${g.id})">💣 Affyr</button>` : ""}
                     ${g.howitzers > 0 ? `<button class="btn btn-small btn-danger" onclick="event.stopPropagation(); startHowitzerAimGarrison(${g.id})">💥 Affyr haubits</button>` : ""}
+                    ${resupplyButtonHtml(g, "btn btn-small btn-gold", true)}
                 </div>
             </div>
         `;
@@ -7426,6 +7428,7 @@ function renderGroupModal() {
             ${state.garrisons.filter(x => x.id !== g.id && x.count > 0 && truckCount(x) > 0 && Geo.distanceM(x.lat, x.lon, g.lat, g.lon) <= GAME_CONFIG.TRUCK.boardM).map(x => `<button class="btn btn-primary" onclick="closeModal(); mergeWithGarrison(${g.id}, ${x.id})">🚚 Stig på ${truckCount(x) === 1 ? "lastbilen" : `de ${truckCount(x)} lastbiler`} (${x.count} soldater i)</button>`).join("")}
             ${state.parkedTrucks.filter(p => garrisonsByParked(p).some(x => x.id === g.id)).map(p => `<button class="btn btn-primary" onclick="closeModal(); boardTrucks(${p.id}, ${g.id})">🚚 Stig på ${p.trucks.length === 1 ? "lastbilen" : `${p.trucks.length} lastbiler`}</button>`).join("")}
             ${hurt ? `<button class="btn btn-primary" onclick="closeModal(); sendWoundedToHospital(${g.id})">🏥 Send ${hurt} ${hurt === 1 ? "såret" : "sårede"} til hospitalet</button>` : ""}
+            ${resupplyButtonHtml(g, "btn btn-gold", false, true)}
             <button class="btn btn-danger" onclick="closeModal(); sendGarrisonHome(${g.id})">🏠 Send hjem</button>
             <button class="btn" onclick="closeModal()">Luk</button>`;
         return;
@@ -7573,6 +7576,55 @@ function renderParkedModal(p) {
         <button class="btn btn-primary" onclick="closeModal(); sendSoldiersTo(${p.lat}, ${p.lon})">🪖 Send soldater hertil</button>
         <button class="btn" onclick="closeModal()">Luk</button>`;
 }
+
+// Fyld granater op (0054): en vagtstyrke ved en af dine barrakker eller våbenfabrikker kan tage
+// granater fra lageret, højst resupply_shells_per_mortar pr. morter (og pr. haubits for haubitsgranater).
+function gapToBuildingM(b, lat, lon) {
+    const half = buildingSize(b.kind) / 2;
+    const cosL = Math.max(Math.cos(b.lat * RAD_PER_DEG), MIN_COS);
+    const dx = Math.abs((lon - b.lon) * 111320 * cosL) - half;
+    const dy = Math.abs((lat - b.lat) * 111320) - half;
+    return Math.hypot(Math.max(dx, 0), Math.max(dy, 0));
+}
+function resupplyOffer(g) {
+    if (!g || !(g.mortars > 0 || g.howitzers > 0)) return null;
+    const reach = codexRule("resupply_reach_m", 25);
+    const near = state.myBuildings.some(b => (b.kind === "barracks" || b.kind === "weapons_factory") && gapToBuildingM(b, g.lat, g.lon) <= reach);
+    if (!near) return null;
+    const roomM = Math.max(0, (g.mortars || 0) * codexRule("resupply_shells_per_mortar", 10) - (g.shells || 0));
+    const roomH = Math.max(0, (g.howitzers || 0) * codexRule("resupply_shells_per_howitzer", 10) - (g.howitzer_shells || 0));
+    const m = Math.min(roomM, state.shells || 0);
+    const h = Math.min(roomH, state.howitzerShells || 0);
+    return (m > 0 || h > 0) ? { m, h } : null;
+}
+function resupplyButtonHtml(g, cls = "btn btn-gold", stop = false, close = false) {
+    const o = resupplyOffer(g);
+    if (!o) return "";
+    const parts = [];
+    if (o.m > 0) parts.push(`💣 +${o.m}`);
+    if (o.h > 0) parts.push(`🎯 +${o.h}`);
+    return `<button class="${cls}" title="Tag granater fra lageret i barrakken" onclick="${stop ? "event.stopPropagation(); " : ""}${close ? "closeModal(); " : ""}resupplyGarrison(${g.id})">📦 Fyld op (${parts.join(" · ")})</button>`;
+}
+window.resupplyGarrison = async function(id) {
+    const g = state.garrisons.find(x => String(x.id) === String(id));
+    const o = resupplyOffer(g);
+    if (!o) {
+        showToast("Intet at fylde op her.");
+        return;
+    }
+    const { data, error } = await sb.rpc("resupply_garrison", { p_garrison: g.id, p_shells: o.m, p_howitzer_shells: o.h });
+    if (error) {
+        showToast(error.message || "Kunne ikke fylde op.");
+        return;
+    }
+    const got = [];
+    if (data?.took_shells) got.push(`${data.took_shells} mortergranater`);
+    if (data?.took_howitzer_shells) got.push(`${data.took_howitzer_shells} haubitsgranater`);
+    showToast(`📦 ${got.join(" og ")} fyldt på gruppen.`);
+    await loadArmy();
+    await syncAllFromSupabase();
+    if (state.selected) renderSelectedBox();
+};
 
 // Kun de sårede går til det nærmeste hospital; de raske bliver stående.
 window.sendWoundedToHospital = function(id) {
@@ -9315,6 +9367,9 @@ const RULE_INFO = {
     mortar_hits:                ["mortar", "Træffere midt i nedslaget (færre længere ude)", "træffere"],
     mortar_crew:                ["mortar", "Soldater pr. morter", "stk."],
     mortar_reload_s:            ["mortar", "Tid mellem to granater fra samme morter", "s"],
+    resupply_reach_m:           ["mortar", "Fyld op: så tæt på en barrak eller våbenfabrik skal vagten stå", "m"],
+    resupply_shells_per_mortar: ["mortar", "Fyld op: højst så mange mortergranater pr. morter i gruppen", "stk."],
+    resupply_shells_per_howitzer: ["howitzer", "Fyld op: højst så mange haubitsgranater pr. haubits i gruppen", "stk."],
     mortar_salvo_max:           ["mortar", "Flest granater pr. ordre", "stk."],
     mortar_flight_base_s:       ["mortar", "Flyvetid: grundværdi", "s"],
     mortar_flight_mps:          ["mortar", "Flyvetid: granatens fart", "km/t"],
@@ -10029,7 +10084,8 @@ function codexWeaponsHtml() {
                     <div class="codex-weapon-img"><img src="assets/granat.png" class="pixel-img" alt="" /></div>
                     <p class="muted-hint">Ammunition til morteren. Soldaterne bærer granaterne med ud, og et krater kan ses i ${fmtNum(M.craterHours)} timer. Lander en granat i en af kortets brune bygninger, går den i brand med ${fmtNum(Math.round(GAME_CONFIG.MAP_FIRE.chance * 100))} % chance: den brænder i ${fmtNum(GAME_CONFIG.MAP_FIRE.fireHours)} timer og står derefter som udbrændt ruin i ${fmtNum(GAME_CONFIG.MAP_FIRE.ruinHours)} timer.</p>
                     ${codexStats([
-                        ["Pris", codexPrice(M.shellSteps, M.shellSteel)]
+                        ["Pris", codexPrice(M.shellSteps, M.shellSteel)],
+                        ["Fyld op", `vagt højst ${formatDistance(codexRule("resupply_reach_m", 25))} fra din barrak eller våbenfabrik, op til ${fmtNum(codexRule("resupply_shells_per_mortar", 10))} pr. morter`]
                     ])}
                 </div>
                 <div class="codex-card">
