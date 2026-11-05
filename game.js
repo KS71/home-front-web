@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 128;
+const APP_VERSION = 129;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -2956,10 +2956,27 @@ function installGameLayers() {
         }
     });
     map.addLayer({
+        id: "lyr-shot-smoke",
+        type: "circle",
+        source: "src-shots",
+        minzoom: STREET_TACTICAL_ZOOM,
+        filter: ["all", ["==", ["geometry-type"], "Point"], ["has", "smoke"]],
+        paint: {
+            "circle-color": "#D2D0C6",
+            "circle-radius": ["interpolate", ["linear"], ["zoom"],
+                16, ["*", ["get", "r"], 0.7],
+                18, ["get", "r"],
+                20, ["*", ["get", "r"], 1.6]
+            ],
+            "circle-blur": 0.7,
+            "circle-opacity": ["get", "o"]
+        }
+    }, "lyr-shots");
+    map.addLayer({
         id: "lyr-shot-flash",
         type: "circle",
         source: "src-shots",
-        filter: ["==", ["geometry-type"], "Point"],
+        filter: ["all", ["==", ["geometry-type"], "Point"], ["!", ["has", "smoke"]]],
         paint: {
             "circle-color": "#FFE082",
             "circle-radius": ["get", "r"],
@@ -3462,6 +3479,26 @@ function pointInsideMapBuilding(lat, lon, padM = 1.0) {
         }
         return false;
     });
+}
+
+// Afstand i meter fra et punkt til nærmeste mur på kortets huse (0 inde i et hus, maxM hvis intet hus er tættere).
+function mapBuildingDistanceM(lat, lon, maxM = 6) {
+    const cosLat = Math.max(Math.cos(lat * RAD_PER_DEG), MIN_COS);
+    const mPerLon = 111320 * cosLat;
+    const mPerLat = 111320;
+    let bestSq = maxM * maxM;
+    forEachMapBuildingInBBox(lat - maxM / mPerLat, lat + maxM / mPerLat, lon - maxM / mPerLon, lon + maxM / mPerLon, (rb) => {
+        if (pointInRingLL(lon, lat, rb.raw)) { bestSq = 0; return true; }
+        const ring = rb.raw;
+        for (let i = 0; i < ring.length - 1; i++) {
+            const ax = (ring[i][0] - lon) * mPerLon, ay = (ring[i][1] - lat) * mPerLat;
+            const bx = (ring[i + 1][0] - lon) * mPerLon, by = (ring[i + 1][1] - lat) * mPerLat;
+            const d = pointToSegDistSq2D(0, 0, ax, ay, bx, by);
+            if (d < bestSq) bestSq = d;
+        }
+        return false;
+    });
+    return Math.sqrt(bestSq);
 }
 
 function pointInsideAnyBuilding(lat, lon, padM = 1.0, ignorePts = null) {
@@ -4383,6 +4420,25 @@ function troopStatusStrokeColor(style, status) {
     return "#39FF14";
 }
 
+// Knælende soldat i kamp: samme figur, men bukserne (række 10-11 i 16×14-billedet) er taget ud,
+// så overkroppen sidder lavere ned mod støvlerne.
+const kneelCache = new WeakMap();
+function kneelingSprite(img) {
+    if (!img) return null;
+    if (kneelCache.has(img)) return kneelCache.get(img);
+    const c = document.createElement("canvas");
+    const cut = 2;
+    const top = Math.max(1, img.height - 4);
+    c.width = img.width;
+    c.height = img.height - cut;
+    const ctx = c.getContext("2d");
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(img, 0, 0, img.width, top, 0, 0, img.width, top);
+    ctx.drawImage(img, 0, top + cut, img.width, img.height - top - cut, 0, top, img.width, img.height - top - cut);
+    kneelCache.set(img, c);
+    return c;
+}
+
 async function ensureStreetUnitSprites(style = "own") {
     const redUniform = style === "npc" || style === "enemy";
     const allyHex = style.startsWith("ally-") ? "#" + style.slice(5) : null;
@@ -4426,6 +4482,9 @@ async function ensureStreetUnitSprites(style = "own") {
     const solKey = redUniform ? "enemy" : (allyHex ? style : "own");
     addShadowedSprite(`st-sol-${solKey}`, solImg, 2, false);
     addShadowedSprite(`st-sol-${solKey}-l`, solImg, 2, true);
+    const kneelImg = kneelingSprite(solImg);
+    addShadowedSprite(`st-sol-${solKey}-k`, kneelImg, 2, false);
+    addShadowedSprite(`st-sol-${solKey}-k-l`, kneelImg, 2, true);
 
     addShadowedSprite("st-truck", truckImg, 2, false);
     addShadowedSprite("st-truck-l", truckImg, 2, true);
@@ -4577,7 +4636,57 @@ function groundCircleFeature(lat, lon, radiusM, props) {
 // Gemmer hver gruppes små gade-positioner, så både lysspor (geværild) og museklik rammer de enkelte små soldater/lastbiler!
 const activeStreetFormations = new Map(); // "kind:id" -> Array<[lat, lon]>
 
-function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marchObj, now, isSelected, shiftMeters = 0) {
+// Pladser til en stående gruppe: løst spredt omkring midten, helst tæt op ad en husmur (dækning),
+// aldrig inde i et hus eller i vand. Huskes pr. gruppe og sted, så det ikke regnes om hvert sekund.
+const coverSlotCache = new Map();
+function coverFormationSlots(groupKey, lat, lon, nSol, seed, keepCenterFree) {
+    const key = `${groupKey}|${lat.toFixed(6)}|${lon.toFixed(6)}|${nSol}|${keepCenterFree ? 1 : 0}|${rawChunks.size}`;
+    const hit = coverSlotCache.get(key);
+    if (hit) return hit;
+    if (coverSlotCache.size > 400) coverSlotCache.clear();
+
+    const cosLat = Math.max(Math.cos(lat * RAD_PER_DEG), MIN_COS);
+    const invLon = 1 / (111320 * cosLat), invLat = 1 / 111320;
+    const radius = Math.min(18, 4 + Math.sqrt(nSol) * 2.6);
+    const wallM = 2.4; // så tæt på en mur tæller som dækning
+    const cands = [];
+    let n = 0;
+    for (let r = keepCenterFree ? 3.4 : 0; r <= radius; r += 1.5) {
+        const steps = r < 0.5 ? 1 : Math.max(6, Math.round((2 * Math.PI * r) / 1.6));
+        for (let i = 0; i < steps; i++) {
+            n++;
+            const jit = (((n * 37 + seed) % 11) - 5) * 0.06;
+            const a = (i / steps) * Math.PI * 2 + (seed % 7) * 0.3 + jit;
+            const rr = r + (((n * 53 + seed) % 9) - 4) * 0.12;
+            const cLat = lat + Math.sin(a) * rr * invLat;
+            const cLon = lon + Math.cos(a) * rr * invLon;
+            const wall = mapBuildingDistanceM(cLat, cLon, 6);
+            if (wall < 0.7) continue; // inde i eller klods op ad muren
+            const cover = wall <= wallM ? 0 : (wall - wallM) * 1.1;
+            cands.push({ p: [cLat, cLon], score: cover + rr * 0.32, x: Math.cos(a) * rr, y: Math.sin(a) * rr });
+        }
+    }
+    cands.sort((a, b) => a.score - b.score);
+    const picked = [];
+    const minSq = 1.9 * 1.9;
+    for (const c of cands) {
+        if (picked.length >= nSol) break;
+        if (picked.some(q => (q.x - c.x) ** 2 + (q.y - c.y) ** 2 < minSq)) continue;
+        if (isWaterAt(c.p[0], c.p[1])) { c.water = true; continue; }
+        picked.push(c);
+    }
+    // For lidt plads (fx tæt bebyggelse): fyld op med de bedste resterende pladser.
+    for (const c of cands) {
+        if (picked.length >= nSol) break;
+        if (!c.water && !picked.includes(c)) picked.push(c);
+    }
+    const slots = picked.map(c => c.p);
+    if (!slots.length) slots.push(snapOutsideMapBuilding(lat, lon, 1.8));
+    coverSlotCache.set(key, slots);
+    return slots;
+}
+
+function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marchObj, now, isSelected, shiftMeters = 0, faceTarget = null) {
     const unitFeats = [];
     const positions = [];
     const cosLat = Math.max(Math.cos(lat * RAD_PER_DEG), MIN_COS);
@@ -4698,36 +4807,18 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
                 if (pointInsideMapBuilding(sLat, sLon, 0.7)) [sLat, sLon] = snapOutsideMapBuilding(sLat, sLon, 1.8);
                 pushUnit(sLat, sLon, `st-sol-${solKey}`, "sol", 0);
             } else {
-                // Kandidat-pladser langs gaden og fortovet (prioriteret så soldater spreder sig langs gaden mellem husene)
-                const slots = [];
+                // Gruppen spreder sig løst og søger dækning ved husmure i stedet for at stå i en stiv blok.
+                // I kamp knæler soldaterne og vender mod fjenden. Kun udseende: kampen afgøres på serveren.
                 const seed = (Number(group.id) || 3) * 31;
-                for (let ring = 0; ring < 5 && slots.length < nSol + 12; ring++) {
-                    const alongStep = 2.6;
-                    const alongIdx = ring === 0 ? [0] : [-ring, ring];
-                    const crossOffsets = [1.4, -1.4, 0, 2.9, -2.9];
-                    for (const aI of alongIdx) {
-                        for (const cM of crossOffsets) {
-                            if (nGuns > 0 && Math.abs(aI) <= 1 && Math.abs(cM) < 1.8) continue;
-                            const jA = (((slots.length * 17 + seed) % 7) - 3) * 0.14;
-                            const jC = (((slots.length * 29 + seed) % 7) - 3) * 0.12;
-                            const candLat = baseLat + (rd.uy * (aI * alongStep + jA) + ny * (cM + jC)) * invLat;
-                            const candLon = baseLon + (rd.ux * (aI * alongStep + jA) + nx * (cM + jC)) * invLon;
-                            slots.push([candLat, candLon]);
-                        }
-                    }
-                }
-                let placed = 0;
-                for (let s = 0; s < slots.length && placed < nSol; s++) {
-                    const [cLat, cLon] = slots[s];
-                    if (pointInsideMapBuilding(cLat, cLon, 0.65) || isWaterAt(cLat, cLon)) continue;
-                    const faceL = ((placed + seed) & 1) === 1;
-                    pushUnit(cLat, cLon, faceL ? `st-sol-${solKey}-l` : `st-sol-${solKey}`, "sol", 0);
-                    placed++;
-                }
-                while (placed < nSol) {
-                    const [cLat, cLon] = slots[placed % Math.max(1, slots.length)] || [baseLat, baseLon];
-                    pushUnit(cLat, cLon, `st-sol-${solKey}`, "sol", 0);
-                    placed++;
+                const slots = coverFormationSlots(groupKey, baseLat, baseLon, nSol, seed, nGuns > 0);
+                const kneel = status === "combat";
+                for (let s = 0; s < nSol; s++) {
+                    const [cLat, cLon] = slots[s % Math.max(1, slots.length)] || [baseLat, baseLon];
+                    const faceL = faceTarget
+                        ? faceTarget[1] < cLon
+                        : ((s + seed) & 1) === 1;
+                    const img = `st-sol-${solKey}${kneel ? "-k" : ""}${faceL ? "-l" : ""}`;
+                    pushUnit(cLat, cLon, img, "sol", 0);
                 }
             }
         }
@@ -4821,7 +4912,15 @@ async function renderTroopsOnMap() {
         });
 
         const shiftMeters = shiftX < 0 ? -9.5 : 0;
-        const st = buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marchObj, now, isSelected, shiftMeters);
+        // Nærmeste modstander inden for lidt mere end skudafstand: soldaterne vender sig mod den.
+        const hostile = style === "npc" || style === "enemy";
+        let faceTarget = null;
+        let bestD = GAME_CONFIG.FIRE_RANGE_M * 1.5;
+        for (const p of hostile ? ownQuick : foes.map(f => f.pos)) {
+            const d = Geo.distanceM(p[0], p[1], lat, lon);
+            if (d < bestD) { bestD = d; faceTarget = p; }
+        }
+        const st = buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marchObj, now, isSelected, shiftMeters, faceTarget);
         for (let i = 0; i < st.unitFeats.length; i++) streetUnits.push(st.unitFeats[i]);
         streetBadges.push(st.badgeFeat);
         if (st.ringFeat) streetRings.push(st.ringFeat);
@@ -5068,8 +5167,10 @@ function findShotPairs(foes, ownList) {
             }
             const ownUnits = activeStreetFormations.get(o.key) || [[o.lat, o.lon]];
             const lanes = [];
-            for (let k = 0; k < 3; k++) {
-                const ou = ownUnits[k % ownUnits.length];
+            // Flere skytter i store grupper: 3 til 6 skudlinjer mellem de enkelte små soldater.
+            const nLanes = Math.min(6, Math.max(3, Math.ceil(Math.min(ownUnits.length, npcUnits.length) / 2)));
+            for (let k = 0; k < nLanes; k++) {
+                const ou = ownUnits[(k * 3) % ownUnits.length];
                 const nu = npcUnits[(k * 2) % npcUnits.length];
                 if (hasLineOfSight(ou[0], ou[1], nu[0], nu[1])) {
                     lanes.push({ own: [ou[1], ou[0]], npc: [nu[1], nu[0]] });
@@ -5097,10 +5198,21 @@ function shotFeatures(now) {
     const out = [];
     const streetMode = mapReady && map && map.getZoom() >= STREET_TACTICAL_ZOOM;
     for (const p of shotPairs) {
-        for (let k = 0; k < 3; k++) {
+        const nLanes = streetMode && p.lanes ? p.lanes.length : 3;
+        for (let k = 0; k < nLanes; k++) {
             const lane = (streetMode && p.lanes && p.lanes[k]) ? p.lanes[k] : p;
             for (const [from, a, b, offset] of [["own", lane.own, lane.npc, 0], ["npc", lane.npc, lane.own, 0.5]]) {
-                const t = (now / 450 + p.seed + offset + k / 3 + Math.sin(k * 7.1 + p.seed) * 0.08) % 1;
+                // Krudtrøg, der stiger op og breder sig fra skytten (kun nede på gadeniveau).
+                if (streetMode) {
+                    const ph = (now / 2600 + p.seed * 1.7 + k * 0.29 + offset * 0.5) % 1;
+                    const driftM = 1.5 + ph * 5;
+                    out.push({
+                        type: "Feature",
+                        properties: { smoke: true, r: 3 + ph * 11, o: 0.6 * (1 - ph) },
+                        geometry: { type: "Point", coordinates: [a[0] + driftM * 0.35 / (111320 * Math.max(Math.cos(a[1] * RAD_PER_DEG), MIN_COS)), a[1] + driftM / 111320] }
+                    });
+                }
+                const t = (now / 450 + p.seed + offset + k / nLanes + Math.sin(k * 7.1 + p.seed) * 0.08) % 1;
                 const t0 = Math.max(0, t - 0.15);
                 out.push({
                     type: "Feature",
@@ -10321,7 +10433,7 @@ document.getElementById("btn-towns")?.addEventListener("click", () => openTownsM
 
 // Visningsknap med tre trin: soldater + flag → kun flag → kun soldater → forfra.
 const TROOP_LAYERS = ["lyr-troops", "lyr-street-units", "lyr-street-badges", "lyr-street-rings", "lyr-parked-trucks",
-    "lyr-march-lines", "lyr-shots", "lyr-shot-flash", "lyr-los-blocked", "lyr-los-blocked-dot",
+    "lyr-march-lines", "lyr-shots", "lyr-shot-smoke", "lyr-shot-flash", "lyr-los-blocked", "lyr-los-blocked-dot",
     "lyr-wrecks", "lyr-wrecks-street", "lyr-battles"];
 const FLAG_LAYERS = ["lyr-flag-circle-fill", "lyr-flag-circle-line", "lyr-flag-cand", "lyr-flag-owned", "lyr-flags"];
 const VIEW_MODES = [
