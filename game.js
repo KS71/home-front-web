@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 148;
+const APP_VERSION = 149;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -5443,8 +5443,14 @@ function npcCurrentPos(n, now = serverNow()) {
 
 // Navn på en computerstyret gruppe: en enhed i den svenske hær, en invasionshær eller en patrulje.
 function npcLabel(n) {
+    if (isCityNpc(n)) return n.unit_name;
     if (n.unit_name) return `Svensk ${n.unit_name.charAt(0).toLowerCase()}${n.unit_name.slice(1)}`;
     return n.is_invasion ? "Invasionshær" : "Fjendtlig patrulje";
+}
+
+// En af computerens bygarnisoner (0056): vagt ved et flag eller byens patrulje.
+function isCityNpc(n) {
+    return typeof n?.unit_kind === "string" && n.unit_kind.startsWith("city_");
 }
 
 // Hærens udstyr, fx "🚚 3 lastbiler · 💣 4 morterer". Tom, hvis gruppen kun har geværer.
@@ -5484,6 +5490,10 @@ function npcAbout(n) {
         return "🧱 Inden for skudafstand, men en bygning dækker skudlinjen (ryk rundt om hjørnet eller brug morter).";
     }
     if (n.fighting) return "💥 i kamp med dine soldater";
+    if (isCityNpc(n)) {
+        const gear = npcGear(n);
+        return `${n.unit_kind === "city_guard" ? "Computerens vagt ved byens flag. Bliver ved flaget og angriber fjender tæt på det." : "Computerens patrulje i byen. Rykker til truede flag og angriber fjender i byen, når garnisonen er stærk nok."}${gear ? ` ${gear}.` : ""}`;
+    }
     if (n.unit_kind === "trucks") return `Den svenske hær: lastbiler, der har sat soldaterne af. ${npcGear(n)}.`;
     if (n.unit_kind) {
         const gear = npcGear(n);
@@ -9155,8 +9165,83 @@ function adminTabs(active) {
         <button class="btn btn-small ${active === "rules" ? "btn-gold" : ""}" onclick="openRulesModal()">Regler</button>
         <button class="btn btn-small ${active === "log" ? "btn-gold" : ""}" onclick="openAdminLogModal()">Login-log</button>
         <button class="btn btn-small ${active === "invasion" ? "btn-gold" : ""}" onclick="openInvasionModal()">Invasion</button>
+        <button class="btn btn-small ${active === "cities" ? "btn-gold" : ""}" onclick="openCityGarrisonModal()">Byer</button>
     </div>`;
 }
+
+// Admin: computerens bygarnisoner (0056). Bemand byerne efter bytype, eller fjern dem igen.
+window.openCityGarrisonModal = async function() {
+    document.querySelector(".modal-box")?.classList.add("modal-wide");
+    document.getElementById("modal-title").innerHTML = `Admin: bygarnisoner ${adminTabs("cities")}`;
+    document.getElementById("modal-body").innerHTML = `<p class="muted-hint">Henter garnisonerne…</p>`;
+    document.getElementById("modal-actions").innerHTML = `<button class="btn" onclick="closeModal()">Luk</button>`;
+    document.getElementById("modal-overlay").classList.remove("hidden");
+
+    const { data, error } = await sb.rpc("city_garrison_status");
+    if (error || !data) {
+        document.getElementById("modal-body").innerHTML = `<p class="muted-hint">Kunne ikke hente garnisonerne: ${escapeHtml(error?.message || "intet svar")}. Er 0056_bygarnisoner.sql kørt i Supabase?</p>`;
+        return;
+    }
+    const d = data;
+    const byKind = d.by_kind || {};
+    const kinds = [["storby", 7], ["by", 5], ["bydel", 3], ["landsby", 1], ["kvarter", 1], ["nabolag", 1]];
+    const sizeOf = k => codexRule(k === "storby" ? "city_npc_storby_size" : k === "by" ? "city_npc_by_size" : k === "bydel" ? "city_npc_bydel_size" : "city_npc_landsby_size", 0);
+    const counts = new Map();
+    for (const t of flagData.towns.values()) counts.set(t.kind, (counts.get(t.kind) || 0) + 1);
+    document.getElementById("modal-body").innerHTML = `
+        <p>Computeren forsvarer <strong>${fmtNum(d.towns_held)}</strong> byer med <strong>${fmtNum(d.soldiers)}</strong> af ${fmtNum(d.started)} soldater i ${fmtNum(d.units)} styrker og holder ${fmtNum(d.flags_held)} flag.</p>
+        ${codexStats([
+            ["Morterer", `${fmtNum(d.mortars)} (${fmtNum(d.shells)} granater)`],
+            ["Bemandede byer", kinds.filter(([k]) => byKind[k]).map(([k]) => `${fmtNum(byKind[k])} ${TOWN_KIND_LABEL[k]}`).join(", ") || "ingen"]
+        ])}
+        <p style="margin-top:10px;"><strong>Bemand byerne</strong> – vælg bytyper (soldater pr. by efter Regler → Bygarnisoner):</p>
+        <div class="list-stack">
+            ${kinds.map(([k, n]) => `<label class="muted-hint" style="display:block;cursor:pointer">
+                <input type="checkbox" class="city-kind" value="${k}" ${k === "storby" || k === "by" ? "checked" : ""} />
+                ${TOWN_KIND_LABEL[k]}${counts.has(k) ? ` (${fmtNum(counts.get(k))} i Danmark)` : ""} · op til ${n} flag · ${fmtNum(sizeOf(k))} soldater pr. by
+            </label>`).join("")}
+            <label class="muted-hint" style="display:block;cursor:pointer;margin-top:6px;">
+                <input type="checkbox" id="city-take-owned" /> Tag også byer, som en spiller ejer (ellers springes de over)
+            </label>
+        </div>
+        <p class="muted-hint" style="margin-top:8px;">Byer, der allerede er bemandet, stilles op forfra. Flag og byer, computeren holder, er <span style="color:${FLAG_COLORS.npc}">gule</span> på kortet. Garnisonerne tikkes kun, når spillere har soldater inden for ${formatDistance(codexRule("city_npc_wake_m", 2500))} af byen, så mange byer belaster ikke serveren.</p>`;
+    document.getElementById("modal-actions").innerHTML = `
+        <button class="btn btn-gold" onclick="manCityGarrisons()">🛡️ Bemand byerne</button>
+        <button class="btn btn-danger" onclick="unmanCityGarrisons()">🏳️ Fjern garnisonerne</button>
+        <button class="btn" onclick="closeModal()">Luk</button>`;
+};
+
+window.manCityGarrisons = async function() {
+    const kinds = [...document.querySelectorAll("input.city-kind:checked")].map(x => x.value);
+    if (!kinds.length) {
+        showToast("Vælg mindst én bytype.");
+        return;
+    }
+    const takeOwned = !!document.getElementById("city-take-owned")?.checked;
+    if (!confirm(`Bemande alle byer af typen ${kinds.map(k => TOWN_KIND_LABEL[k]).join(", ")} med computerens garnisoner?${takeOwned ? " Byer, spillere ejer, tages også." : ""}`)) return;
+    const { data, error } = await sb.rpc("man_city_garrisons", { p_kinds: kinds, p_take_owned: takeOwned });
+    if (error) {
+        showToast(`Kunne ikke bemande byerne: ${error.message}`);
+        return;
+    }
+    showToast(data || "Byerne er bemandet.");
+    await loadFlags();
+    await pollWorld();
+    openCityGarrisonModal();
+};
+
+window.unmanCityGarrisons = async function() {
+    if (!confirm("Fjerne alle computerens bygarnisoner og give byerne fri?")) return;
+    const { data, error } = await sb.rpc("unman_city_garrisons");
+    if (error) {
+        showToast(`Kunne ikke fjerne garnisonerne: ${error.message}`);
+        return;
+    }
+    showToast(data || "Garnisonerne er fjernet.");
+    await loadFlags();
+    await pollWorld();
+    openCityGarrisonModal();
+};
 
 // Admin: den svenske hær. Viser hvad der er tilbage og kan starte invasionen forfra.
 window.openInvasionModal = async function() {
@@ -9391,6 +9476,7 @@ const RULE_GROUPS = [
     ["npc", "Fjendtlige patruljer"],
     ["sweden", "Den svenske hær (invasion)"],
     ["flags", "Byer og flag"],
+    ["city", "Bygarnisoner (computerens byer)"],
     ["rank", "Navngivne soldater og rang"],
     ["build", "Bygninger og byggeri"],
     ["economy", "Skridt og økonomi"],
@@ -9503,6 +9589,24 @@ const RULE_INFO = {
     sweden_attack_ratio:        ["sweden", "Angriber kun, hvis de selv og naboerne er så mange gange flere (1 = lige mange)", "gange"],
     sweden_support_m:           ["sweden", "Naboenheder så tæt på tæller med i styrken", "m"],
     sweden_retreat_share:       ["sweden", "Kompagniet trækker sig tilbage under denne andel af sine soldater (0,3 = 30 %)", "0–1"],
+    city_npc_storby_size:       ["city", "Soldater i en storbys garnison", "stk."],
+    city_npc_by_size:           ["city", "Soldater i en bys garnison", "stk."],
+    city_npc_bydel_size:        ["city", "Soldater i en bydels garnison", "stk."],
+    city_npc_landsby_size:      ["city", "Soldater i en landsbys, et kvarters eller et nabolags garnison", "stk."],
+    city_npc_patrol_share:      ["city", "Så stor en del af garnisonen går patrulje i byen (0,2 = 20 %)", "0–1"],
+    city_npc_centre_share:      ["city", "Så stor en del af vagterne står ved bymidten (0,4 = 40 %)", "0–1"],
+    city_npc_mortars_storby:    ["city", "Morterer ved bymidten i en storby", "stk."],
+    city_npc_mortars_by:        ["city", "Morterer ved bymidten i en by", "stk."],
+    city_npc_shells_per_mortar: ["city", "Granater pr. morter, når byen bemandes", "stk."],
+    city_npc_vision_m:          ["city", "Så langt garnisonen ser (hele garnisonen deler det)", "m"],
+    city_npc_guard_attack_m:    ["city", "Vagten ved et flag angriber fjender så tæt på flaget", "m"],
+    city_npc_attack_m:          ["city", "Patruljen angriber fjender så langt fra bymidten", "m"],
+    city_npc_attack_ratio:      ["city", "Angriber kun, hvis garnisonen i nærheden er så mange gange flere (1 = lige mange)", "gange"],
+    city_npc_support_m:         ["city", "Garnisonens styrker så tæt på tæller med i styrken", "m"],
+    city_npc_leash_m:           ["city", "Ingen i garnisonen går længere væk fra bymidten", "m"],
+    city_npc_wander_m:          ["city", "Patruljen går rundt så langt fra bymidten", "m"],
+    city_npc_regen_per_h:       ["city", "Forstærkning: nye soldater pr. time pr. styrke (op til startstyrken)", "stk."],
+    city_npc_wake_m:            ["city", "Garnisonen er aktiv, når spillere har soldater så tæt på byen", "m"],
     building_gap_m:             ["build", "Mindste afstand mellem to bygningers kanter", "m"],
     build_bookmark_size_m:      ["build", "Et byggepladsbogmærke er en firkant på", "m"],
     build_chain_m:              ["build", "Ny bygning højst så langt fra en af dine egne", "m"],
@@ -10251,7 +10355,7 @@ function codexSwedenCardHtml() {
 function codexEnemiesHtml() {
     return `
         <details class="codex-section">
-            <summary><span class="codex-sum-title">☠ Fjender</span><span class="codex-sum-sub">patruljer, den svenske hær og andre spillere</span></summary>
+            <summary><span class="codex-sum-title">☠ Fjender</span><span class="codex-sum-sub">patruljer, den svenske hær, bygarnisoner og andre spillere</span></summary>
             <div class="codex-grid codex-grid-3">
                 <div class="codex-card">
                     <div class="codex-card-head"><h3>Fjendtlig patrulje</h3><span class="badge">grå uniform</span></div>
@@ -10265,6 +10369,19 @@ function codexEnemiesHtml() {
                     ])}
                 </div>
                 ${codexSwedenCardHtml()}
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Bygarnison</h3><span class="badge" style="color:${FLAG_COLORS.npc}">gule flag</span></div>
+                    <div class="codex-weapon-img"><img src="assets/npc.png" class="pixel-img" alt="" /></div>
+                    <p class="muted-hint">Computerens forsvar af en by. Hver by er sin egen modstander ("Garnisonen i Odense"), og dens flag og bynavn er gule. En vagtstyrke står ved hvert flag (flest ved bymidten, som også har morterer), og en patrulje går rundt i byen. Nedkæmp vagterne, og stå alene i cirklen for at tage flaget. Garnisonen tager flag tilbage på samme måde og får langsomt forstærkninger, så længe den holder et flag i byen.</p>
+                    ${codexStats([
+                        ["Soldater pr. by", `storby ${fmtNum(codexRule("city_npc_storby_size", 200))} · by ${fmtNum(codexRule("city_npc_by_size", 80))} · bydel ${fmtNum(codexRule("city_npc_bydel_size", 30))} · landsby ${fmtNum(codexRule("city_npc_landsby_size", 12))}`],
+                        ["Morterer ved bymidten", `storby ${fmtNum(codexRule("city_npc_mortars_storby", 2))} · by ${fmtNum(codexRule("city_npc_mortars_by", 1))}, ${fmtNum(codexRule("city_npc_shells_per_mortar", 10))} granater pr. morter`],
+                        ["Udsyn", formatDistance(codexRule("city_npc_vision_m", 400))],
+                        ["Vagten angriber", `fjender højst ${formatDistance(codexRule("city_npc_guard_attack_m", 150))} fra sit flag`],
+                        ["Patruljen angriber", `fjender højst ${formatDistance(codexRule("city_npc_attack_m", 600))} fra bymidten, når garnisonen inden for ${formatDistance(codexRule("city_npc_support_m", 400))} er mindst ${fmtNum(codexRule("city_npc_attack_ratio", 1))} gange så mange`],
+                        ["Forstærkning", `${fmtNum(codexRule("city_npc_regen_per_h", 6))} soldater i timen pr. styrke`]
+                    ])}
+                </div>
                 <div class="codex-card">
                     <div class="codex-card-head"><h3>Andre spillere</h3><span class="badge">rød uniform</span></div>
                     <div class="codex-weapon-img"><img src="assets/fjende.png" class="pixel-img" alt="" /></div>
@@ -10514,30 +10631,44 @@ const flagData = {
     supported: true,
     loading: false
 };
-const FLAG_COLORS = { own: "#39FF14", ally: "#B388FF", enemy: "#FF5252", none: "#B0BEC5" };
+const FLAG_COLORS = { own: "#39FF14", ally: "#B388FF", enemy: "#FF5252", npc: "#FFD600", none: "#B0BEC5" };
 const TOWN_KIND_LABEL = { storby: "storby", by: "by", bydel: "bydel", kvarter: "kvarter", nabolag: "nabolag", landsby: "landsby" };
 
-// Hvem ejeren er set fra dig: dig selv, en allieret, en fjende eller ingen.
-function flagSideOf(ownerId) {
+// Hvem ejeren er set fra dig: dig selv, en allieret, en fjende, computerens bygarnison (0056) eller ingen.
+// ownerId kan være "npc" (computeren) eller en spillers id; npc = true betyder også computeren.
+function flagSideOf(ownerId, npc = false) {
+    if (npc || ownerId === "npc") return "npc";
     if (!ownerId) return "none";
     if (state.user && ownerId === state.user.id) return "own";
     if (isAlly(ownerId)) return "ally";
     return "enemy";
 }
 
-function flagSideColor(ownerId) {
-    const side = flagSideOf(ownerId);
+function flagSideColor(ownerId, npc = false) {
+    const side = flagSideOf(ownerId, npc);
     if (side === "ally") return allyColor(ownerId);
     return FLAG_COLORS[side];
 }
 
-function flagOwnerLabel(ownerId, ownerName) {
-    const side = flagSideOf(ownerId);
+// Navnet på computerens garnison i en by.
+function garrisonNameOf(townName) {
+    return `Garnisonen i ${townName || "byen"}`;
+}
+
+function flagOwnerLabel(ownerId, ownerName, npc = false, townName = "") {
+    const side = flagSideOf(ownerId, npc);
+    if (side === "npc") return `${garrisonNameOf(townName)} (computeren)`;
     if (side === "none") return "ingen";
     if (side === "own") return "dig";
     if (side === "ally") return `${ownerName || allyName(ownerId)} (allieret)`;
     return `${ownerName || "en anden spiller"} (fjende)`;
 }
+
+// Ejer af et flag eller en by, set fra dig (tager højde for computerens garnison).
+function flagSide(f) { return flagSideOf(f.owner_id, f.npc); }
+function flagColor(f) { return flagSideColor(f.owner_id, f.npc); }
+function flagOwnerText(f, townName) { return flagOwnerLabel(f.owner_id, f.owner_name, f.npc, townName); }
+function flagHeldBy(f, owner) { return owner === "npc" ? !!f.npc : (!!f.owner_id && f.owner_id === owner); }
 
 // Et lille flag i pixel-stil i ejerens farve (tegnes én gang pr. farve).
 const flagImageIds = new Set();
@@ -10610,9 +10741,9 @@ function installFlagLayers() {
         filter: ["==", ["get", "cand"], 1],
         paint: {
             "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 7, 16, 16],
-            "circle-color": "#FFD54F",
+            "circle-color": "#FF9100",
             "circle-opacity": 0.25,
-            "circle-stroke-color": "#FFD54F",
+            "circle-stroke-color": "#FF9100",
             "circle-stroke-width": 2
         }
     }, before);
@@ -10675,13 +10806,13 @@ function renderFlagsOnMap() {
     const circles = [];
     const points = [];
     for (const f of flagData.flags.values()) {
-        const color = flagSideColor(f.owner_id);
+        const color = flagColor(f);
         const town = flagData.towns.get(f.town_id);
         circles.push({ type: "Feature", properties: { c: color }, geometry: circlePolygon(f.lat, f.lon, r) });
         points.push({
             type: "Feature",
             properties: {
-                id: f.id, c: color, img: flagImageId(color), cand: f.cand_id ? 1 : 0, owned: f.owner_id ? 1 : 0,
+                id: f.id, c: color, img: flagImageId(color), cand: (f.cand_id || f.cand_npc) ? 1 : 0, owned: (f.owner_id || f.npc) ? 1 : 0,
                 label: town && (town.flags || 1) > 1 ? `${town.name}: ${f.name}` : (town ? town.name : f.name)
             },
             geometry: { type: "Point", coordinates: [f.lon, f.lat] }
@@ -10695,12 +10826,13 @@ function renderFlagsOnMap() {
 // Bynavnene på kortet får ejerens farve (grøn = din side, lilla = allieret, rød = fjende).
 function applyTownLabelColors() {
     if (!mapReady) return;
-    const own = [], ally = [], enemy = [];
+    const own = [], ally = [], enemy = [], npc = [];
     for (const t of flagData.towns.values()) {
-        if (!t.owner_id) continue;
-        const side = flagSideOf(t.owner_id);
+        if (!t.owner_id && !t.npc) continue;
+        const side = flagSide(t);
         if (side === "own") own.push(t.name);
         else if (side === "ally") ally.push(t.name);
+        else if (side === "npc") npc.push(t.name);
         else enemy.push(t.name);
     }
     const nameExpr = ["coalesce", ["get", "name:latin"], ["get", "name"]];
@@ -10708,6 +10840,7 @@ function applyTownLabelColors() {
         ["in", nameExpr, ["literal", own]], "#8CFF4D",
         ["in", nameExpr, ["literal", ally]], "#D1B3FF",
         ["in", nameExpr, ["literal", enemy]], "#FF8A80",
+        ["in", nameExpr, ["literal", npc]], "#FFE066",
         "#f6e9c4"];
     for (const id of ["label_city", "label_city_capital", "label_town", "label_village"]) {
         if (map.getLayer(id)) map.setPaintProperty(id, "text-color", expr);
@@ -10753,7 +10886,7 @@ async function pollFlagStates() {
         if (cur) Object.assign(cur, t);
     }
     for (const t of flagData.towns.values()) {
-        if (t.owner_id && !ownedTowns.has(t.id)) { t.owner_id = null; t.owner_name = null; t.owned_at = null; }
+        if ((t.owner_id || t.npc) && !ownedTowns.has(t.id)) { t.owner_id = null; t.owner_name = null; t.owned_at = null; t.npc = false; }
     }
     const active = new Set();
     for (const f of data.flags || []) {
@@ -10762,8 +10895,9 @@ async function pollFlagStates() {
         if (cur) Object.assign(cur, f);
     }
     for (const f of flagData.flags.values()) {
-        if ((f.owner_id || f.cand_id) && !active.has(f.id)) {
-            f.owner_id = null; f.owner_name = null; f.owned_at = null; f.cand_id = null; f.cand_name = null; f.cand_since = null;
+        if ((f.owner_id || f.npc || f.cand_id || f.cand_npc) && !active.has(f.id)) {
+            f.owner_id = null; f.owner_name = null; f.owned_at = null; f.npc = false;
+            f.cand_id = null; f.cand_name = null; f.cand_since = null; f.cand_npc = false;
         }
     }
     renderFlagsOnMap();
@@ -10825,6 +10959,10 @@ function soldiersInFlagCircle(f) {
     }
     for (const g of state.enemies.garrisons) if (near(g.lat, g.lon)) enemy += g.count;
     for (const m of state.enemies.marches) if (near(m.lat, m.lon)) enemy += m.count;
+    for (const n of state.enemies.npcs) {
+        const [la, lo] = npcCurrentPos(n);
+        if (near(la, lo)) enemy += n.count;
+    }
     return { own, ally, enemy };
 }
 
@@ -10847,26 +10985,31 @@ function renderFlagModal() {
     }
     const town = flagData.towns.get(f.town_id);
     const townFlags = [...flagData.flags.values()].filter(x => x.town_id === f.town_id);
-    const sideColor = flagSideColor(f.owner_id);
+    const sideColor = flagColor(f);
     const inCircle = soldiersInFlagCircle(f);
+    const townName = town ? town.name : "";
     title.textContent = `🚩 ${f.name}${town ? ` · ${town.name}` : ""}`;
 
     let cand = "";
-    if (f.cand_id && f.cand_since) {
+    if ((f.cand_id || f.cand_npc) && f.cand_since) {
         const left = Math.max(0, Math.round(flagData.rules.hold_s - (serverNow() - Date.parse(f.cand_since)) / 1000));
-        const who = flagSideOf(f.cand_id) === "own" ? "Dine soldater" : `${f.cand_name || "En anden spiller"}s soldater`;
+        const who = f.cand_npc ? garrisonNameOf(townName) : flagSideOf(f.cand_id) === "own" ? "Dine soldater" : `${f.cand_name || "En anden spiller"}s soldater`;
         cand = `<p>⏳ <strong>${who}</strong> står alene i cirklen og tager flaget om <strong>${left} s</strong>.</p>`;
     }
+    const npcLine = f.npc
+        ? `<p class="muted-hint" style="color:${FLAG_COLORS.npc}">🛡️ Byen forsvares af computerens garnison. Nedkæmp vagterne ved flaget, og stå alene i cirklen for at tage det. Garnisonen får langsomt forstærkninger, så længe den holder et flag i byen.</p>`
+        : "";
     const townLine = town
-        ? `<p>🏙️ <strong>${town.name}</strong> (${TOWN_KIND_LABEL[town.kind] || town.kind}) har ${townFlags.length} ${townFlags.length === 1 ? "flag" : "flag"} og ejes af <strong style="color:${flagSideColor(town.owner_id)}">${flagOwnerLabel(town.owner_id, town.owner_name)}</strong>${town.owner_id ? ` siden ${fmtWhen(town.owned_at)}` : ""}.</p>`
+        ? `<p>🏙️ <strong>${town.name}</strong> (${TOWN_KIND_LABEL[town.kind] || town.kind}) har ${townFlags.length} ${townFlags.length === 1 ? "flag" : "flag"} og ejes af <strong style="color:${flagColor(town)}">${flagOwnerText(town, town.name)}</strong>${town.owner_id ? ` siden ${fmtWhen(town.owned_at)}` : ""}.</p>`
         : "";
     const flagList = townFlags.length > 1
         ? `<div class="muted-hint" style="margin-top:6px;">Byens flag: ${townFlags.map(x =>
-            `<a href="#" onclick="openFlagModal(${x.id}); return false;" style="color:${flagSideColor(x.owner_id)}">${x.id === f.id ? "<strong>" : ""}${x.name}${x.id === f.id ? "</strong>" : ""}</a>`).join(" · ")}</div>`
+            `<a href="#" onclick="openFlagModal(${x.id}); return false;" style="color:${flagColor(x)}">${x.id === f.id ? "<strong>" : ""}${x.name}${x.id === f.id ? "</strong>" : ""}</a>`).join(" · ")}</div>`
         : "";
     body.innerHTML = `
-        <p>Ejes af <strong style="color:${sideColor}">${flagOwnerLabel(f.owner_id, f.owner_name)}</strong>${f.owner_id ? ` siden ${fmtWhen(f.owned_at)}` : ""}.</p>
+        <p>Ejes af <strong style="color:${sideColor}">${flagOwnerText(f, townName)}</strong>${f.owner_id ? ` siden ${fmtWhen(f.owned_at)}` : ""}.</p>
         ${cand}
+        ${npcLine}
         <p>I cirklen (${formatDistance(flagData.rules.radius_m)}) lige nu: 🪖 dine ${inCircle.own}${inCircle.ally ? ` · allierede ${inCircle.ally}` : ""} · fjender ${inCircle.enemy}</p>
         ${townLine}
         ${flagList}
@@ -10911,9 +11054,9 @@ window.openTownsModal = function(level = "players", owner = null, townId = null)
         if (!flagsByTown.has(f.town_id)) flagsByTown.set(f.town_id, []);
         flagsByTown.get(f.town_id).push(f);
     }
-    const sideRank = { own: 0, ally: 1, enemy: 2, none: 3 };
-    const ownedTowns = [...flagData.towns.values()].filter(t => t.owner_id);
-    const contested = [...flagData.flags.values()].filter(f => f.cand_id).length;
+    const sideRank = { own: 0, ally: 1, enemy: 2, npc: 3, none: 4 };
+    const ownedTowns = [...flagData.towns.values()].filter(t => t.owner_id || t.npc);
+    const contested = [...flagData.flags.values()].filter(f => f.cand_id || f.cand_npc).length;
 
     if (level === "players") {
         // Én række pr. spiller med flag: antal byer, han ejer, og antal flag, han holder.
@@ -10926,39 +11069,46 @@ window.openTownsModal = function(level = "players", owner = null, townId = null)
             p.townsWithFlags.add(f.town_id);
         }
         for (const t of ownedTowns) {
-            if (players.has(t.owner_id)) players.get(t.owner_id).towns++;
+            if (t.owner_id && players.has(t.owner_id)) players.get(t.owner_id).towns++;
+        }
+        // Computerens bygarnisoner som én række (0056).
+        const npcFlags = [...flagData.flags.values()].filter(f => f.npc);
+        if (npcFlags.length) {
+            players.set("npc", { id: "npc", name: "Computerens bygarnisoner", flags: npcFlags.length,
+                towns: ownedTowns.filter(t => t.npc).length, townsWithFlags: new Set(npcFlags.map(f => f.town_id)) });
         }
         const list = [...players.values()].sort((a, b) => sideRank[flagSideOf(a.id)] - sideRank[flagSideOf(b.id)]
             || b.towns - a.towns || b.flags - a.flags);
         title.textContent = "🏙️ Byer under kontrol";
         const rows = list.map(p => `<div class="item-row" style="cursor:pointer" onclick="openTownsModal('towns', '${p.id}')">
                 <div class="item-row-top">
-                    <strong style="color:${flagSideColor(p.id)}">${flagOwnerLabel(p.id, p.name)}</strong>
+                    <strong style="color:${flagSideColor(p.id)}">${p.id === "npc" ? "🛡️ Computerens bygarnisoner" : flagOwnerLabel(p.id, p.name)}</strong>
                     <span class="muted-hint">▶</span>
                 </div>
-                <div class="muted-hint">Ejer ${p.towns} ${p.towns === 1 ? "by" : "byer"} · holder ${p.flags} flag i ${p.townsWithFlags.size} ${p.townsWithFlags.size === 1 ? "by" : "byer"}</div>
+                <div class="muted-hint">${p.id === "npc" ? "Forsvarer" : "Ejer"} ${p.towns} ${p.towns === 1 ? "by" : "byer"} · holder ${p.flags} flag i ${p.townsWithFlags.size} ${p.townsWithFlags.size === 1 ? "by" : "byer"}</div>
             </div>`).join("");
         body.innerHTML = `
             <p class="muted-hint">${flagData.towns.size} byer, bydele og landsbyer med ${flagData.flags.size} flag i alt. ${ownedTowns.length} er under kontrol${contested ? `, ${contested} flag er ved at skifte hænder` : ""}. Tryk på en spiller for at se byerne.</p>
             ${rows ? `<div class="list-stack">${rows}</div>` : `<p class="muted-hint">Ingen har taget flag endnu. Send soldater ind i en bys flagcirkel og lad dem stå der alene i ${fmtNum(flagData.rules.hold_s)} sekunder.</p>`}`;
         actions.innerHTML = `<button class="btn" onclick="closeModal()">Luk</button>`;
     } else if (level === "towns") {
-        // Byer, hvor spilleren holder mindst ét flag.
-        const name = flagOwnerLabel(owner, [...flagData.flags.values()].find(f => f.owner_id === owner)?.owner_name);
+        // Byer, hvor spilleren (eller computeren) holder mindst ét flag.
+        const name = owner === "npc" ? "Computerens bygarnisoner"
+            : flagOwnerLabel(owner, [...flagData.flags.values()].find(f => f.owner_id === owner)?.owner_name);
         const towns = [...flagData.towns.values()]
-            .filter(t => (flagsByTown.get(t.id) || []).some(f => f.owner_id === owner))
+            .filter(t => (flagsByTown.get(t.id) || []).some(f => flagHeldBy(f, owner)))
             .map(t => {
                 const fl = flagsByTown.get(t.id) || [];
-                return { t, fl, held: fl.filter(f => f.owner_id === owner).length, owns: t.owner_id === owner };
+                return { t, fl, held: fl.filter(f => flagHeldBy(f, owner)).length, owns: flagHeldBy(t, owner) };
             })
             .sort((a, b) => (b.owns - a.owns) || b.held - a.held || a.t.name.localeCompare(b.t.name, "da"));
         title.textContent = `🏙️ ${name}`;
         const rows = towns.map(({ t, fl, held, owns }) => `<div class="item-row" style="cursor:pointer" onclick="openTownsModal('flags', '${owner}', ${t.id})">
                 <div class="item-row-top">
-                    <strong style="color:${flagSideColor(t.owner_id)}">${t.name}</strong>
-                    <span class="muted-hint">${TOWN_KIND_LABEL[t.kind] || t.kind}${fl.some(f => f.cand_id) ? " ⏳" : ""} ▶</span>
+                    <strong style="color:${flagColor(t)}">${t.name}</strong>
+                    <span class="muted-hint">${TOWN_KIND_LABEL[t.kind] || t.kind}${fl.some(f => f.cand_id || f.cand_npc) ? " ⏳" : ""} ▶</span>
                 </div>
-                <div class="muted-hint">${owns ? `Ejer byen siden ${fmtWhen(t.owned_at)}` : `Byen ejes af ${flagOwnerLabel(t.owner_id, t.owner_name)}`} · holder ${held}/${fl.length} flag</div>
+                <div class="muted-hint">${owns ? (owner === "npc" ? "Forsvarer byen" : `Ejer byen siden ${fmtWhen(t.owned_at)}`) : `Byen ejes af ${flagOwnerText(t, t.name)}`} · holder ${held}/${fl.length} flag</div>
             </div>`).join("");
         body.innerHTML = `
             <p class="muted-hint">Byer, hvor <strong style="color:${flagSideColor(owner)}">${name}</strong> holder flag. Tryk på en by for at se dens flag.</p>
@@ -10973,20 +11123,20 @@ window.openTownsModal = function(level = "players", owner = null, townId = null)
         title.textContent = `🚩 ${t ? t.name : "By"}`;
         const rows = fl.map(f => {
             let cand = "";
-            if (f.cand_id && f.cand_since) {
+            if ((f.cand_id || f.cand_npc) && f.cand_since) {
                 const left = Math.max(0, Math.round(flagData.rules.hold_s - (serverNow() - Date.parse(f.cand_since)) / 1000));
-                cand = ` · ⏳ ${flagSideOf(f.cand_id) === "own" ? "dine soldater" : (f.cand_name || "en anden spiller")} tager det om ${left} s`;
+                cand = ` · ⏳ ${f.cand_npc ? garrisonNameOf(t?.name) : flagSideOf(f.cand_id) === "own" ? "dine soldater" : (f.cand_name || "en anden spiller")} tager det om ${left} s`;
             }
             return `<div class="item-row" style="cursor:pointer" onclick="openFlagModal(${f.id})">
                 <div class="item-row-top">
-                    <strong style="color:${flagSideColor(f.owner_id)}">${f.name}</strong>
+                    <strong style="color:${flagColor(f)}">${f.name}</strong>
                     <span class="muted-hint">▶</span>
                 </div>
-                <div class="muted-hint">Ejer: ${flagOwnerLabel(f.owner_id, f.owner_name)}${f.owner_id ? ` siden ${fmtWhen(f.owned_at)}` : ""}${cand}</div>
+                <div class="muted-hint">Ejer: ${flagOwnerText(f, t?.name)}${f.owner_id ? ` siden ${fmtWhen(f.owned_at)}` : ""}${cand}</div>
             </div>`;
         }).join("");
         body.innerHTML = `
-            <p class="muted-hint">${t ? `${TOWN_KIND_LABEL[t.kind] || t.kind} med ${fl.length} flag. Byen ejes af <strong style="color:${flagSideColor(t.owner_id)}">${flagOwnerLabel(t.owner_id, t.owner_name)}</strong>${t.owner_id ? ` siden ${fmtWhen(t.owned_at)}` : ""}.` : ""} Tryk på et flag for at se det på kortet.</p>
+            <p class="muted-hint">${t ? `${TOWN_KIND_LABEL[t.kind] || t.kind} med ${fl.length} flag. Byen ejes af <strong style="color:${flagColor(t)}">${flagOwnerText(t, t.name)}</strong>${t.owner_id ? ` siden ${fmtWhen(t.owned_at)}` : ""}.` : ""} Tryk på et flag for at se det på kortet.</p>
             <div class="list-stack">${rows}</div>`;
         actions.innerHTML = `
             <button class="btn" onclick="openTownsModal('towns', '${owner}')">◀ Byer</button>
@@ -11029,7 +11179,7 @@ function codexTownsHtml() {
                 </div>
                 <div class="codex-card">
                     <div class="codex-card-head"><h3>Farver på kortet</h3><span class="badge">overblik</span></div>
-                    <p class="muted-hint"><span style="color:${FLAG_COLORS.own}">■</span> dine flag og byer · <span style="color:${FLAG_COLORS.ally}">■</span> allierede · <span style="color:${FLAG_COLORS.enemy}">■</span> fjender · <span style="color:${FLAG_COLORS.none}">■</span> ingen ejer. En gul ring om flaget betyder, at nogen står alene i cirklen og er ved at tage det.</p>
+                    <p class="muted-hint"><span style="color:${FLAG_COLORS.own}">■</span> dine flag og byer · <span style="color:${FLAG_COLORS.ally}">■</span> allierede · <span style="color:${FLAG_COLORS.enemy}">■</span> fjender · <span style="color:${FLAG_COLORS.npc}">■</span> computerens bygarnisoner · <span style="color:${FLAG_COLORS.none}">■</span> ingen ejer. En orange ring om flaget betyder, at nogen står alene i cirklen og er ved at tage det.</p>
                     <p class="muted-hint">Point og stål for byer kommer i næste trin.</p>
                 </div>
             </div>
