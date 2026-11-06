@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 146;
+const APP_VERSION = 147;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -7577,8 +7577,9 @@ function renderParkedModal(p) {
         <button class="btn" onclick="closeModal()">Luk</button>`;
 }
 
-// Fyld granater op (0054): en vagtstyrke ved en af dine barrakker eller våbenfabrikker kan tage
-// granater fra lageret, højst resupply_shells_per_mortar pr. morter (og pr. haubits for haubitsgranater).
+// Fyld op (0054/0055): en vagtstyrke ved en af dine barrakker eller våbenfabrikker kan tage morterer
+// (én pr. MORTAR.crew soldater) og granater fra lageret, højst resupply_shells_per_mortar granater
+// pr. morter (og pr. haubits for haubitsgranater).
 function gapToBuildingM(b, lat, lon) {
     const half = buildingSize(b.kind) / 2;
     const cosL = Math.max(Math.cos(b.lat * RAD_PER_DEG), MIN_COS);
@@ -7587,23 +7588,28 @@ function gapToBuildingM(b, lat, lon) {
     return Math.hypot(Math.max(dx, 0), Math.max(dy, 0));
 }
 function resupplyOffer(g) {
-    if (!g || !(g.mortars > 0 || g.howitzers > 0)) return null;
+    if (!g || !(g.count > 0)) return null;
     const reach = codexRule("resupply_reach_m", 25);
     const near = state.myBuildings.some(b => (b.kind === "barracks" || b.kind === "weapons_factory") && gapToBuildingM(b, g.lat, g.lon) <= reach);
     if (!near) return null;
-    const roomM = Math.max(0, (g.mortars || 0) * codexRule("resupply_shells_per_mortar", 10) - (g.shells || 0));
+    // Morterer: der skal MORTAR.crew soldater til hver, så gruppen kan højst have floor(count / crew).
+    const crew = Math.max(GAME_CONFIG.MORTAR.crew, 1);
+    const roomMo = Math.max(0, Math.floor(g.count / crew) - (g.mortars || 0));
+    const mo = Math.min(roomMo, state.mortarsHome || 0);
+    const roomM = Math.max(0, ((g.mortars || 0) + mo) * codexRule("resupply_shells_per_mortar", 10) - (g.shells || 0));
     const roomH = Math.max(0, (g.howitzers || 0) * codexRule("resupply_shells_per_howitzer", 10) - (g.howitzer_shells || 0));
     const m = Math.min(roomM, state.shells || 0);
     const h = Math.min(roomH, state.howitzerShells || 0);
-    return (m > 0 || h > 0) ? { m, h } : null;
+    return (mo > 0 || m > 0 || h > 0) ? { mo, m, h } : null;
 }
 function resupplyButtonHtml(g, cls = "btn btn-gold", stop = false, close = false) {
     const o = resupplyOffer(g);
     if (!o) return "";
     const parts = [];
+    if (o.mo > 0) parts.push(`🧨 +${o.mo}`);
     if (o.m > 0) parts.push(`💣 +${o.m}`);
     if (o.h > 0) parts.push(`🎯 +${o.h}`);
-    return `<button class="${cls}" title="Tag granater fra lageret i barrakken" onclick="${stop ? "event.stopPropagation(); " : ""}${close ? "closeModal(); " : ""}resupplyGarrison(${g.id})">📦 Fyld op (${parts.join(" · ")})</button>`;
+    return `<button class="${cls}" title="Tag morterer og granater fra lageret i barrakken" onclick="${stop ? "event.stopPropagation(); " : ""}${close ? "closeModal(); " : ""}resupplyGarrison(${g.id})">📦 Fyld op (${parts.join(" · ")})</button>`;
 }
 window.resupplyGarrison = async function(id) {
     const g = state.garrisons.find(x => String(x.id) === String(id));
@@ -7612,15 +7618,16 @@ window.resupplyGarrison = async function(id) {
         showToast("Intet at fylde op her.");
         return;
     }
-    const { data, error } = await sb.rpc("resupply_garrison", { p_garrison: g.id, p_shells: o.m, p_howitzer_shells: o.h });
+    const { data, error } = await sb.rpc("resupply_garrison", { p_garrison: g.id, p_shells: o.m, p_howitzer_shells: o.h, p_mortars: o.mo });
     if (error) {
         showToast(error.message || "Kunne ikke fylde op.");
         return;
     }
     const got = [];
+    if (data?.took_mortars) got.push(`${data.took_mortars} ${data.took_mortars === 1 ? "morter" : "morterer"}`);
     if (data?.took_shells) got.push(`${data.took_shells} mortergranater`);
     if (data?.took_howitzer_shells) got.push(`${data.took_howitzer_shells} haubitsgranater`);
-    showToast(`📦 ${got.join(" og ")} fyldt på gruppen.`);
+    showToast(`📦 ${got.length > 1 ? got.slice(0, -1).join(", ") + " og " + got[got.length - 1] : got[0]} fyldt på gruppen.`);
     await loadArmy();
     await syncAllFromSupabase();
     if (state.selected) renderSelectedBox();
@@ -10070,6 +10077,7 @@ function codexWeaponsHtml() {
                     ${codexStats([
                         ["Pris", codexPrice(M.priceSteps, M.priceSteel)],
                         ["Betjenes af", `${fmtNum(M.crew)} soldater`],
+                        ["Fyld op", `en vagt højst ${formatDistance(codexRule("resupply_reach_m", 25))} fra din barrak eller våbenfabrik kan hente morterer fra lageret (én pr. ${fmtNum(M.crew)} soldater)`],
                         ["Rækkevidde", `${formatDistance(M.minRangeM)} – ${formatDistance(M.rangeM)}`],
                         ["Spredning", `${formatDistance(M.spreadBaseM)} + ${fmtPct(M.spreadPct)} af afstanden`],
                         ["Granatsplinter", `op til ${formatDistance(M.blastM)} fra nedslaget`],
