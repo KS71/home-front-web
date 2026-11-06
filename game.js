@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 147;
+const APP_VERSION = 148;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -7596,29 +7596,86 @@ function resupplyOffer(g) {
     const crew = Math.max(GAME_CONFIG.MORTAR.crew, 1);
     const roomMo = Math.max(0, Math.floor(g.count / crew) - (g.mortars || 0));
     const mo = Math.min(roomMo, state.mortarsHome || 0);
-    const roomM = Math.max(0, ((g.mortars || 0) + mo) * codexRule("resupply_shells_per_mortar", 10) - (g.shells || 0));
+    const perM = codexRule("resupply_shells_per_mortar", 10);
+    const roomM = Math.max(0, ((g.mortars || 0) + mo) * perM - (g.shells || 0));
     const roomH = Math.max(0, (g.howitzers || 0) * codexRule("resupply_shells_per_howitzer", 10) - (g.howitzer_shells || 0));
     const m = Math.min(roomM, state.shells || 0);
     const h = Math.min(roomH, state.howitzerShells || 0);
-    return (mo > 0 || m > 0 || h > 0) ? { mo, m, h } : null;
+    return (mo > 0 || m > 0 || h > 0) ? { mo, m, h, perM, crew } : null;
 }
 function resupplyButtonHtml(g, cls = "btn btn-gold", stop = false, close = false) {
     const o = resupplyOffer(g);
     if (!o) return "";
     const parts = [];
-    if (o.mo > 0) parts.push(`🧨 +${o.mo}`);
-    if (o.m > 0) parts.push(`💣 +${o.m}`);
-    if (o.h > 0) parts.push(`🎯 +${o.h}`);
-    return `<button class="${cls}" title="Tag morterer og granater fra lageret i barrakken" onclick="${stop ? "event.stopPropagation(); " : ""}${close ? "closeModal(); " : ""}resupplyGarrison(${g.id})">📦 Fyld op (${parts.join(" · ")})</button>`;
+    if (o.mo > 0) parts.push(`🧨 ${o.mo}`);
+    if (o.m > 0) parts.push(`💣 ${o.m}`);
+    if (o.h > 0) parts.push(`🎯 ${o.h}`);
+    return `<button class="${cls}" title="Vælg morterer og granater fra lageret i barrakken" onclick="${stop ? "event.stopPropagation(); " : ""}${close ? "closeModal(); " : ""}openResupplyModal(${g.id})">📦 Fyld op (op til ${parts.join(" · ")})</button>`;
 }
-window.resupplyGarrison = async function(id) {
+// Vinduet, hvor man selv vælger, hvor mange morterer og granater der fyldes på gruppen (som ved køb).
+window.openResupplyModal = function(id) {
     const g = state.garrisons.find(x => String(x.id) === String(id));
     const o = resupplyOffer(g);
     if (!o) {
         showToast("Intet at fylde op her.");
         return;
     }
-    const { data, error } = await sb.rpc("resupply_garrison", { p_garrison: g.id, p_shells: o.m, p_howitzer_shells: o.h, p_mortars: o.mo });
+    state.groupModal = null;
+    document.getElementById("modal-title").textContent = "📦 Fyld op fra lageret";
+    document.getElementById("modal-body").innerHTML = `
+        <p class="muted-hint">Vagtstyrke: ${g.count} soldater${mortarTag(g)}${howitzerTag(g)}. På lager: 🧨 ${state.mortarsHome} morterer · 💣 ${state.shells} granater${g.howitzers > 0 ? ` · 🎯 ${state.howitzerShells} haubitsgranater` : ""}.</p>
+        ${o.mo > 0 ? `
+        <div style="text-align:center;font-size:20px;font-weight:800;color:#FFD54F;" id="rs-mo-label"></div>
+        <input type="range" min="0" max="${o.mo}" value="${o.mo}" class="range-slider" id="rs-mo-input" />
+        <p class="muted-hint">Der skal ${o.crew} soldater til hver morter, så gruppen kan højst have ${Math.floor(g.count / o.crew)} i alt.</p>` : ""}
+        <div style="text-align:center;font-size:20px;font-weight:800;color:#FFD54F;" id="rs-m-label"></div>
+        <input type="range" min="0" max="0" value="0" class="range-slider" id="rs-m-input" />
+        <p class="muted-hint" id="rs-m-hint"></p>
+        ${o.h > 0 ? `
+        <div style="text-align:center;font-size:20px;font-weight:800;color:#FFD54F;" id="rs-h-label"></div>
+        <input type="range" min="0" max="${o.h}" value="${o.h}" class="range-slider" id="rs-h-input" />
+        <p class="muted-hint">Højst ${codexRule("resupply_shells_per_howitzer", 10)} haubitsgranater pr. haubits i gruppen.</p>` : ""}`;
+    document.getElementById("modal-actions").innerHTML = `
+        <button class="btn" onclick="closeModal()">Annuller</button>
+        <button class="btn btn-gold" id="rs-ok">📦 Fyld op</button>`;
+    const moIn = document.getElementById("rs-mo-input");
+    const mIn = document.getElementById("rs-m-input");
+    const hIn = document.getElementById("rs-h-input");
+    let shellsTouched = false;
+    const update = () => {
+        const mo = moIn ? Number(moIn.value) : 0;
+        const totalM = (g.mortars || 0) + mo;
+        if (moIn) document.getElementById("rs-mo-label").textContent = `🧨 ${mo} / ${o.mo} morterer`;
+        const maxM = Math.min(Math.max(0, totalM * o.perM - (g.shells || 0)), state.shells || 0);
+        mIn.max = String(maxM);
+        mIn.disabled = maxM <= 0;
+        if (!shellsTouched || Number(mIn.value) > maxM) mIn.value = String(maxM);
+        document.getElementById("rs-m-label").textContent = `💣 ${mIn.value} / ${maxM} granater`;
+        document.getElementById("rs-m-hint").textContent = totalM <= 0
+            ? "Granater kan kun fyldes på en gruppe med morter."
+            : `Højst ${o.perM} granater pr. morter, altså ${totalM * o.perM} i alt i gruppen (har ${g.shells || 0}).`;
+        if (hIn) document.getElementById("rs-h-label").textContent = `🎯 ${hIn.value} / ${o.h} haubitsgranater`;
+        const total = mo + Number(mIn.value) + (hIn ? Number(hIn.value) : 0);
+        document.getElementById("rs-ok").disabled = total <= 0;
+    };
+    if (moIn) moIn.oninput = update;
+    mIn.oninput = () => { shellsTouched = true; update(); };
+    if (hIn) hIn.oninput = update;
+    update();
+    document.getElementById("rs-ok").onclick = () => {
+        const mo = moIn ? Number(moIn.value) : 0;
+        closeModal();
+        resupplyGarrison(g.id, mo, Number(mIn.value), hIn ? Number(hIn.value) : 0);
+    };
+    document.getElementById("modal-overlay").classList.remove("hidden");
+};
+window.resupplyGarrison = async function(id, mortars, shells, howitzerShells) {
+    const g = state.garrisons.find(x => String(x.id) === String(id));
+    if (!g || !(mortars > 0 || shells > 0 || howitzerShells > 0)) {
+        showToast("Intet at fylde op her.");
+        return;
+    }
+    const { data, error } = await sb.rpc("resupply_garrison", { p_garrison: g.id, p_shells: shells, p_howitzer_shells: howitzerShells, p_mortars: mortars });
     if (error) {
         showToast(error.message || "Kunne ikke fylde op.");
         return;
