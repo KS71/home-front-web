@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 150;
+const APP_VERSION = 151;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -8818,7 +8818,7 @@ async function loadReports() {
         if (ALERT_KINDS.has(r.kind)) notifyAlert(msg, r);
     }
     await sb.from("march_reports").update({ seen: true }).in("id", data.map(r => r.id));
-    if (data.some(r => SCORE_KINDS.has(r.kind))) loadWarStatus();
+    if (data.some(r => SCORE_KINDS.has(r.kind))) { loadWarStatus(); loadDailyOrders(); }
     // Kamp mod patruljer ændrer antallet af soldater; hjemkomne sårede lægges på hospitalet.
     if (data.some(r => r.kind !== "returned" && r.kind !== "arrived" && r.kind !== "stopped")) loadBattles();
     if (data.some(r => r.kind.startsWith("flag_") || r.kind.startsWith("town_"))) pollFlagStates();
@@ -9490,6 +9490,7 @@ const RULE_GROUPS = [
     ["sweden", "Den svenske hær (invasion)"],
     ["flags", "Byer og flag"],
     ["score", "Byindtægt, point og krigsbytte"],
+    ["orders", "Dagens ordrer"],
     ["city", "Bygarnisoner (computerens byer)"],
     ["rank", "Navngivne soldater og rang"],
     ["build", "Bygninger og byggeri"],
@@ -9607,6 +9608,14 @@ const RULE_INFO = {
     score_flag:                 ["score", "Point for at tage et flag", "point"],
     score_town:                 ["score", "Point for at tage en by, ganget med byens stål pr. time", "point"],
     score_per_income:           ["score", "Point pr. stål, byerne giver", "point"],
+    order_kills_goal:           ["orders", "Nedkæmp så mange fjender på en dag (0 = ordren er slået fra)", "stk."],
+    order_kills_steel:          ["orders", "Belønning for at nedkæmpe fjenderne", "stål"],
+    order_flags_goal:           ["orders", "Tag så mange flag på en dag (0 = slået fra)", "stk."],
+    order_flags_steel:          ["orders", "Belønning for at tage flagene", "stål"],
+    order_wins_goal:            ["orders", "Vind så mange kampe på en dag (0 = slået fra)", "stk."],
+    order_wins_steel:           ["orders", "Belønning for at vinde kampene", "stål"],
+    order_steps_goal:           ["orders", "Gå så mange skridt på en dag (0 = slået fra)", "skridt"],
+    order_steps_steel:          ["orders", "Belønning for at gå skridtene", "stål"],
     dig_in_s:                   ["fire", "Grav ned: en vagtstyrke er gravet ned, når den har stået så længe (0 = aldrig)", "s"],
     dig_in_cover:               ["fire", "Grav ned: andel af geværtræfferne, der går forbi (0,4 = 40 %)", "0–1"],
     dig_in_cover_shell:         ["fire", "Grav ned: andel af granattræfferne, der går forbi (0,15 = 15 %)", "0–1"],
@@ -9913,6 +9922,7 @@ async function onSignedIn(user) {
     await loadReports();
     await loadBattles();
     loadWarStatus();
+    loadDailyOrders();
     pollScoutAlerts();
     maybeSpawnNpcs();
 }
@@ -11248,6 +11258,16 @@ function codexTownsHtml() {
                     ])}
                 </div>
                 <div class="codex-card">
+                    <div class="codex-card-head"><h3>Dagens ordrer</h3><span class="badge">📋</span></div>
+                    <p class="muted-hint">Hver dag er der små opgaver i sidepanelet under <strong>📋 Dagens ordrer</strong>. Når en ordre er fuldført, henter du belønningen med et tryk. Nye ordrer ved midnat.</p>
+                    ${codexStats([
+                        [`Nedkæmp ${fmtNum(codexRule("order_kills_goal", 20))} fjender`, `${fmtNum(codexRule("order_kills_steel", 30))} stål`],
+                        [`Tag ${fmtNum(codexRule("order_flags_goal", 1))} flag`, `${fmtNum(codexRule("order_flags_steel", 40))} stål`],
+                        [`Vind ${fmtNum(codexRule("order_wins_goal", 2))} kampe`, `${fmtNum(codexRule("order_wins_steel", 30))} stål`],
+                        [`Gå ${fmtNum(codexRule("order_steps_goal", 5000))} skridt`, `${fmtNum(codexRule("order_steps_steel", 25))} stål`]
+                    ])}
+                </div>
+                <div class="codex-card">
                     <div class="codex-card-head"><h3>Alarm ved angreb</h3><span class="badge">🚨</span></div>
                     <p class="muted-hint">Begynder en fjende at tage et af dine flag, får du straks en besked (højst én pr. flag hvert ${formatMinutes(codexRule("flag_alert_pause_s", 600) / 60)}). Tryk på <strong>🔕 Alarm</strong> i toppen for også at få beskeden fra computeren, når fanen med spillet ikke er fremme.</p>
                 </div>
@@ -11558,6 +11578,82 @@ function renderRankModal() {
 }
 document.getElementById("btn-rank")?.addEventListener("click", () => openRankModal());
 setInterval(loadWarStatus, 60000);
+
+// ---------------------------------------------------------------- dagens ordrer
+// Fire små opgaver hver dag (dansk tid), der giver stål, når belønningen hentes (daily_orders()).
+const ORDER_INFO = {
+    kills: ["⚔️", g => `Nedkæmp ${fmtNum(g)} ${g === 1 ? "fjende" : "fjender"}`],
+    flags: ["🚩", g => g === 1 ? "Tag et flag" : `Tag ${fmtNum(g)} flag`],
+    wins:  ["🏅", g => g === 1 ? "Vind en kamp (nedkæmp en hel fjendtlig gruppe)" : `Vind ${fmtNum(g)} kampe (nedkæmp en hel fjendtlig gruppe)`],
+    steps: ["👟", g => `Gå ${fmtNum(g)} skridt i dag`]
+};
+const dailyOrders = { supported: true, data: null, claiming: false };
+
+async function loadDailyOrders() {
+    if (!state.user || !dailyOrders.supported) return;
+    const { data, error } = await sb.rpc("daily_orders");
+    if (error || !data) {
+        if (error && (error.code === "PGRST202" || /daily_orders/i.test(error.message || ""))) dailyOrders.supported = false;
+        return;
+    }
+    dailyOrders.data = data;
+    renderOrdersSidebar();
+}
+
+function renderOrdersSidebar() {
+    const sec = document.getElementById("orders-section");
+    const list = document.getElementById("orders-list");
+    const badge = document.getElementById("orders-summary-badge");
+    const d = dailyOrders.data;
+    if (!sec || !list || !d) return;
+    const orders = (d.orders || []).filter(o => ORDER_INFO[o.key]);
+    sec.classList.toggle("hidden", orders.length === 0);
+    const ready = orders.filter(o => o.done && !o.claimed).length;
+    const finished = orders.filter(o => o.claimed).length;
+    if (badge) {
+        badge.textContent = ready ? `🎁 ${ready} klar` : `${finished} af ${orders.length}`;
+        badge.classList.toggle("badge-green", ready > 0);
+    }
+    const left = (Date.parse(d.resets_at) - serverNow()) / 60000;
+    list.innerHTML = orders.map(o => {
+        const [icon, text] = ORDER_INFO[o.key];
+        const pct = Math.max(0, Math.min(100, o.goal > 0 ? (o.progress / o.goal) * 100 : 0));
+        const status = o.claimed ? `<span class="badge">✅ Hentet</span>`
+            : o.done ? `<button class="btn btn-small btn-gold" onclick="claimOrder('${o.key}')">🎁 Hent ${fmtNum(o.steel)} stål</button>`
+            : `<span class="muted-hint">🔩 ${fmtNum(o.steel)} stål</span>`;
+        return `<div class="item-row" style="${o.claimed ? "opacity:0.6" : ""}">
+                <div class="item-row-top">
+                    <div class="item-info">
+                        <div class="item-title ${o.done ? "item-title-green" : ""}">${icon} ${text(o.goal)}</div>
+                        <div class="item-sub">${fmtNum(Math.floor(o.progress))} af ${fmtNum(o.goal)}</div>
+                    </div>
+                    ${status}
+                </div>
+                <div class="progress-track"><div class="progress-fill" style="width:${pct.toFixed(1)}%"></div></div>
+            </div>`;
+    }).join("") + `<p class="muted-hint">Nye ordrer ved midnat${left > 0 ? ` (om ${formatMinutes(left)})` : ""}. Belønninger, der ikke er hentet inden da, går tabt.</p>`;
+}
+
+window.claimOrder = async function(key) {
+    if (dailyOrders.claiming) return;
+    dailyOrders.claiming = true;
+    try {
+        const { data, error } = await sb.rpc("claim_daily_order", { p_key: key });
+        if (error) {
+            showToast("Belønningen kunne ikke hentes: " + error.message);
+            return;
+        }
+        dailyOrders.data = data;
+        state.steel += Number(data.reward || 0);
+        updateHud();
+        renderOrdersSidebar();
+        showToast(`🎁 Ordre fuldført: +${fmtNum(data.reward)} stål lagt på lageret.`);
+    } finally {
+        dailyOrders.claiming = false;
+    }
+};
+setInterval(loadDailyOrders, 60000);
+
 
 // Visningsknap med tre trin: soldater + flag → kun flag → kun soldater → forfra.
 const TROOP_LAYERS = ["lyr-troops", "lyr-street-units", "lyr-street-badges", "lyr-street-rings", "lyr-parked-trucks",
