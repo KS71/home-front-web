@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 151;
+const APP_VERSION = 152;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -3737,8 +3737,94 @@ function areBuildingsLoadedAlong(lat1, lon1, lat2, lon2) {
     return check(lat1, lon1) && check(midLat, midLon) && check(lat2, lon2);
 }
 
-// Hurtig lokal A* på fint metergitter (2,4 - 7,5 m), der leder soldater rundt om huse, hegn og vand
-// og foretrækker gader/stier en lille smule, når vejen er næsten lige lang.
+// Spærrer et hus eller vand for en lige strækning på en rute? Strækningen tjekkes i stykker på
+// ca. 45 m, så et langt stykke gennem en by afvises ved det første hus i stedet for at blive målt
+// mod alle byens huse. Huse, som en af strækningens ender står inde i, tæller ikke (som i
+// segmentCrossesBuilding med allowEndpointMapBlds).
+function pathSegmentBlocked(lat1, lon1, lat2, lon2, padM = PATH_SEG_CLEAR_M) {
+    const d = Geo.distanceM(lat1, lon1, lat2, lon2);
+    const n = Math.max(1, Math.ceil(d / 45));
+    if (n > 1) {
+        const vis = (state.visibleBuildings || []).filter(b => {
+            const sz = buildingSize(b.kind);
+            return !Geo.pointInSquare(lat1, lon1, b.lat, b.lon, sz + 2.5) && !Geo.pointInSquare(lat2, lon2, b.lat, b.lon, sz + 2.5);
+        });
+        // Delepunkterne må ikke ligge inde i et hus (så ville stykkerne på begge sider overse huset).
+        for (let k = 1; k < n; k++) {
+            const la = lat1 + (lat2 - lat1) * k / n, lo = lon1 + (lon2 - lon1) * k / n;
+            if (pointInsideMapBuilding(la, lo, 0.05)) return true;
+            for (let i = 0; i < vis.length; i++) {
+                if (Geo.pointInSquare(la, lo, vis[i].lat, vis[i].lon, buildingSize(vis[i].kind))) return true;
+            }
+        }
+    }
+    for (let k = 0; k < n; k++) {
+        const aLat = lat1 + (lat2 - lat1) * k / n, aLon = lon1 + (lon2 - lon1) * k / n;
+        const bLat = lat1 + (lat2 - lat1) * (k + 1) / n, bLon = lon1 + (lon2 - lon1) * (k + 1) / n;
+        if (segmentCrossesBuilding(aLat, aLon, bLat, bLon, padM, true)) return true;
+    }
+    return segmentCrossesWater(lat1, lon1, lat2, lon2);
+}
+
+// Stram en rute op til så få lige strækninger som muligt uden at krydse huse eller vand.
+// Først et hurtigt gennemløb (spring længere og længere frem, og find grænsen ved at halvere),
+// derefter et grundigt gennemløb på de få punkter, der er tilbage.
+function pullPathStraight(pts) {
+    const n = pts.length;
+    if (n <= 2) return pts;
+    const free = (i, j) => !pathSegmentBlocked(pts[i][0], pts[i][1], pts[j][0], pts[j][1]);
+    const quick = [pts[0]];
+    let i = 0;
+    while (i < n - 1) {
+        let good = i + 1, step = 2, j = i + 2;
+        while (j <= n - 1 && free(i, j)) {
+            good = j;
+            step *= 2;
+            j = i + step;
+        }
+        let bad = Math.min(j, n - 1);
+        if (j > n - 1 && good < n - 1 && free(i, n - 1)) {
+            good = n - 1;
+        } else {
+            while (bad - good > 1) {
+                const m = (good + bad) >> 1;
+                if (free(i, m)) good = m; else bad = m;
+            }
+        }
+        quick.push(pts[good]);
+        i = good;
+    }
+    let out = quick;
+    for (let round = 0; round < 2 && out.length > 2; round++) {
+        const next = [out[0]];
+        let a = 0;
+        while (a < out.length - 1) {
+            let b = a + 1;
+            for (let c = out.length - 1; c >= a + 2; c--) {
+                if (!pathSegmentBlocked(out[a][0], out[a][1], out[c][0], out[c][1])) { b = c; break; }
+            }
+            next.push(out[b]);
+            a = b;
+        }
+        if (next.length === out.length) break;
+        out = next;
+    }
+    return out;
+}
+
+function pathLengthM(pts) {
+    let m = 0;
+    for (let i = 1; i < pts.length; i++) m += Geo.distanceM(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]);
+    return m;
+}
+
+// Hurtig lokal A* på fint metergitter (2 m), der leder soldater rundt om huse og vand.
+// Soldaterne går den korteste vej: over græs, gennem haver og mellem husene. Veje foretrækkes ikke
+// (v152; før fik de 10 % rabat, og gitteret var så groft, at smalle passager mellem huse blev overset,
+// så ruten ofte blev en omvej ad vejene). Broer er stadig den eneste vej over vand.
+// Med 2 m mellem gitterpunkterne og 0,8 m til muren findes passager ned til ca. 3,6 m mellem to huse.
+const PATH_CELL_CLEAR_M = 0.8;   // så tæt må et gitterpunkt ligge på en husmur
+const PATH_SEG_CLEAR_M = 0.7;    // så tæt må en lige strækning gå forbi en husmur
 function findTacticalBuildingPath(startLat, startLon, endLat, endLon) {
     const distM = Geo.distanceM(startLat, startLon, endLat, endLon);
     if (distM < 2 || distM > 1600) return null;
@@ -3748,8 +3834,9 @@ function findTacticalBuildingPath(startLat, startLon, endLat, endLon) {
     const mPerLat = 111320;
     const mPerLon = 111320 * cosLat;
 
-    const stepM = Math.max(2.4, Math.min(7.5, distM / 46));
-    const padM = Math.max(80, Math.min(280, distM * 0.45));
+    const MAX_SIDE = 600;            // op til ca. 750 m i lige linje med 2 m-gitter; derover bliver det grovere
+    const stepM = 2.0;
+    const padM = Math.max(90, Math.min(220, distM * 0.35));
 
     const minLat = Math.min(startLat, endLat) - padM / mPerLat;
     const maxLat = Math.max(startLat, endLat) + padM / mPerLat;
@@ -3758,8 +3845,8 @@ function findTacticalBuildingPath(startLat, startLon, endLat, endLon) {
 
     const stepLat = stepM / mPerLat;
     const stepLon = stepM / mPerLon;
-    const rows = Math.min(128, Math.max(24, Math.ceil((maxLat - minLat) / stepLat) + 1));
-    const cols = Math.min(128, Math.max(24, Math.ceil((maxLon - minLon) / stepLon) + 1));
+    const rows = Math.min(MAX_SIDE, Math.max(24, Math.ceil((maxLat - minLat) / stepLat) + 1));
+    const cols = Math.min(MAX_SIDE, Math.max(24, Math.ceil((maxLon - minLon) / stepLon) + 1));
     const effStepLat = (maxLat - minLat) / (rows - 1);
     const effStepLon = (maxLon - minLon) / (cols - 1);
 
@@ -3778,7 +3865,25 @@ function findTacticalBuildingPath(startLat, startLon, endLat, endLon) {
 
     const ignorePts = [[startLat, startLon], [endLat, endLon]];
     const totalCells = rows * cols;
-    const stateCache = new Uint8Array(totalCells); // 0=ukendt, 1=fri, 2=vej, 3=spærret
+    const stateCache = new Uint8Array(totalCells); // 0=ukendt, 1=fri, 2=bro/start/mål, 3=spærret
+    const cornerCache = new Uint8Array(totalCells); // midten mellem fire gitterpunkter: 0=ukendt, 1=fri, 2=hus
+
+    // Vand aflæses fra det tegnede kort, og det er dyrt. Spørg kun én gang pr. ca. 5 × 5 m.
+    const WATER_M = 5;
+    const wRows = Math.ceil((maxLat - minLat) * mPerLat / WATER_M) + 2;
+    const wCols = Math.ceil((maxLon - minLon) * mPerLon / WATER_M) + 2;
+    const waterGrid = new Uint8Array(wRows * wCols); // 0=ukendt, 1=land, 2=vand
+    const waterAt = (la, lo) => {
+        const wr = Math.round((la - minLat) * mPerLat / WATER_M);
+        const wc = Math.round((lo - minLon) * mPerLon / WATER_M);
+        const k = wr * wCols + wc;
+        let w = waterGrid[k];
+        if (w === 0) {
+            w = isWaterAt(minLat + wr * WATER_M / mPerLat, minLon + wc * WATER_M / mPerLon) ? 2 : 1;
+            waterGrid[k] = w;
+        }
+        return w === 2;
+    };
 
     const cellKind = (r, c) => {
         if ((r === sr && c === sc) || (r === er && c === ec)) return 2;
@@ -3786,12 +3891,12 @@ function findTacticalBuildingPath(startLat, startLon, endLat, endLon) {
         let st = stateCache[idx];
         if (st !== 0) return st;
         const la = cellLat(r), lo = cellLon(c);
-        if (pointInsideAnyBuilding(la, lo, 1.35, ignorePts)) {
+        if (pointInsideAnyBuilding(la, lo, PATH_CELL_CLEAR_M, ignorePts)) {
             st = 3;
-        } else if (isWaterAt(la, lo)) {
+        } else if (waterAt(la, lo)) {
             st = isNearBridgeFast(la, lo, 6) ? 2 : 3;   // bro over vandet: man kan gå der
         } else {
-            st = isNearRoadFast(la, lo, 6.5) ? 2 : 1;
+            st = 1;
         }
         stateCache[idx] = st;
         return st;
@@ -3802,9 +3907,16 @@ function findTacticalBuildingPath(startLat, startLon, endLat, endLon) {
     const closed = new Uint8Array(totalCells);
     gScore[startIdx] = 0;
 
-    // Binær min-heap til lynhurtig A* (< 3 ms)
+    // Afstand til målet langs gitteret (lige + skrå skridt), en anelse overdrevet, så søgningen går
+    // målrettet frem i stedet for at brede sig ud over hele området.
+    const heur = (r, c) => {
+        const a = Math.abs(er - r), b = Math.abs(ec - c);
+        return (Math.max(a, b) + 0.4142 * Math.min(a, b)) * 1.02;
+    };
+
+    // Binær min-heap
     const heapIdx = [startIdx];
-    const heapF = [Math.hypot(er - sr, ec - sc) * 0.9];
+    const heapF = [heur(sr, sc)];
     const heapPush = (idx, f) => {
         let i = heapIdx.length;
         heapIdx.push(idx);
@@ -3853,17 +3965,25 @@ function findTacticalBuildingPath(startLat, startLon, endLat, endLon) {
             if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
             const v = nr * cols + nc;
             if (closed[v]) continue;
-            const kind = cellKind(nr, nc);
-            if (kind === 3) continue;
-            // Undgå at skære skråt gennem et hushjørne
-            if (d >= 4 && (cellKind(ur + dr[d], uc) === 3 || cellKind(ur, uc + dc[d]) === 3)) continue;
+            if (cellKind(nr, nc) === 3) continue;
+            // Undgå at skære skråt gennem et hushjørne: begge nabopunkter skal være fri, og der må
+            // ikke stikke et hjørne ind midt mellem de fire punkter.
+            if (d >= 4) {
+                if (cellKind(ur + dr[d], uc) === 3 || cellKind(ur, uc + dc[d]) === 3) continue;
+                const cIdx = Math.min(ur, nr) * cols + Math.min(uc, nc);
+                let cs = cornerCache[cIdx];
+                if (cs === 0) {
+                    cs = pointInsideAnyBuilding((cellLat(ur) + cellLat(nr)) * 0.5, (cellLon(uc) + cellLon(nc)) * 0.5, 0.3, ignorePts) ? 2 : 1;
+                    cornerCache[cIdx] = cs;
+                }
+                if (cs === 2) continue;
+            }
 
-            const stepW = kind === 2 ? 0.90 : 1.0;
-            const tg = gScore[u] + baseCost[d] * stepW;
+            const tg = gScore[u] + baseCost[d];
             if (tg < gScore[v]) {
                 cameFrom[v] = u;
                 gScore[v] = tg;
-                heapPush(v, tg + Math.hypot(er - nr, ec - nc) * 0.89);
+                heapPush(v, tg + heur(nr, nc));
             }
         }
     }
@@ -3879,22 +3999,110 @@ function findTacticalBuildingPath(startLat, startLon, endLat, endLon) {
     raw.reverse();
     const full = [[startLat, startLon], ...raw.slice(0, -1), [endLat, endLon]];
 
-    // Stram ruten op, men kun hvor hverken vand eller bygninger krydses!
-    const smoothed = [full[0]];
-    let i = 0;
-    while (i < full.length - 1) {
-        let next = i + 1;
-        for (let j = full.length - 1; j >= i + 2; j--) {
-            if (!segmentCrossesWater(full[i][0], full[i][1], full[j][0], full[j][1]) &&
-                !segmentCrossesBuilding(full[i][0], full[i][1], full[j][0], full[j][1], 1.25, true)) {
-                next = j;
-                break;
+    // Stram ruten op til lige strækninger, men kun hvor hverken bygninger eller vand krydses.
+    return pullPathStraight(full);
+}
+
+// Lange ruter (over ca. 900 m): find vej stykke for stykke mellem faste punkter med den lokale
+// rutefinder. Punkterne ligger enten på den lige linje mod målet eller langs rutetjenestens rute
+// (som kender broerne). fallbackLegs[i] er rutetjenestens punkter for stykke i og bruges, hvis den
+// lokale rutefinder ikke finder vej. Returnerer null, hvis et stykke ikke kan løses.
+// Korteste lokale vej mellem to punkter: den lige linje, hvis den er fri, ellers den lokale rutefinder.
+function localLeg(a, b) {
+    if (!pathSegmentBlocked(a[0], a[1], b[0], b[1])) return [a, b];
+    return findTacticalBuildingPath(a[0], a[1], b[0], b[1]);
+}
+
+async function chainLocalLegs(anchors, fallbackLegs = null) {
+    const pts = anchors.slice();
+    const legs = [];
+    for (let i = 0; i < pts.length - 1; i++) {
+        let leg = localLeg(pts[i], pts[i + 1]);
+        if (!leg || leg.length < 2) leg = fallbackLegs ? fallbackLegs[i] : null;
+        if (!leg || leg.length < 2) return null;
+        legs.push(leg);
+        await yieldToBrowser();
+    }
+    // De faste punkter fra rutetjenesten ligger på vejen. Findes der en kortere vej direkte fra
+    // punktet før til punktet efter, springes punktet over (så en omvej ad vejen forsvinder).
+    if (fallbackLegs) {
+        let i = 0, tries = 0;
+        while (i < pts.length - 2 && tries < 40) {
+            const a = pts[i], c = pts[i + 2];
+            let merged = null;
+            if (Geo.distanceM(a[0], a[1], c[0], c[1]) <= 1000) {
+                tries++;
+                merged = localLeg(a, c);
+                await yieldToBrowser();
+            }
+            if (merged && pathLengthM(merged) < pathLengthM(legs[i]) + pathLengthM(legs[i + 1]) - 5) {
+                legs.splice(i, 2, merged);
+                pts.splice(i + 1, 1);
+                if (i > 0) i--;      // måske kan punktet før nu også undværes
+            } else {
+                i++;
             }
         }
-        smoothed.push(full[next]);
-        i = next;
     }
-    return smoothed;
+    const out = [pts[0]];
+    for (const leg of legs) for (let k = 1; k < leg.length; k++) out.push(leg[k]);
+    return out;
+}
+
+// Et frit sted (ikke hus, ikke vand) ved punktet: selve punktet, lige uden for huset, eller til siden.
+function freeSpotNear(lat, lon, sideLat, sideLon) {
+    for (const off of [0, 1, -1, 2, -2, 3, -3, 4, -4]) {
+        const la = lat + sideLat * off, lo = lon + sideLon * off;
+        if (!isPointOnScreen(la, lo) || isWaterAt(la, lo)) continue;
+        if (!pointInsideAnyBuilding(la, lo, PATH_CELL_CLEAR_M)) return [la, lo];
+        const out = snapOutsideMapBuilding(la, lo, 1.8, 60);
+        if (!pointInsideAnyBuilding(out[0], out[1], 0.5) && !isWaterAt(out[0], out[1])) return out;
+    }
+    return null;
+}
+
+// Den lige linje mod målet delt i stykker på højst legM meter, hvert stykke løst lokalt.
+async function findChainedDirectPath(startLat, startLon, endLat, endLon, legM = 650) {
+    const distM = Geo.distanceM(startLat, startLon, endLat, endLon);
+    const n = Math.ceil(distM / legM);
+    if (n < 2 || n > 30) return null;
+    const cosLat = Math.max(Math.cos((startLat + endLat) * 0.5 * RAD_PER_DEG), MIN_COS);
+    // 90 meter vinkelret på linjen (til at flytte et punkt væk fra vand)
+    const dLatM = (endLat - startLat) * 111320, dLonM = (endLon - startLon) * 111320 * cosLat;
+    const len = Math.max(Math.hypot(dLatM, dLonM), 1);
+    const sideLat = (dLonM / len) * 90 / 111320;
+    const sideLon = (-dLatM / len) * 90 / (111320 * cosLat);
+
+    const anchors = [[startLat, startLon]];
+    for (let k = 1; k < n; k++) {
+        const t = k / n;
+        const spot = freeSpotNear(startLat + (endLat - startLat) * t, startLon + (endLon - startLon) * t, sideLat, sideLon);
+        if (!spot) return null;
+        anchors.push(spot);
+    }
+    anchors.push([endLat, endLon]);
+    return await chainLocalLegs(anchors);
+}
+
+// Rutetjenestens rute (ad veje og stier) lavet om til faste punkter med ca. spacingM imellem, og
+// stykkerne imellem løst lokalt, så soldaterne kun følger vejen, hvor der ikke er en kortere vej.
+async function relaxRoadRoute(pts, spacingM = 600) {
+    if (pts.length < 3) return pts;
+    const anchors = [pts[0]];
+    const legs = [];
+    let leg = [pts[0]];
+    let acc = 0;
+    for (let i = 1; i < pts.length; i++) {
+        acc += Geo.distanceM(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]);
+        leg.push(pts[i]);
+        if (acc >= spacingM || i === pts.length - 1) {
+            anchors.push(pts[i]);
+            legs.push(leg);
+            leg = [pts[i]];
+            acc = 0;
+        }
+    }
+    return (await chainLocalLegs(anchors, legs)) || pts;
 }
 
 // Synkroniser nærliggende bygningsomrids til serveren (0046_gadekamp_skudlinje.sql), når egne soldater
@@ -3948,8 +4156,8 @@ async function syncCombatBuildingsToServer(ownPositions, enemyPositions) {
 }
 
 function canShortcutAcrossLandAndBuildings(lat1, lon1, lat2, lon2) {
-    if (segmentCrossesWater(lat1, lon1, lat2, lon2)) return false;
-    if (segmentCrossesBuilding(lat1, lon1, lat2, lon2, 1.25, true)) return false;
+    // Huse først og i stykker (hurtigt nej i en by), derefter vand.
+    if (pathSegmentBlocked(lat1, lon1, lat2, lon2, 1.25)) return false;
     // Hvis vi er zoomet langt ud (< 14), så z14-huse ikke er indlæst på hele stykket, må vi ikke skære genvej gennem byzoner
     if (Geo.distanceM(lat1, lon1, lat2, lon2) > 55 && !areBuildingsLoadedAlong(lat1, lon1, lat2, lon2)) {
         const midLat = (lat1 + lat2) * 0.5, midLon = (lon1 + lon2) * 0.5;
@@ -4236,10 +4444,28 @@ async function findLandPathAsync(startLat, startLon, endLat, endLon) {
         return [[startLat, startLon], [endLat, endLon]];
     }
 
-    // 2. Taktisk gade- og bygningsrute i nærområdet (<= 1,5 km): hurtig lokal A* rundt om huse og ad gader.
-    //    Også over vand: kortets broer (brunnel = bridge) kan bruges, så en nærliggende gangbro vælges
-    //    frem for en lang omvej fra rutetjenesten.
-    if (!unloadedTown && distM <= 1500) {
+    // Kender vi husene og vandet langs ruten? (Kortet skal være zoomet ind, og begge ender på skærmen.)
+    const detail = !unloadedTown && mapReady && map.getZoom() >= HOUSE_MIN_ZOOM - 1 &&
+        isPointOnScreen(startLat, startLon) && isPointOnScreen(endLat, endLon);
+
+    // 2. Nærområdet (<= 900 m): hurtig lokal A* den korteste vej rundt om huse – over græs, gennem
+    //    haver og mellem husene, ikke ad vejene. Også over vand: kortets broer (brunnel = bridge) kan
+    //    bruges, så en nærliggende gangbro vælges frem for en lang omvej fra rutetjenesten.
+    if (!unloadedTown && distM <= 900) {
+        const localStreetPath = findTacticalBuildingPath(startLat, startLon, endLat, endLon);
+        if (localStreetPath && localStreetPath.length >= 2) {
+            return localStreetPath;
+        }
+    }
+
+    // 2b. Længere ruter, hvor kortet er hentet: den lige linje mod målet, løst stykke for stykke.
+    if (detail && distM > 900) {
+        const chained = await findChainedDirectPath(startLat, startLon, endLat, endLon);
+        if (chained && chained.length >= 2) {
+            return await tightenPathAcrossLand(chained);
+        }
+    }
+    if (!unloadedTown && distM > 900 && distM <= 1500) {
         const localStreetPath = findTacticalBuildingPath(startLat, startLon, endLat, endLon);
         if (localStreetPath && localStreetPath.length >= 2) {
             return localStreetPath;
@@ -4272,7 +4498,9 @@ async function findLandPathAsync(startLat, startLon, endLat, endLon) {
                     ...simplified,
                     ...endConn
                 ];
-                return await tightenPathAcrossLand(base);
+                // Rutetjenesten følger veje og stier. Hvor kortet er hentet, findes den korteste vej
+                // mellem faste punkter på ruten i stedet, så vejen kun følges, hvor det er nødvendigt.
+                return await tightenPathAcrossLand(detail ? await relaxRoadRoute(base) : base);
             }
         }
     } catch (_) {}
