@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 156;
+const APP_VERSION = 157;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -3197,7 +3197,8 @@ const computerImgPromise = new Promise((resolve) => {
 function troopBadgeId(count, style = "own", pct = 100, status = "guard", truck = false, facingLeft = false, hasHowitzer = false, medic = false, mortar = false, tank = false) {
     const bucket = pct >= 100 ? "100" : pct < 40 ? `red-${Math.ceil(pct / 10)}` : `orange-${Math.ceil(pct / 10)}`;
     const truckSuffix = truck ? (hasHowitzer ? (facingLeft ? "-truck-h-left" : "-truck-h") : (facingLeft ? "-truck-left" : "-truck")) : (hasHowitzer ? "-gun" : "");
-    return `img-${style}-${status}-${count}-${bucket}${truckSuffix}${medic ? "-med" : ""}${mortar ? "-mor-" + mortar : ""}${tank ? (tank === "only" ? "-tanko" : "-tank") : ""}`;
+    const tankSuffix = tank ? `${tank === "only" ? "-tanko" : "-tank"}${!truck && facingLeft ? "-left" : ""}` : "";
+    return `img-${style}-${status}-${count}-${bucket}${truckSuffix}${medic ? "-med" : ""}${mortar ? "-mor-" + mortar : ""}${tankSuffix}`;
 }
 
 async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard", truck = false, facingLeft = false, hasHowitzer = false, medic = false, mortar = false, tank = false) {
@@ -3216,7 +3217,7 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
     const gunImg = !truck && hasHowitzer ? howitzerImg : null;
     let soldierImg = truck && hasHowitzer && truckHowitzerImg
         ? truckHowitzerImg
-        : (truck && truckImg ? truckImg : vectorSoldierCanvas(style, "stand", 1.75));
+        : (truck && truckImg ? truckImg : (!truck && tank === "only" ? tankCanvas(style, facingLeft) : vectorSoldierCanvas(style, "stand", 1.75)));
     if (!soldierImg) return;
 
     const scale = truck ? 2 : 1;
@@ -3226,8 +3227,7 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
     const gw = gunImg ? gunImg.width : 0;
     const gh = gunImg ? gunImg.height : 0;
     // Kampvognen står til højre for soldaten (0059).
-    const tankImg = !truck && tank && tank !== "only" ? tankCanvas(style) : null;
-    if (!truck && tank === "only") soldierImg = tankCanvas(style);
+    const tankImg = !truck && tank && tank !== "only" ? tankCanvas(style, facingLeft) : null;
     const tw = tankImg ? tankImg.width : 0;
     const th = tankImg ? tankImg.height : 0;
     const sideW = Math.max(gw, tw);
@@ -5568,7 +5568,7 @@ async function renderTroopsOnMap() {
     }
     for (const m of state.enemies.marches) {
         enemyPositions.push([m.lat, m.lon]);
-        const facingLeft = truckCount(m) > 0 && m.to_lon != null && m.lon != null && m.to_lon < m.lon;
+        const facingLeft = (truckCount(m) > 0 || tankCount(m) > 0) && m.to_lon != null && m.lon != null && m.to_lon < m.lon;
         const sel = state.groupModal?.kind === "enemy-march" && String(state.groupModal.id) === String(m.id);
         const status = isFightingOwn(m.lat, m.lon) ? "combat" : "enemy";
         await addTroop(`enemy-march:${m.id}`, m, m.lat, m.lon, "enemy", status, facingLeft, 0, null, sel);
@@ -5585,7 +5585,7 @@ async function renderTroopsOnMap() {
             startedAtMillis: Date.parse(n.started_at),
             arrivesAtMillis: Date.parse(n.arrives_at)
         };
-        const facingLeft = truckCount(n) > 0 && marchFacingLeft(npcMarch, now);
+        const facingLeft = (truckCount(n) > 0 || tankCount(n) > 0) && marchFacingLeft(npcMarch, now);
         const sel = state.groupModal?.kind === "npc" && String(state.groupModal.id) === String(n.id);
         const status = n.fighting ? "combat" : "npc";
         await addTroop(`npc:${n.id}`, n, pos[0], pos[1], "npc", status, facingLeft, 0, npcMarch, sel);
@@ -5600,7 +5600,7 @@ async function renderTroopsOnMap() {
     for (const m of state.allies.marches) {
         if (m.count <= 0) continue;
         const [lat, lon] = marchCurrentPos(m, now);
-        const facingLeft = truckCount(m) > 0 && marchFacingLeft(m, now);
+        const facingLeft = (truckCount(m) > 0 || tankCount(m) > 0) && marchFacingLeft(m, now);
         const sel = state.groupModal?.kind === "ally-march" && String(state.groupModal.id) === String(m.id);
         await addTroop(`ally-march:${m.id}`, m, lat, lon, "ally-" + allyColor(m.owner_id).slice(1), "march", facingLeft, 0, m, sel);
     }
@@ -5626,7 +5626,7 @@ async function renderTroopsOnMap() {
         const inCombat = (m.wounded && m.wounded.length > 0) || energyPct(m) < 100 || isFightingNear(lat, lon);
         const isPatrol = !!m.patrolPath;
         const status = inCombat ? "combat" : (isPatrol ? "patrol" : "march");
-        const facingLeft = truckCount(m) > 0 && marchFacingLeft(m, now);
+        const facingLeft = (truckCount(m) > 0 || tankCount(m) > 0) && marchFacingLeft(m, now);
         const isSelected = state.highlight?.marches?.has(String(m.id))
             || (state.groupModal?.kind === "march" && String(state.groupModal.id) === String(m.id));
         // Delinger på vej til felthospitalet får et rødt kors på hjelmen og ved tallet.
