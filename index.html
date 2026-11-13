@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>HOME FRONT — Command Center</title>
     <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
-    <link rel="stylesheet" href="style.css?v=149" />
+    <link rel="stylesheet" href="style.css?v=150" />
 </head>
 <body>
     <!-- Login / Titelskærm Overlay -->
@@ -84,8 +84,10 @@
                     <button id="btn-sync" class="btn btn-small" title="Opdatér data fra Supabase">🔄 Synkronisér</button>
                     <button id="btn-codex" class="btn btn-small" title="Soldater, bygninger, våben og fjender">📖 Oversigt</button>
                     <button id="btn-towns" class="btn btn-small" title="Byer under kontrol og hvem der ejer dem">🏙️ Byer</button>
+                    <button id="btn-rank" class="btn btn-small" title="Rangliste, point og din krigsstatistik">🏆 Rangliste</button>
                     <button id="btn-soldiers-page" class="btn btn-small" title="Dine navngivne soldater med rang og mindelisten">🎖️ Mine soldater</button>
                     <button id="btn-flags-only" class="btn btn-small" title="Skift visning: soldater + flag, kun flag, kun soldater">🪖🚩 Soldater + flag</button>
+                    <button id="btn-alerts" class="btn btn-small" title="Få besked på computeren, når dine flag og soldater angribes, også når fanen ikke er fremme">🔕 Alarm</button>
                     <button id="btn-admin" class="btn btn-small btn-gold hidden" title="Spillere og testkonti">🛠 Admin</button>
                     <button id="btn-logout" class="btn btn-small btn-muted" title="Log ud">Log ud</button>
                 </div>
@@ -215,6 +217,6 @@
 
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="game.js?v=149"></script>
+    <script src="game.js?v=150"></script>
 </body>
 </html>

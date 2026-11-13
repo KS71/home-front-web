@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 149;
+const APP_VERSION = 150;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -5490,6 +5490,11 @@ function npcAbout(n) {
         return "🧱 Inden for skudafstand, men en bygning dækker skudlinjen (ryk rundt om hjørnet eller brug morter).";
     }
     if (n.fighting) return "💥 i kamp med dine soldater";
+    if (n.unit_kind === "city_raid") {
+        return Date.parse(n.started_at) > serverNow()
+            ? `Computerens modangreb samles her og går ind i byen om ca. ${formatMinutes((Date.parse(n.started_at) - serverNow()) / 60000)}. Angrib den nu, eller forstærk flagene.`
+            : "Computerens modangreb: en styrke fra en naboby, der vil tage byens flag tilbage. Nedkæmp den, før den står alene i flagenes cirkler.";
+    }
     if (isCityNpc(n)) {
         const gear = npcGear(n);
         return `${n.unit_kind === "city_guard" ? "Computerens vagt ved byens flag. Bliver ved flaget og angriber fjender tæt på det." : "Computerens patrulje i byen. Rykker til truede flag og angriber fjender i byen, når garnisonen er stærk nok."}${gear ? ` ${gear}.` : ""}`;
@@ -6709,7 +6714,7 @@ function renderTroopsSidebar() {
                 <div class="item-row-top">
                     <img src="assets/tropper.png" class="pixel-img item-sprite" />
                     <div class="item-info">
-                        <div class="item-title item-title-green">${g.count} soldater på vagt${mortarTag(g)}${howitzerTag(g)}${truckTag(g)}</div>
+                        <div class="item-title item-title-green">${g.count} soldater på vagt${mortarTag(g)}${howitzerTag(g)}${truckTag(g)}${digInTag(g)}</div>
                         <div class="item-sub">${where}</div>
                         <div class="item-sub">${energyText(g)}</div>
                     </div>
@@ -7418,6 +7423,7 @@ function renderGroupModal() {
         body.innerHTML = `
             <p class="muted-hint">${where} · ${g.count - hurt} raske, ${hurt} ${hurt === 1 ? "såret" : "sårede"}. Sårede heles kun på et felthospital.</p>
             ${namedLineHtml(gm.kind, g)}
+            ${gm.kind === "garrison" ? digInLineHtml(g) : ""}
             ${mortarLineHtml(gm.kind, g)}
             ${howitzerLineHtml(gm.kind, g)}
             ${truckLineHtml(gm.kind, g)}
@@ -8621,6 +8627,8 @@ const REPORT_TEXT = {
     flag_lost:  r => `🏳️ Du har mistet flaget ${r.note || ""}.`,
     town_taken: r => `🏙️ ${r.note || "En by"} er nu under din kontrol!`,
     town_lost:  r => `💔 Du har mistet kontrollen over ${r.note || "en by"}.`,
+    flag_attacked:  r => `🚨 Dit flag ${r.note || ""} er ved at blive taget! Send soldater derhen.`,
+    counter_attack: r => `🚨 Modangreb! ${r.count} soldater er på vej mod ${r.note || "din by"} og er fremme om ca. ${formatMinutes(r.survivors)}.`,
     shelled: r => r.survivors <= 0
         ? `💥 En granat ramte dine ${r.count} soldater — ingen overlevede.`
         : `💥 En granat ramte dine soldater: ${r.enemy_losses} træffere${r.losses ? `, ${r.losses} faldt` : ""}.`,
@@ -8659,7 +8667,7 @@ async function loadBattles() {
     if (!state.user) return;
     const since = new Date(serverNow() - battleWindowH * 3600000).toISOString();
     const { data, error } = await sb.from("battles")
-        .select("id,lat,lon,enemy,started_at,last_at,own_killed,own_hits,enemy_killed,enemy_wiped,own_wiped")
+        .select("*")
         .gte("last_at", since)
         .order("last_at", { ascending: false })
         .limit(300);
@@ -8734,6 +8742,7 @@ function renderBattlesSidebar() {
                             <div class="item-sub">${battleTimeText(b.last_at)} · ${enemy}</div>
                             <div class="item-sub">📍 ${formatPos(b.lat, b.lon)}</div>
                             <div class="item-sub">Dine tab: ${b.own_killed} faldne${b.own_hits > b.own_killed ? ` (${b.own_hits} ramt)` : ""} · Fjendens tab: ${b.enemy_killed}</div>
+                            ${b.loot > 0 ? `<div class="item-sub" style="color:#9fd3ff">🔩 Krigsbytte: +${fmtNum(b.loot)} stål</div>` : ""}
                         </div>
                     </div>
                 </div>
@@ -8803,9 +8812,13 @@ async function loadReports() {
     if (!data || data.length === 0) return;
     for (const r of data) {
         const text = REPORT_TEXT[r.kind];
-        if (text) queueToast(text(r));
+        if (!text) continue;
+        const msg = text(r);
+        queueToast(msg);
+        if (ALERT_KINDS.has(r.kind)) notifyAlert(msg, r);
     }
     await sb.from("march_reports").update({ seen: true }).in("id", data.map(r => r.id));
+    if (data.some(r => SCORE_KINDS.has(r.kind))) loadWarStatus();
     // Kamp mod patruljer ændrer antallet af soldater; hjemkomne sårede lægges på hospitalet.
     if (data.some(r => r.kind !== "returned" && r.kind !== "arrived" && r.kind !== "stopped")) loadBattles();
     if (data.some(r => r.kind.startsWith("flag_") || r.kind.startsWith("town_"))) pollFlagStates();
@@ -9476,6 +9489,7 @@ const RULE_GROUPS = [
     ["npc", "Fjendtlige patruljer"],
     ["sweden", "Den svenske hær (invasion)"],
     ["flags", "Byer og flag"],
+    ["score", "Byindtægt, point og krigsbytte"],
     ["city", "Bygarnisoner (computerens byer)"],
     ["rank", "Navngivne soldater og rang"],
     ["build", "Bygninger og byggeri"],
@@ -9583,6 +9597,23 @@ const RULE_INFO = {
     rank_survive_max:           ["rank", "Højeste overlevelsesbonus (0,6 = 60 %)", "0–1"],
     flag_radius_m:              ["flags", "Cirkel om flaget", "m"],
     flag_hold_s:                ["flags", "Så længe skal man stå alene i cirklen for at tage flaget", "s"],
+    flag_alert_pause_s:         ["flags", "Alarm ved angreb på et flag: højst én pr. flag i så lang tid", "s"],
+    town_income_storby:         ["score", "Byindtægt: stål pr. time for en storby, man ejer", "stål"],
+    town_income_by:             ["score", "Byindtægt: stål pr. time for en by", "stål"],
+    town_income_bydel:          ["score", "Byindtægt: stål pr. time for en bydel", "stål"],
+    town_income_landsby:        ["score", "Byindtægt: stål pr. time for en landsby, et kvarter eller et nabolag", "stål"],
+    kill_reward_steel:          ["score", "Krigsbytte: stål pr. nedkæmpet fjendtlig soldat (0,5 = ét stål for hver anden)", "stål"],
+    score_kill:                 ["score", "Point pr. nedkæmpet fjendtlig soldat", "point"],
+    score_flag:                 ["score", "Point for at tage et flag", "point"],
+    score_town:                 ["score", "Point for at tage en by, ganget med byens stål pr. time", "point"],
+    score_per_income:           ["score", "Point pr. stål, byerne giver", "point"],
+    dig_in_s:                   ["fire", "Grav ned: en vagtstyrke er gravet ned, når den har stået så længe (0 = aldrig)", "s"],
+    dig_in_cover:               ["fire", "Grav ned: andel af geværtræfferne, der går forbi (0,4 = 40 %)", "0–1"],
+    dig_in_cover_shell:         ["fire", "Grav ned: andel af granattræfferne, der går forbi (0,15 = 15 %)", "0–1"],
+    city_npc_counter_h:         ["city", "Modangreb: timer, før computeren prøver at tage en tabt by tilbage (0 = aldrig)", "timer"],
+    city_npc_counter_share:     ["city", "Modangreb: styrkens størrelse som andel af byens garnison (0,5 = halvdelen)", "0–1"],
+    city_npc_counter_range_m:   ["city", "Modangreb: kommer fra nærmeste computerby inden for", "m"],
+    city_npc_counter_stage_m:   ["city", "Modangreb: styrken samles så langt fra bymidten, før den går ind", "m"],
     sweden_vision_m:            ["sweden", "Så langt hærens enheder ser (hele hæren deler det)", "m"],
     sweden_dismount_m:          ["sweden", "Lastbiler stopper og sætter soldaterne af, når fjenden er så tæt på", "m"],
     sweden_attack_range_m:      ["sweden", "Så langt infanteriet går for at angribe", "m"],
@@ -9881,6 +9912,7 @@ async function onSignedIn(user) {
     await pollWorld();
     await loadReports();
     await loadBattles();
+    loadWarStatus();
     pollScoutAlerts();
     maybeSpawnNpcs();
 }
@@ -10085,7 +10117,9 @@ function codexSoldierHtml() {
                         ["Rækkevidde", "100 m (Gevær M/95)"],
                         ["Skade", `${fmtNum(dmgMin)}–${fmtNum(dmgMax)} (${fmtPct(codexRule("hit_kill_chance", 0.05))} øjeblikkelig død)`],
                         ["Uddannes straks for", codexPrice(C.INSTANT_SOLDIER_STEPS, 0)],
-                        ["Bliver én vagtstyrke inden for", formatDistance(C.GARRISON_MERGE_M)]
+                        ["Bliver én vagtstyrke inden for", formatDistance(C.GARRISON_MERGE_M)],
+                        ["Graver sig ned efter", `${formatMinutes(codexRule("dig_in_s", 600) / 60)} på samme sted (⛏️)`],
+                        ["Nedgravet", `${fmtPct(codexRule("dig_in_cover", 0.4))} af geværtræfferne og ${fmtPct(codexRule("dig_in_cover_shell", 0.15))} af granattræfferne går forbi`]
                     ])}
                 </div>
 
@@ -10379,7 +10413,10 @@ function codexEnemiesHtml() {
                         ["Udsyn", formatDistance(codexRule("city_npc_vision_m", 400))],
                         ["Vagten angriber", `fjender højst ${formatDistance(codexRule("city_npc_guard_attack_m", 150))} fra sit flag`],
                         ["Patruljen angriber", `fjender højst ${formatDistance(codexRule("city_npc_attack_m", 600))} fra bymidten, når garnisonen inden for ${formatDistance(codexRule("city_npc_support_m", 400))} er mindst ${fmtNum(codexRule("city_npc_attack_ratio", 1))} gange så mange`],
-                        ["Forstærkning", `${fmtNum(codexRule("city_npc_regen_per_h", 6))} soldater i timen pr. styrke`]
+                        ["Forstærkning", `${fmtNum(codexRule("city_npc_regen_per_h", 6))} soldater i timen pr. styrke`],
+                        ["Modangreb", codexRule("city_npc_counter_h", 24) > 0
+                            ? `${fmtNum(codexRule("city_npc_counter_h", 24))} timer efter du har taget en by, sender nærmeste computerby (højst ${formatDistance(codexRule("city_npc_counter_range_m", 15000))} væk) ${fmtPct(codexRule("city_npc_counter_share", 0.5))} af en garnison for at tage den tilbage – og igen, hvis styrken slås. Styrken samles ${formatDistance(codexRule("city_npc_counter_stage_m", 1200))} fra bymidten, før den går ind`
+                            : "slået fra"]
                     ])}
                 </div>
                 <div class="codex-card">
@@ -11000,7 +11037,7 @@ function renderFlagModal() {
         ? `<p class="muted-hint" style="color:${FLAG_COLORS.npc}">🛡️ Byen forsvares af computerens garnison. Nedkæmp vagterne ved flaget, og stå alene i cirklen for at tage det. Garnisonen får langsomt forstærkninger, så længe den holder et flag i byen.</p>`
         : "";
     const townLine = town
-        ? `<p>🏙️ <strong>${town.name}</strong> (${TOWN_KIND_LABEL[town.kind] || town.kind}) har ${townFlags.length} ${townFlags.length === 1 ? "flag" : "flag"} og ejes af <strong style="color:${flagColor(town)}">${flagOwnerText(town, town.name)}</strong>${town.owner_id ? ` siden ${fmtWhen(town.owned_at)}` : ""}.</p>`
+        ? `<p>🏙️ <strong>${town.name}</strong> (${TOWN_KIND_LABEL[town.kind] || town.kind}) har ${townFlags.length} ${townFlags.length === 1 ? "flag" : "flag"} og ejes af <strong style="color:${flagColor(town)}">${flagOwnerText(town, town.name)}</strong>${town.owner_id ? ` siden ${fmtWhen(town.owned_at)}` : ""}.${townIncomeText(town) ? ` Byen giver sin ejer <strong>${townIncomeText(town).slice(1)}</strong>.` : ""}</p>${flagSide(town) === "own" ? counterAttackLineHtml(town.id) : ""}`
         : "";
     const flagList = townFlags.length > 1
         ? `<div class="muted-hint" style="margin-top:6px;">Byens flag: ${townFlags.map(x =>
@@ -11087,7 +11124,15 @@ window.openTownsModal = function(level = "players", owner = null, townId = null)
                 </div>
                 <div class="muted-hint">${p.id === "npc" ? "Forsvarer" : "Ejer"} ${p.towns} ${p.towns === 1 ? "by" : "byer"} · holder ${p.flags} flag i ${p.townsWithFlags.size} ${p.townsWithFlags.size === 1 ? "by" : "byer"}</div>
             </div>`).join("");
+        const myTowns = ownedTowns.filter(t => flagSide(t) === "own");
+        const myIncome = myTowns.reduce((sum, t) => sum + townIncomeRate(t.kind), 0);
+        const incomeLine = warEnabled()
+            ? `<p>🔩 ${myTowns.length
+                ? `Dine ${myTowns.length === 1 ? "by giver" : `${myTowns.length} byer giver`} <strong style="color:#9fd3ff">${fmtNum(myIncome)} stål i timen</strong> (lægges selv på lageret).`
+                : "En by, du ejer, giver stål hver time"} <span class="muted-hint">Storby ${fmtNum(townIncomeRate("storby"))} · by ${fmtNum(townIncomeRate("by"))} · bydel ${fmtNum(townIncomeRate("bydel"))} · landsby ${fmtNum(townIncomeRate("landsby"))} stål/t.</span></p>`
+            : "";
         body.innerHTML = `
+            ${incomeLine}
             <p class="muted-hint">${flagData.towns.size} byer, bydele og landsbyer med ${flagData.flags.size} flag i alt. ${ownedTowns.length} er under kontrol${contested ? `, ${contested} flag er ved at skifte hænder` : ""}. Tryk på en spiller for at se byerne.</p>
             ${rows ? `<div class="list-stack">${rows}</div>` : `<p class="muted-hint">Ingen har taget flag endnu. Send soldater ind i en bys flagcirkel og lad dem stå der alene i ${fmtNum(flagData.rules.hold_s)} sekunder.</p>`}`;
         actions.innerHTML = `<button class="btn" onclick="closeModal()">Luk</button>`;
@@ -11108,7 +11153,7 @@ window.openTownsModal = function(level = "players", owner = null, townId = null)
                     <strong style="color:${flagColor(t)}">${t.name}</strong>
                     <span class="muted-hint">${TOWN_KIND_LABEL[t.kind] || t.kind}${fl.some(f => f.cand_id || f.cand_npc) ? " ⏳" : ""} ▶</span>
                 </div>
-                <div class="muted-hint">${owns ? (owner === "npc" ? "Forsvarer byen" : `Ejer byen siden ${fmtWhen(t.owned_at)}`) : `Byen ejes af ${flagOwnerText(t, t.name)}`} · holder ${held}/${fl.length} flag</div>
+                <div class="muted-hint">${owns ? (owner === "npc" ? "Forsvarer byen" : `Ejer byen siden ${fmtWhen(t.owned_at)}${townIncomeText(t) ? ` · 🔩 ${townIncomeText(t)}` : ""}`) : `Byen ejes af ${flagOwnerText(t, t.name)}`} · holder ${held}/${fl.length} flag</div>
             </div>`).join("");
         body.innerHTML = `
             <p class="muted-hint">Byer, hvor <strong style="color:${flagSideColor(owner)}">${name}</strong> holder flag. Tryk på en by for at se dens flag.</p>
@@ -11180,13 +11225,339 @@ function codexTownsHtml() {
                 <div class="codex-card">
                     <div class="codex-card-head"><h3>Farver på kortet</h3><span class="badge">overblik</span></div>
                     <p class="muted-hint"><span style="color:${FLAG_COLORS.own}">■</span> dine flag og byer · <span style="color:${FLAG_COLORS.ally}">■</span> allierede · <span style="color:${FLAG_COLORS.enemy}">■</span> fjender · <span style="color:${FLAG_COLORS.npc}">■</span> computerens bygarnisoner · <span style="color:${FLAG_COLORS.none}">■</span> ingen ejer. En orange ring om flaget betyder, at nogen står alene i cirklen og er ved at tage det.</p>
-                    <p class="muted-hint">Point og stål for byer kommer i næste trin.</p>
+                </div>
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Byindtægt</h3><span class="badge">stål hver time</span></div>
+                    <p class="muted-hint">En by, du ejer, giver stål hver time, så længe du ejer den. Stålet lægges selv på lageret. Siden 🏙️ Byer viser, hvad dine byer giver i alt.</p>
+                    ${codexStats([
+                        ["Storby", `${fmtNum(codexRule("town_income_storby", 10))} stål/time`],
+                        ["By", `${fmtNum(codexRule("town_income_by", 4))} stål/time`],
+                        ["Bydel", `${fmtNum(codexRule("town_income_bydel", 2))} stål/time`],
+                        ["Landsby, kvarter, nabolag", `${fmtNum(codexRule("town_income_landsby", 1))} stål/time`]
+                    ])}
+                </div>
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Point og rangliste</h3><span class="badge">🏆</span></div>
+                    <p class="muted-hint">Siden 🏆 Rangliste i toppen viser alle spillere og alliancer efter point, din egen krigsstatistik og dine medaljer.</p>
+                    ${codexStats([
+                        ["Nedkæmpet fjende", `${fmtNum(codexRule("score_kill", 1))} point`],
+                        ["Flag taget", `${fmtNum(codexRule("score_flag", 10))} point`],
+                        ["By taget", `${fmtNum(codexRule("score_town", 10))} × byens stål/time`],
+                        ["By holdt", `${fmtNum(codexRule("score_per_income", 1))} point pr. stål, byen giver`],
+                        ["Krigsbytte", `${fmtNum(codexRule("kill_reward_steel", 0.5))} stål pr. nedkæmpet fjende`]
+                    ])}
+                </div>
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Alarm ved angreb</h3><span class="badge">🚨</span></div>
+                    <p class="muted-hint">Begynder en fjende at tage et af dine flag, får du straks en besked (højst én pr. flag hvert ${formatMinutes(codexRule("flag_alert_pause_s", 600) / 60)}). Tryk på <strong>🔕 Alarm</strong> i toppen for også at få beskeden fra computeren, når fanen med spillet ikke er fremme.</p>
                 </div>
             </div>
         </details>`;
 }
 
 document.getElementById("btn-towns")?.addEventListener("click", () => openTownsModal());
+
+// ============================================================================
+// Krigen om byerne, trin 2 (0058_krigen_om_byerne.sql): byindtægt, point og rangliste, krigsbytte,
+// alarm ved angreb, nedgravede vagtstyrker og computerens modangreb. Alt afgøres på serveren; her
+// vises det kun. Virker uden fejl, før 0058 er kørt (det nye er så bare skjult).
+// ============================================================================
+const war = { supported: true, status: null };
+
+// Er 0058 kørt i databasen? (Reglerne kommer med config.)
+function warEnabled() {
+    return GAME_CONFIG.RULES?.town_income_by != null;
+}
+
+function formatMinutes(min) {
+    const m = Math.max(0, Math.round(Number(min) || 0));
+    if (m < 60) return `${m} min`;
+    return `${Math.floor(m / 60)} t ${m % 60} min`;
+}
+
+// Stål pr. time for en by af denne type (samme regel som town_income_rate på serveren).
+function townIncomeRate(kind) {
+    const key = kind === "storby" ? "town_income_storby" : kind === "by" ? "town_income_by"
+        : kind === "bydel" ? "town_income_bydel" : "town_income_landsby";
+    return Math.max(0, codexRule(key, 0));
+}
+
+// ---------------------------------------------------------------- egen status (point, byindtægt)
+async function loadWarStatus() {
+    if (!state.user || !war.supported) return;
+    const { data, error } = await sb.rpc("war_status");
+    if (error || !data) {
+        // Databasen har ikke fået 0058 endnu: prøv ikke igen før næste genindlæsning.
+        if (error && (error.code === "PGRST202" || /war_status/i.test(error.message || ""))) war.supported = false;
+        return;
+    }
+    war.status = data;
+    // Byindtægt og krigsbytte lægges på lageret på serveren; vis det nye tal med det samme.
+    if (typeof data.steel === "number" && data.steel !== state.steel) {
+        state.steel = data.steel;
+        updateHud();
+    }
+    updateRankButton();
+}
+
+function updateRankButton() {
+    const btn = document.getElementById("btn-rank");
+    if (!btn) return;
+    const pts = Math.floor(Number(war.status?.points || 0));
+    btn.textContent = pts > 0 ? `🏆 ${fmtNum(pts)} point` : "🏆 Rangliste";
+}
+
+// ---------------------------------------------------------------- alarm: besked uden for fanen
+// Rapporter, der er vigtige nok til en besked fra computeren, når fanen ikke er fremme.
+const ALERT_KINDS = new Set(["flag_attacked", "counter_attack", "flag_lost", "town_lost", "lost",
+    "patrol_won", "skirmish_lost", "shelled", "engaged"]);
+// Rapporter, der ændrer point og statistik.
+const SCORE_KINDS = new Set(["flag_taken", "flag_lost", "town_taken", "town_lost", "patrol_defeated",
+    "patrol_won", "skirmish_won", "skirmish_lost", "victory", "defeat", "defended", "lost", "mortar_hit"]);
+const ALERTS_KEY = "hf_alerts_on";
+let alertsOn = false;
+try { alertsOn = localStorage.getItem(ALERTS_KEY) === "1"; } catch (_) {}
+
+function alertsActive() {
+    return alertsOn && typeof Notification !== "undefined" && Notification.permission === "granted";
+}
+
+function updateAlertsButton() {
+    const btn = document.getElementById("btn-alerts");
+    if (!btn) return;
+    btn.textContent = alertsActive() ? "🔔 Alarm til" : "🔕 Alarm";
+    btn.classList.toggle("btn-primary", alertsActive());
+}
+
+window.toggleAlerts = async function() {
+    if (typeof Notification === "undefined") {
+        showToast("Denne browser kan ikke vise beskeder fra hjemmesiden.");
+        return;
+    }
+    if (alertsActive()) {
+        alertsOn = false;
+    } else {
+        let perm = Notification.permission;
+        if (perm === "default") {
+            try { perm = await Notification.requestPermission(); } catch (_) { perm = "denied"; }
+        }
+        if (perm !== "granted") {
+            showToast("Browseren har blokeret beskeder fra siden. Tillad dem ved hængelåsen i adresselinjen, og prøv igen.");
+            return;
+        }
+        alertsOn = true;
+    }
+    try { localStorage.setItem(ALERTS_KEY, alertsOn ? "1" : "0"); } catch (_) {}
+    updateAlertsButton();
+    showToast(alertsOn
+        ? "🔔 Alarm slået til: du får en besked fra computeren, når dine flag eller soldater angribes, mens fanen ikke er fremme."
+        : "🔕 Alarm slået fra.");
+};
+
+// En besked fra computeren (kun når fanen ikke er fremme), og et mærke i fanens titel.
+let alertTitleCount = 0;
+const BASE_TITLE = document.title;
+function notifyAlert(msg, report) {
+    if (!document.hidden) return;
+    alertTitleCount++;
+    document.title = `(${alertTitleCount}) 🚨 ${BASE_TITLE}`;
+    if (!alertsActive()) return;
+    try {
+        const n = new Notification("HOME FRONT", { body: msg, tag: `hf-${report?.kind || "alert"}-${report?.id || Date.now()}`, icon: "assets/titel_emblem.png" });
+        n.onclick = () => {
+            window.focus();
+            if (report && report.lat != null && report.lon != null) jumpToPoint(report.lat, report.lon);
+            n.close();
+        };
+    } catch (_) {}
+}
+document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && alertTitleCount) {
+        alertTitleCount = 0;
+        document.title = BASE_TITLE;
+    }
+});
+document.getElementById("btn-alerts")?.addEventListener("click", () => toggleAlerts());
+updateAlertsButton();
+
+// ---------------------------------------------------------------- grav ned
+// En vagtstyrke, der har stået samme sted længe nok (dig_in_s), er gravet ned og rammes sjældnere.
+// Returnerer null, hvis databasen ikke har 0058 (ingen placed_at), ellers { dug, leftS }.
+function digInState(g) {
+    const need = codexRule("dig_in_s", 0);
+    if (!warEnabled() || !g?.placed_at || need <= 0) return null;
+    const stood = (serverNow() - Date.parse(g.placed_at)) / 1000;
+    return { dug: stood >= need, leftS: Math.max(0, Math.ceil(need - stood)) };
+}
+
+function digInTag(g) {
+    const d = digInState(g);
+    return d?.dug ? ` <span title="Gravet ned: rammes sjældnere">⛏️</span>` : "";
+}
+
+function digInLineHtml(g) {
+    const d = digInState(g);
+    if (!d) return "";
+    const rifle = fmtPct(codexRule("dig_in_cover", 0.4));
+    const shell = fmtPct(codexRule("dig_in_cover_shell", 0.15));
+    return d.dug
+        ? `<p class="muted-hint">⛏️ <strong style="color:#39FF14">Gravet ned.</strong> ${rifle} af geværtræfferne og ${shell} af granattræfferne går forbi. Går soldaterne videre, skal de grave sig ned igen det nye sted.</p>`
+        : `<p class="muted-hint">⛏️ Graver sig ned: klar om <strong>${formatMinutes(Math.ceil(d.leftS / 60))}</strong>. Derefter går ${rifle} af geværtræfferne forbi.</p>`;
+}
+
+// ---------------------------------------------------------------- byindtægt og modangreb i teksterne
+// "+4 stål/t" for en by (tom, før 0058 er kørt).
+function townIncomeText(t) {
+    if (!warEnabled() || !t) return "";
+    const r = townIncomeRate(t.kind);
+    return r > 0 ? `+${fmtNum(r)} stål/t` : "";
+}
+
+// Hvornår computeren ventes at prøve at tage en af dine byer tilbage (fra war_status).
+function counterAttackLineHtml(townId) {
+    const c = (war.status?.counter || []).find(x => Number(x.town_id) === Number(townId));
+    if (!c?.at) return "";
+    const left = (Date.parse(c.at) - serverNow()) / 60000;
+    return `<p class="muted-hint" style="color:#FFB74D">⏰ Byen er taget fra computerens garnison. ${left > 1
+        ? `Et modangreb fra en naboby ventes om ca. <strong>${formatMinutes(left)}</strong>.`
+        : "Et modangreb fra en naboby kan komme når som helst."} Lad en vagtstyrke blive ved flagene.</p>`;
+}
+
+// ---------------------------------------------------------------- ranglisten
+const MEDALS = [
+    ["🩸", "Første blod", "Nedkæmp din første fjende", s => s.kills >= 1],
+    ["🎯", "Skarpskytte", "Nedkæmp 100 fjender", s => s.kills >= 100],
+    ["💀", "Krigsveteran", "Nedkæmp 1.000 fjender", s => s.kills >= 1000],
+    ["🏅", "Sejrherre", "Vind 10 kampe (nedkæmp en hel fjendtlig gruppe)", s => s.wins >= 10],
+    ["🚩", "Fanebærer", "Tag dit første flag", s => s.flags_taken >= 1],
+    ["🎌", "Flagjæger", "Tag 25 flag", s => s.flags_taken >= 25],
+    ["🏙️", "Byherre", "Tag din første by", s => s.towns_taken >= 1],
+    ["👑", "Erobrer", "Tag 10 byer", s => s.towns_taken >= 10],
+    ["🗺️", "Landsherre", "Ej 5 byer på samme tid", s => s.towns >= 5],
+    ["🔩", "Krigsbytte", "Saml 100 stål i krigsbytte", s => s.loot_steel >= 100],
+    ["🏭", "Krigsøkonomi", "Få 500 stål fra dine byer", s => s.income_steel >= 500],
+    ["🛡️", "Urokkelig", "Nedkæmp flere, end du selv mister (mindst 50 nedkæmpede)", s => s.kills >= 50 && s.kills > s.losses]
+];
+
+const rankView = { tab: "players", data: null };
+
+window.openRankModal = async function(tab = rankView.tab) {
+    state.groupModal = null;
+    state.hospitalModal = null;
+    state.flagModal = null;
+    rankView.tab = tab;
+    const title = document.getElementById("modal-title");
+    const body = document.getElementById("modal-body");
+    const actions = document.getElementById("modal-actions");
+    document.querySelector(".modal-box")?.classList.add("modal-wide");
+    title.textContent = "🏆 Rangliste";
+    actions.innerHTML = `<button class="btn" onclick="closeModal()">Luk</button>`;
+    document.getElementById("modal-overlay").classList.remove("hidden");
+
+    if (!rankView.data) body.innerHTML = `<p class="muted-hint">Henter ranglisten …</p>`;
+    else renderRankModal();
+    const { data, error } = await sb.rpc("leaderboard");
+    if (error || !data) {
+        if (!rankView.data) {
+            body.innerHTML = `<p class="muted-hint">Ranglisten, point, byindtægt og krigsbytte kræver, at <strong>0058_krigen_om_byerne.sql</strong> er kørt i Supabase.</p>`;
+        }
+        return;
+    }
+    rankView.data = data;
+    await loadWarStatus();
+    // Er vinduet stadig ranglisten? (Brugeren kan have åbnet noget andet imens.)
+    if (document.getElementById("modal-title").textContent.startsWith("🏆") && !document.getElementById("modal-overlay").classList.contains("hidden")) {
+        renderRankModal();
+    }
+};
+
+function renderRankModal() {
+    const d = rankView.data;
+    const body = document.getElementById("modal-body");
+    if (!d || !body) return;
+    const tab = rankView.tab;
+    const players = (d.players || []).slice().sort((a, b) => b.points - a.points || b.towns - a.towns || b.kills - a.kills);
+    const tabs = `<div class="item-actions" style="margin-bottom:8px;">
+        <button class="btn btn-small ${tab === "players" ? "btn-primary" : ""}" onclick="openRankModal('players')">🏆 Spillere</button>
+        <button class="btn btn-small ${tab === "alliances" ? "btn-primary" : ""}" onclick="openRankModal('alliances')">🤝 Alliancer</button>
+        <button class="btn btn-small ${tab === "me" ? "btn-primary" : ""}" onclick="openRankModal('me')">🎖️ Min krig</button>
+    </div>`;
+    const head = `<tr><th>#</th><th>Navn</th><th>Point</th><th title="Byer, der ejes lige nu">🏙️ Byer</th><th title="Flag, der holdes lige nu">🚩 Flag</th><th title="Stål pr. time fra byerne">🔩 pr. time</th><th title="Nedkæmpede fjender / egne faldne">⚔️ Nedkæmpet / faldne</th></tr>`;
+    const row = (i, name, color, r, sub = "") => `<tr>
+            <td>${i}</td>
+            <td><strong style="color:${color}">${name}</strong>${sub ? `<div class="muted-hint">${sub}</div>` : ""}</td>
+            <td><strong>${fmtNum(Math.floor(r.points))}</strong></td>
+            <td>${fmtNum(r.towns)}</td><td>${fmtNum(r.flags)}</td><td>${fmtNum(r.income_per_h)}</td>
+            <td>${fmtNum(r.kills)} / ${fmtNum(r.losses)}</td>
+        </tr>`;
+    const npcLine = d.npc && (d.npc.towns || d.npc.flags)
+        ? `<p class="muted-hint" style="color:${FLAG_COLORS.npc}">🛡️ Computerens bygarnisoner holder ${fmtNum(d.npc.towns)} ${d.npc.towns === 1 ? "by" : "byer"} og ${fmtNum(d.npc.flags)} flag.</p>` : "";
+
+    if (tab === "players") {
+        const rows = players.map((p, i) => row(i + 1,
+            `${escapeHtml(p.name || "Kommandør")}${p.id === d.me ? " (dig)" : ""}`, flagSideColor(p.id), p,
+            p.alliance ? `🤝 ${escapeHtml(p.alliance)}` : "")).join("");
+        body.innerHTML = `${tabs}
+            <p class="muted-hint">Point gives for nedkæmpede fjender, for flag og byer, du tager, og for hver time du holder en by. <span style="color:${FLAG_COLORS.own}">■</span> dig · <span style="color:${FLAG_COLORS.ally}">■</span> allierede · <span style="color:${FLAG_COLORS.enemy}">■</span> andre.</p>
+            <div class="admin-list"><table class="admin-table">${head}${rows}</table></div>
+            ${npcLine}`;
+    } else if (tab === "alliances") {
+        const groups = new Map();
+        for (const p of players) {
+            const key = p.alliance ? `a:${p.alliance}` : `p:${p.id}`;
+            if (!groups.has(key)) groups.set(key, { name: p.alliance || p.name || "Kommandør", solo: !p.alliance, members: [], mine: false,
+                points: 0, towns: 0, flags: 0, income_per_h: 0, kills: 0, losses: 0 });
+            const g = groups.get(key);
+            g.members.push(p.name || "Kommandør");
+            if (p.id === d.me) g.mine = true;
+            for (const k of ["points", "towns", "flags", "income_per_h", "kills", "losses"]) g[k] += Number(p[k] || 0);
+        }
+        const list = [...groups.values()].sort((a, b) => b.points - a.points || b.towns - a.towns);
+        const rows = list.map((g, i) => row(i + 1,
+            `${g.solo ? "" : "🤝 "}${escapeHtml(g.name)}${g.mine ? (g.solo ? " (dig)" : " (din alliance)") : ""}`,
+            g.mine ? FLAG_COLORS.own : FLAG_COLORS.enemy, g,
+            g.solo ? "uden alliance" : `${g.members.length} ${g.members.length === 1 ? "spiller" : "spillere"}: ${g.members.map(escapeHtml).join(", ")}`)).join("");
+        body.innerHTML = `${tabs}
+            <p class="muted-hint">Alliancernes point er medlemmernes point lagt sammen. Spillere uden alliance står for sig selv.</p>
+            <div class="admin-list"><table class="admin-table">${head}${rows}</table></div>
+            ${npcLine}`;
+    } else {
+        const me = players.find(p => p.id === d.me) || {};
+        const s = { ...me, ...(war.status || {}) };
+        for (const k of ["points", "kills", "losses", "wins", "defeats", "flags_taken", "flags_lost", "towns_taken", "towns_lost", "loot_steel", "income_steel", "towns", "flags", "income_per_h"]) s[k] = Number(s[k] || 0);
+        const place = players.findIndex(p => p.id === d.me) + 1;
+        const medals = MEDALS.map(([icon, name, how, test]) => {
+            const got = !!test(s);
+            return `<div class="soldier-tile named-tile" style="opacity:${got ? 1 : 0.35}" title="${escapeHtml(how)}${got ? " – opnået" : " – ikke opnået endnu"}">
+                <div style="font-size:26px;line-height:1.3">${icon}</div>
+                <div class="named-rank">${name}</div>
+                <div class="named-where">${got ? "✅" : "🔒"}</div>
+            </div>`;
+        }).join("");
+        const counters = (war.status?.counter || []).map(c => {
+            const left = (Date.parse(c.at) - serverNow()) / 60000;
+            return `<div>⏰ ${escapeHtml(c.name)}: ${left > 1 ? `om ca. ${formatMinutes(left)}` : "når som helst"}</div>`;
+        }).join("");
+        body.innerHTML = `${tabs}
+            <p>Du har <strong style="color:#FFD54F">${fmtNum(Math.floor(s.points))} point</strong>${place ? ` og ligger nr. <strong>${place}</strong> af ${players.length}` : ""}.</p>
+            ${codexStats([
+                ["Byer lige nu", `${fmtNum(s.towns)} (${fmtNum(s.flags)} flag)`],
+                ["Stål fra byerne", `${fmtNum(s.income_per_h)} stål i timen · ${fmtNum(s.income_steel)} i alt`],
+                ["Krigsbytte", `${fmtNum(s.loot_steel)} stål i alt`],
+                ["Nedkæmpede fjender", fmtNum(s.kills)],
+                ["Egne faldne", fmtNum(s.losses)],
+                ["Vundne / tabte kampe", `${fmtNum(s.wins)} / ${fmtNum(s.defeats)}`],
+                ["Flag taget / mistet", `${fmtNum(s.flags_taken)} / ${fmtNum(s.flags_lost)}`],
+                ["Byer taget / mistet", `${fmtNum(s.towns_taken)} / ${fmtNum(s.towns_lost)}`]
+            ])}
+            ${counters ? `<p style="margin-top:10px;"><strong>Ventede modangreb fra computeren</strong></p><div class="muted-hint" style="color:#FFB74D">${counters}</div>` : ""}
+            <p style="margin-top:10px;"><strong>Medaljer</strong> <span class="muted-hint">(hold musen over en medalje for at se, hvad den kræver)</span></p>
+            <div class="soldier-grid named-grid">${medals}</div>
+            <p class="muted-hint" style="margin-top:10px;">Sådan får du point: ${fmtNum(codexRule("score_kill", 1))} pr. nedkæmpet fjende · ${fmtNum(codexRule("score_flag", 10))} pr. flag, du tager · ${fmtNum(codexRule("score_town", 10))} × byens stål pr. time, når du tager en by · ${fmtNum(codexRule("score_per_income", 1))} pr. stål, dine byer giver. Tallene tælles fra den dag, ranglisten blev slået til.</p>`;
+    }
+}
+document.getElementById("btn-rank")?.addEventListener("click", () => openRankModal());
+setInterval(loadWarStatus, 60000);
 
 // Visningsknap med tre trin: soldater + flag → kun flag → kun soldater → forfra.
 const TROOP_LAYERS = ["lyr-troops", "lyr-street-units", "lyr-street-badges", "lyr-street-rings", "lyr-parked-trucks",
