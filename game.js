@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 153;
+const APP_VERSION = 154;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -3197,7 +3197,7 @@ const computerImgPromise = new Promise((resolve) => {
 function troopBadgeId(count, style = "own", pct = 100, status = "guard", truck = false, facingLeft = false, hasHowitzer = false, medic = false, mortar = false, tank = false) {
     const bucket = pct >= 100 ? "100" : pct < 40 ? `red-${Math.ceil(pct / 10)}` : `orange-${Math.ceil(pct / 10)}`;
     const truckSuffix = truck ? (hasHowitzer ? (facingLeft ? "-truck-h-left" : "-truck-h") : (facingLeft ? "-truck-left" : "-truck")) : (hasHowitzer ? "-gun" : "");
-    return `img-${style}-${status}-${count}-${bucket}${truckSuffix}${medic ? "-med" : ""}${mortar ? "-mor-" + mortar : ""}${tank ? "-tank" : ""}`;
+    return `img-${style}-${status}-${count}-${bucket}${truckSuffix}${medic ? "-med" : ""}${mortar ? "-mor-" + mortar : ""}${tank ? (tank === "only" ? "-tanko" : "-tank") : ""}`;
 }
 
 async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard", truck = false, facingLeft = false, hasHowitzer = false, medic = false, mortar = false, tank = false) {
@@ -3226,7 +3226,8 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
     const gw = gunImg ? gunImg.width : 0;
     const gh = gunImg ? gunImg.height : 0;
     // Kampvognen står til højre for soldaten (0059).
-    const tankImg = !truck && tank ? tankCanvas(style) : null;
+    const tankImg = !truck && tank && tank !== "only" ? tankCanvas(style) : null;
+    if (!truck && tank === "only") soldierImg = tankCanvas(style);
     const tw = tankImg ? tankImg.width : 0;
     const th = tankImg ? tankImg.height : 0;
     const sideW = Math.max(gw, tw);
@@ -5234,6 +5235,8 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
 
     const trucks = truckCount(group);
     const howitzers = group.howitzers || 0;
+    // Kampvognenes mandskab sidder inde i kampvognene (0059); kun resten tegnes til fods.
+    const footCount = Math.max(0, group.count - usableTanks(group) * gearCrew().tank);
     const isMoving = !!marchObj && (marchObj.arrivesAtMillis > marchObj.startedAtMillis + 500) && now < marchObj.arrivesAtMillis;
     const isDriving = trucks > 0 && (marchObj ? (marchObj.driving !== false && truckCanDrive(group.count, trucks)) : truckCanDrive(group.count, trucks));
 
@@ -5271,7 +5274,7 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
             // Soldater på march i 2-geleds gadekolonne langs ruten (drejer pænt rundt om hushjørner!)
             // Soldaterne går med benene (to billeder skiftevis), hver i sin egen takt, lidt ujævnt i
             // geleddet, og de bagerste halter en smule efter.
-            const nSol = visibleSoldierCount(group.count);
+            const nSol = visibleSoldierCount(footCount);
             const rows = Math.ceil(nSol / 2);
             const headOff = Math.min(8, (rows - 1) * 1.4);
             const gid = Number(group.id) || 1;
@@ -5327,7 +5330,7 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
                 pushUnit(tLat, tLon, hasGun ? (facingLeft ? "st-truck-h-l" : "st-truck-h") : (facingLeft ? "st-truck-l" : "st-truck"), hasGun ? "truck-h" : "truck", rot);
             }
             // 2-4 vagtsoldater stående ved siden af de holdende lastbiler
-            const nGuards = Math.min(group.count, 4);
+            const nGuards = Math.min(footCount, 4);
             for (let gIdx = 0; gIdx < nGuards; gIdx++) {
                 const along = (gIdx - (nGuards - 1) * 0.5) * 3.2;
                 let gLat = baseLat + (rd.uy * along - ny * 2.2) * invLat;
@@ -5346,8 +5349,10 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
                 pushUnit(baseLat + rd.uy * along * invLat, baseLon + rd.ux * along * invLon, "st-howitzer", "gun", 0);
             }
 
-            const nSol = visibleSoldierCount(group.count);
-            if (nSol === 1 && nGuns === 0) {
+            const nSol = visibleSoldierCount(footCount);
+            if (nSol === 0) {
+                // Alle sidder i kampvognene.
+            } else if (nSol === 1 && nGuns === 0) {
                 let sLat = baseLat, sLon = baseLon;
                 if (pointInsideMapBuilding(sLat, sLon, 0.7)) [sLat, sLon] = snapOutsideMapBuilding(sLat, sLon, 1.8);
                 pushUnit(sLat, sLon, `st-sol-${solKey}`, "sol", 0);
@@ -5396,7 +5401,8 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
     if (tanks > 0) {
         if (isMoving) {
             for (let t = 0; t < tanks; t++) {
-                const pt = pointAlongMarchByMeters(marchObj, now, 9 + t * 9.5);
+                // Foran soldaterne til fods; er alle inde i kampvognene, kører de i kolonne på gruppens plads.
+                const pt = pointAlongMarchByMeters(marchObj, now, footCount > 0 ? 9 + t * 9.5 : Math.min(8, (tanks - 1) * 4.75) - t * 9.5);
                 const { facingLeft, rot } = vehicleTiltDeg(pt.ux, pt.uy);
                 pushUnit(pt.lat, pt.lon, `st-tank-${solKey}${facingLeft ? "-l" : ""}`, "truck", rot);
             }
@@ -5404,13 +5410,15 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
             const rd = cachedRoadDirection(lat, lon);
             const nx = -rd.uy, ny = rd.ux;
             const { facingLeft, rot } = vehicleTiltDeg(rd.ux, rd.uy);
+            // Ved siden af soldaterne til fods; er alle inde i kampvognene, står de på gruppens plads.
+            const side = footCount > 0 || trucks > 0 ? 4.6 : 0;
             for (let t = 0; t < tanks; t++) {
                 const along = shiftMeters + (t - (tanks - 1) * 0.5) * 9.5;
-                let tLat = lat + (rd.uy * along - ny * 4.6) * invLat;
-                let tLon = lon + (rd.ux * along - nx * 4.6) * invLon;
-                if (pointInsideMapBuilding(tLat, tLon, 0.9)) {
-                    tLat = lat + (rd.uy * along + ny * 4.6) * invLat;
-                    tLon = lon + (rd.ux * along + nx * 4.6) * invLon;
+                let tLat = lat + (rd.uy * along - ny * side) * invLat;
+                let tLon = lon + (rd.ux * along - nx * side) * invLon;
+                if (side > 0 && pointInsideMapBuilding(tLat, tLon, 0.9)) {
+                    tLat = lat + (rd.uy * along + ny * side) * invLat;
+                    tLon = lon + (rd.ux * along + nx * side) * invLon;
                 }
                 pushUnit(tLat, tLon, `st-tank-${solKey}${facingLeft ? "-l" : ""}`, "truck", rot);
             }
@@ -5522,7 +5530,9 @@ async function renderTroopsOnMap() {
         const truck = truckCount(group) > 0;
         const hasHowitzer = (group.howitzers || 0) > 0;
         const hasMortar = mortarBadgeState(group, style);
-        const hasTank = tankCount(group) > 0;
+        // "only": alle soldater er mandskab i kampvognene, så kun kampvognen vises.
+        const hasTank = tankCount(group) > 0
+            ? (group.count - usableTanks(group) * gearCrew().tank <= 0 ? "only" : true) : false;
         await ensureTroopBadge(group.count, style, pct, status, truck, facingLeft, hasHowitzer, medic, hasMortar, hasTank);
         troopFeatures.push({
             type: "Feature",
