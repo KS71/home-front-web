@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 152;
+const APP_VERSION = 153;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -316,14 +316,21 @@ function marchFromRow(row) {
 
 async function loadArmy() {
     if (!state.user) return;
-    const [mRes, gRes, pRes] = await Promise.all([
+    const [mRes, gRes, pRes, gearRes] = await Promise.all([
         // "*", så siden også virker, før databasen har fået kolonnen wounded (0011).
         sb.from("marches").select("*"),
         sb.from("garrisons").select("*"),
-        sb.from("parked_trucks").select("*")
+        sb.from("parked_trucks").select("*"),
+        // Kampvogne, panserværn og droner (0059). Fejler stille, før tabellen findes.
+        sb.from("group_gear").select("*")
     ]);
-    if (mRes.data) state.marches = mRes.data.map(marchFromRow);
-    if (gRes.data) state.garrisons = gRes.data;
+    const gear = new Map((gearRes.data || []).map(x => [`${x.place}:${x.group_id}`, x]));
+    const withGear = (place, row) => {
+        const x = gear.get(`${place}:${row.id}`);
+        return { ...row, tanks: x?.tanks || [], at: x?.at || 0, drones: x?.drones || 0 };
+    };
+    if (mRes.data) state.marches = mRes.data.map(marchFromRow).map(m => withGear("march", m));
+    if (gRes.data) state.garrisons = gRes.data.map(g => withGear("garrison", g));
     if (pRes.data) state.parkedTrucks = pRes.data;
     await loadNamedSoldiers();
     renderGroupModal();
@@ -3187,14 +3194,14 @@ const computerImgPromise = new Promise((resolve) => {
 
 // style: "own" (dine), "enemy" (andre spillere) eller "npc" (computerstyret patrulje).
 // status for egne: "guard" (grøn), "patrol" (blå), "march" (orange), "combat" (rød hvis i/har været i kamp).
-function troopBadgeId(count, style = "own", pct = 100, status = "guard", truck = false, facingLeft = false, hasHowitzer = false, medic = false, mortar = false) {
+function troopBadgeId(count, style = "own", pct = 100, status = "guard", truck = false, facingLeft = false, hasHowitzer = false, medic = false, mortar = false, tank = false) {
     const bucket = pct >= 100 ? "100" : pct < 40 ? `red-${Math.ceil(pct / 10)}` : `orange-${Math.ceil(pct / 10)}`;
     const truckSuffix = truck ? (hasHowitzer ? (facingLeft ? "-truck-h-left" : "-truck-h") : (facingLeft ? "-truck-left" : "-truck")) : (hasHowitzer ? "-gun" : "");
-    return `img-${style}-${status}-${count}-${bucket}${truckSuffix}${medic ? "-med" : ""}${mortar ? "-mor-" + mortar : ""}`;
+    return `img-${style}-${status}-${count}-${bucket}${truckSuffix}${medic ? "-med" : ""}${mortar ? "-mor-" + mortar : ""}${tank ? "-tank" : ""}`;
 }
 
-async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard", truck = false, facingLeft = false, hasHowitzer = false, medic = false, mortar = false) {
-    const imgId = troopBadgeId(count, style, pct, status, truck, facingLeft, hasHowitzer, medic, mortar);
+async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard", truck = false, facingLeft = false, hasHowitzer = false, medic = false, mortar = false, tank = false) {
+    const imgId = troopBadgeId(count, style, pct, status, truck, facingLeft, hasHowitzer, medic, mortar, tank);
     if (!mapReady || registeredTroopBadges.has(imgId)) return;
     registeredTroopBadges.add(imgId);
     await soldierImgPromise;
@@ -3218,6 +3225,11 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
     // Haubitsen står til venstre for soldaten; soldaten står stadig midt på sin position.
     const gw = gunImg ? gunImg.width : 0;
     const gh = gunImg ? gunImg.height : 0;
+    // Kampvognen står til højre for soldaten (0059).
+    const tankImg = !truck && tank ? tankCanvas(style) : null;
+    const tw = tankImg ? tankImg.width : 0;
+    const th = tankImg ? tankImg.height : 0;
+    const sideW = Math.max(gw, tw);
     const text = String(count);
 
     const canvas = document.createElement("canvas");
@@ -3226,8 +3238,8 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
     const badgeW = Math.max(34, text.length * 10 + 16 + crossW + mortarW);
     const badgeH = 22;
     const barH = 5;
-    canvas.width = Math.max(sw, badgeW) + 8 + (gunImg ? 2 * (gw + 4) : 0);
-    canvas.height = Math.max(sh, gh) + badgeH + barH + 8;
+    canvas.width = Math.max(sw, badgeW) + 8 + (sideW ? 2 * (sideW + 4) : 0);
+    canvas.height = Math.max(sh, gh, th) + badgeH + barH + 8;
 
     const ctx = canvas.getContext("2d");
     ctx.imageSmoothingEnabled = !truck;
@@ -3283,9 +3295,11 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
         ctx.drawImage(soldierImg, sx, badgeH + barH + 6, sw, sh);
         ctx.restore();
     } else {
-        const top = badgeH + barH + 6 + Math.max(0, gh - sh);
+        const tall = Math.max(sh, gh, th);
+        const top = badgeH + barH + 6 + (tall - sh);
         ctx.drawImage(soldierImg, sx, top, sw, sh);
-        if (gunImg) ctx.drawImage(gunImg, sx - gw - 4, badgeH + barH + 6 + Math.max(0, sh - gh), gw, gh);
+        if (gunImg) ctx.drawImage(gunImg, sx - gw - 4, badgeH + barH + 6 + (tall - gh), gw, gh);
+        if (tankImg) ctx.drawImage(tankImg, sx + sw + 4, badgeH + barH + 6 + (tall - th), tw, th);
     }
 
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -4998,6 +5012,8 @@ async function ensureStreetUnitSprites(style = "own") {
     addShadowedSprite("st-parked-h", truckHowitzerImg, 2, false, 0.88);
     addShadowedSprite("st-howitzer", howitzerImg, 1, false);
     addShadowedSprite("st-howitzer-l", howitzerImg, 1, true);
+    addShadowedSprite(`st-tank-${solKey}`, tankCanvas(style, false), 1.45, false);
+    addShadowedSprite(`st-tank-${solKey}-l`, tankCanvas(style, true), 1.45, false);
 }
 
 function streetBadgeId(count, strokeColor, pct, tag = "", medic = false, mortar = false) {
@@ -5375,11 +5391,37 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
         }
     }
 
+    // Kampvogne (0059): foran kolonnen på march, ellers på række langs gaden ved siden af gruppen.
+    const tanks = Math.min(tankCount(group), 4);
+    if (tanks > 0) {
+        if (isMoving) {
+            for (let t = 0; t < tanks; t++) {
+                const pt = pointAlongMarchByMeters(marchObj, now, 9 + t * 9.5);
+                const { facingLeft, rot } = vehicleTiltDeg(pt.ux, pt.uy);
+                pushUnit(pt.lat, pt.lon, `st-tank-${solKey}${facingLeft ? "-l" : ""}`, "truck", rot);
+            }
+        } else {
+            const rd = cachedRoadDirection(lat, lon);
+            const nx = -rd.uy, ny = rd.ux;
+            const { facingLeft, rot } = vehicleTiltDeg(rd.ux, rd.uy);
+            for (let t = 0; t < tanks; t++) {
+                const along = shiftMeters + (t - (tanks - 1) * 0.5) * 9.5;
+                let tLat = lat + (rd.uy * along - ny * 4.6) * invLat;
+                let tLon = lon + (rd.ux * along - nx * 4.6) * invLon;
+                if (pointInsideMapBuilding(tLat, tLon, 0.9)) {
+                    tLat = lat + (rd.uy * along + ny * 4.6) * invLat;
+                    tLon = lon + (rd.ux * along + nx * 4.6) * invLon;
+                }
+                pushUnit(tLat, tLon, `st-tank-${solKey}${facingLeft ? "-l" : ""}`, "truck", rot);
+            }
+        }
+    }
+
     activeStreetFormations.set(groupKey, positions);
 
     const stroke = troopStatusStrokeColor(style, status);
     const pct = energyPct(group);
-    const tag = trucks > 0 ? `${trucks}L` : (howitzers > 0 ? `${howitzers}H` : "");
+    const tag = [trucks > 0 ? `${trucks}L` : (howitzers > 0 ? `${howitzers}H` : ""), tankCount(group) > 0 ? `${tankCount(group)}K` : ""].filter(Boolean).join("+");
     const badgeImg = ensureStreetBadge(group.count, stroke, pct, tag, medic, mortarBadgeState(group, style));
     const labelLat = lat + (shiftMeters ? (nearestRoadDirection(lat, lon).uy * shiftMeters) * invLat : 0);
     const labelLon = lon + (shiftMeters ? (nearestRoadDirection(lat, lon).ux * shiftMeters) * invLon : 0);
@@ -5480,10 +5522,11 @@ async function renderTroopsOnMap() {
         const truck = truckCount(group) > 0;
         const hasHowitzer = (group.howitzers || 0) > 0;
         const hasMortar = mortarBadgeState(group, style);
-        await ensureTroopBadge(group.count, style, pct, status, truck, facingLeft, hasHowitzer, medic, hasMortar);
+        const hasTank = tankCount(group) > 0;
+        await ensureTroopBadge(group.count, style, pct, status, truck, facingLeft, hasHowitzer, medic, hasMortar, hasTank);
         troopFeatures.push({
             type: "Feature",
-            properties: { img: troopBadgeId(group.count, style, pct, status, truck, facingLeft, hasHowitzer, medic, hasMortar), off: [shiftX, 0] },
+            properties: { img: troopBadgeId(group.count, style, pct, status, truck, facingLeft, hasHowitzer, medic, hasMortar, hasTank), off: [shiftX, 0] },
             geometry: { type: "Point", coordinates: [lon, lat] }
         });
 
@@ -5688,6 +5731,7 @@ function npcGear(n) {
     if (t) parts.push(`🚚 ${t} ${t === 1 ? "lastbil" : "lastbiler"}`);
     if (m) parts.push(`💣 ${m} ${m === 1 ? "morter" : "morterer"}`);
     if (h) parts.push(`💥 ${h} ${h === 1 ? "haubits" : "haubitser"}`);
+    if (tankCount(n) || atCount(n)) parts.push(gearWords(n));
     return parts.join(" · ");
 }
 
@@ -5998,6 +6042,9 @@ async function syncAllFromSupabase() {
         state.trucksHome = mapMat.trucks || 0;
         state.howitzersHome = mapMat.howitzers || 0;
         state.howitzerShells = mapMat.howitzer_shells || 0;
+        state.tanksHome = mapMat.tanks || 0;
+        state.atHome = mapMat.at_launchers || 0;
+        state.dronesHome = mapMat.drones || 0;
     }
     if (myBldRes.data) {
         state.myBuildings = myBldRes.data;
@@ -6914,7 +6961,7 @@ function renderTroopsSidebar() {
                 <div class="item-row-top">
                     <img src="assets/tropper.png" class="pixel-img item-sprite" />
                     <div class="item-info">
-                        <div class="item-title ${isPatrol ? "item-title-blue" : "item-title-orange"}">${m.count} soldater ${isPatrol ? "på patrulje" : "på march"}${mortarTag(m)}${howitzerTag(m)}${truckTag(m)}</div>
+                        <div class="item-title ${isPatrol ? "item-title-blue" : "item-title-orange"}">${m.count} soldater ${isPatrol ? "på patrulje" : "på march"}${mortarTag(m)}${howitzerTag(m)}${truckTag(m)}${gearTag(m)}</div>
                         <div class="item-sub march-eta-text">${marchEtaText(m, now)}</div>
                         <div class="item-sub">${energyText(m)}</div>
                     </div>
@@ -6942,7 +6989,7 @@ function renderTroopsSidebar() {
                 <div class="item-row-top">
                     <img src="assets/tropper.png" class="pixel-img item-sprite" />
                     <div class="item-info">
-                        <div class="item-title item-title-green">${g.count} soldater på vagt${mortarTag(g)}${howitzerTag(g)}${truckTag(g)}${digInTag(g)}</div>
+                        <div class="item-title item-title-green">${g.count} soldater på vagt${mortarTag(g)}${howitzerTag(g)}${truckTag(g)}${gearTag(g)}${digInTag(g)}</div>
                         <div class="item-sub">${where}</div>
                         <div class="item-sub">${energyText(g)}</div>
                     </div>
@@ -7029,9 +7076,31 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
             <div id="howitzer-shell-val-label" class="mortar-pick-label"></div>
             <input type="range" min="0" max="0" value="0" class="range-slider" id="howitzer-shell-range-input" />
         </div>
+        <div id="gear-pick" class="mortar-pick hidden">${gearSlidersHtml()}</div>
     `;
     const slider = document.getElementById("soldier-range-input");
     const label = document.getElementById("slider-val-label");
+
+    // Kampvogne, panserværn og drone (0059). Fra barrakken vælges de på skydere og sættes på delingen,
+    // når den er sendt. Fra en vagtstyrke følger de med, hvis hele vagtstyrken går, ellers bliver de.
+    const gearGarrison = from.type === "garrison" ? state.garrisons.find(x => String(x.id) === String(from.id)) : null;
+    let gearPickW = null;
+    if (gearEnabled() && !gearGarrison && from.type === "building" && gearStockTotal() > 0) {
+        document.getElementById("gear-pick").classList.remove("hidden");
+        gearPickW = wireGearSliders(() => parseInt(slider.value, 10) || 1, { t: 0, a: 0, d: 0 });
+        slider.addEventListener("input", () => gearPickW.update());
+    } else if (gearGarrison && tankCount(gearGarrison) + atCount(gearGarrison) + droneCount(gearGarrison) > 0) {
+        const box = document.getElementById("gear-pick");
+        box.classList.remove("hidden");
+        const say = () => {
+            const all = (parseInt(slider.value, 10) || 1) >= gearGarrison.count;
+            box.innerHTML = `<p class="muted-hint">${gearWords(gearGarrison)}: ${all
+                ? "hele vagtstyrken går, så det følger med."
+                : "kun en del af vagtstyrken går, så det bliver stående hos vagten. Send hele vagtstyrken for at tage det med."}</p>`;
+        };
+        slider.addEventListener("input", say);
+        say();
+    }
 
     // Morterer, der kan gå med: fra barrakkens lager eller vagtstyrkens egne. Hver morter kræver
     // MORTAR.crew soldater. Går hele vagtstyrken, går alle dens morterer med.
@@ -7164,7 +7233,7 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
         const howitzers = parseInt(hSlider.value, 10) || 0;
         const howitzer_shells = howitzers > 0 ? (parseInt(hsSlider.value, 10) || 0) : 0;
         closeModal();
-        const order = { from, count: chosen, mortars, shells, trucks, howitzers, howitzer_shells };
+        const order = { from, count: chosen, mortars, shells, trucks, howitzers, howitzer_shells, gear: gearPickW ? gearPickW.values() : null };
         if (target) openConfirmMarchModal(order, target);
         else enterMarchTargetMode(order);
     };
@@ -7336,6 +7405,7 @@ async function openConfirmMarchModal(order, target) {
         <p><strong>Afstand langs land/kyst:</strong> ca. ${formatDistance(distM)}</p>
         <p><strong>Rejsetid:</strong> ${formatSeconds(durationSec)}</p>
         ${truckInfo}
+        ${gearOrderLine(order)}
         <p style="color:#90A4AE;font-size:13px;">Er du sikker på, at du vil sende soldaterne hertil?</p>
     `;
     document.getElementById("modal-actions").innerHTML = `
@@ -7352,13 +7422,13 @@ async function openConfirmMarchModal(order, target) {
 }
 
 async function executeMarchOrder(order, target, landPath, loopPath = null) {
-    let error;
+    let error, started = null;
     if (order.patrol && order.redirectMarchId) {
         const m = findMarch(order.redirectMarchId);
         const path = m ? [marchCurrentPos(m, serverNow()), ...landPath.slice(1)] : landPath;
         ({ error } = await sb.rpc("redirect_patrol", { p_march: order.redirectMarchId, p_path: path, p_loop: loopPath }));
     } else if (order.patrol) {
-        ({ error } = await sb.rpc("start_patrol", {
+        ({ data: started, error } = await sb.rpc("start_patrol", {
             p_from_building: order.from.type === "building" ? order.from.id : null,
             p_from_garrison: order.from.type === "garrison" ? order.from.id : null,
             p_count: order.count, p_path: landPath, p_loop: loopPath,
@@ -7383,7 +7453,7 @@ async function executeMarchOrder(order, target, landPath, loopPath = null) {
             p_from_garrison: order.from.id, p_to_lat: target.lat, p_to_lon: target.lon, p_path: landPath
         }));
     } else {
-        ({ error } = await sb.rpc("start_march", {
+        ({ data: started, error } = await sb.rpc("start_march", {
             p_from_building: order.from.type === "building" ? order.from.id : null,
             p_from_garrison: order.from.type === "garrison" ? order.from.id : null,
             p_to_lat: target.lat, p_to_lon: target.lon,
@@ -7399,8 +7469,9 @@ async function executeMarchOrder(order, target, landPath, loopPath = null) {
         showToast("Kunne ikke sende soldaterne: " + error.message);
         return;
     }
+    await equipNewMarch(order, started);
     await loadArmy();
-    if ((order.mortars > 0 || order.trucks > 0 || order.howitzers > 0) && order.from.type === "building") await syncAllFromSupabase();
+    if ((order.mortars > 0 || order.trucks > 0 || order.howitzers > 0 || order.gear) && order.from.type === "building") await syncAllFromSupabase();
     showToast(order.patrol
         ? `🔁 ${order.count} soldater går nu patrulje mellem ${order.waypoints.length} punkter!`
         : order.redirectMarchId
@@ -7655,6 +7726,7 @@ function renderGroupModal() {
             ${mortarLineHtml(gm.kind, g)}
             ${howitzerLineHtml(gm.kind, g)}
             ${truckLineHtml(gm.kind, g)}
+            ${gearLineHtml(gm.kind, g)}
             ${bar}
             ${soldierTilesHtml(g)}`;
         actions.innerHTML = gm.kind === "march" ? `
@@ -7673,6 +7745,7 @@ function renderGroupModal() {
             ${state.parkedTrucks.filter(p => garrisonsByParked(p).some(x => x.id === g.id)).map(p => `<button class="btn btn-primary" onclick="closeModal(); boardTrucks(${p.id}, ${g.id})">🚚 Stig på ${p.trucks.length === 1 ? "lastbilen" : `${p.trucks.length} lastbiler`}</button>`).join("")}
             ${hurt ? `<button class="btn btn-primary" onclick="closeModal(); sendWoundedToHospital(${g.id})">🏥 Send ${hurt} ${hurt === 1 ? "såret" : "sårede"} til hospitalet</button>` : ""}
             ${resupplyButtonHtml(g, "btn btn-gold", false, true)}
+            ${equipButtonHtml(g)}
             <button class="btn btn-danger" onclick="closeModal(); sendGarrisonHome(${g.id})">🏠 Send hjem</button>
             <button class="btn" onclick="closeModal()">Luk</button>`;
         return;
@@ -7697,7 +7770,7 @@ function renderGroupModal() {
     body.innerHTML = `
         <p class="muted-hint">${gm.kind === "npc"
             ? (g.fighting ? `💥 I kamp med dine soldater lige nu.${npcGear(g) ? ` ${npcGear(g)}.` : ""}` : npcAbout(g))
-            : `${isBlockedInRifleRangeOfOwn(lat, lon) ? "🧱 Inden for skudafstand, men en bygning dækker skudlinjen (ryk rundt om hjørnet eller brug morter). " : ""}En anden spillers soldater.${truckCount(g) ? ` 🚚 ${truckCount(g)} ${truckCount(g) === 1 ? "lastbil" : "lastbiler"}${g.driving ? ", kører" : ""}.` : ""} Dine soldater skyder automatisk, når de har frit skud.`} Du kan ikke se den enkelte fjendes energi, kun gruppens samlede.</p>
+            : `${isBlockedInRifleRangeOfOwn(lat, lon) ? "🧱 Inden for skudafstand, men en bygning dækker skudlinjen (ryk rundt om hjørnet eller brug morter). " : ""}En anden spillers soldater.${truckCount(g) ? ` 🚚 ${truckCount(g)} ${truckCount(g) === 1 ? "lastbil" : "lastbiler"}${g.driving ? ", kører" : ""}.` : ""}${tankCount(g) ? ` ${gearWords(g)}: geværild preller delvist af; brug panserværn eller haubits.` : ""} Dine soldater skyder automatisk, når de har frit skud.`} Du kan ikke se den enkelte fjendes energi, kun gruppens samlede.</p>
         ${bar}`;
     actions.innerHTML = `
         <button class="btn" onclick="closeModal(); jumpToPoint(${lat}, ${lon})">🎯 Hop til</button>
@@ -8116,11 +8189,16 @@ const EQUIPMENT_ITEMS = [
     ["mortar_shells", "💣 Køb granater"],
     ["trucks", "🚚 Køb lastbil"],
     ["howitzers", "💥 Køb haubits"],
-    ["howitzer_shells", "🎯 Køb haubitsgranater"]
+    ["howitzer_shells", "🎯 Køb haubitsgranater"],
+    ["at_launchers", "🚀 Køb panserværn"],
+    ["drones", "🛸 Køb drone"],
+    ["tanks", "🛡️ Køb kampvogn"]
 ];
+const GEAR_ITEMS = ["tanks", "at_launchers", "drones"];
 const EQUIPMENT_NAMES = {
     mortars: "morter", mortar_shells: "mortergranater", trucks: "lastbil",
-    howitzers: "haubits", howitzer_shells: "haubitsgranater"
+    howitzers: "haubits", howitzer_shells: "haubitsgranater",
+    tanks: "kampvogn", at_launchers: "panserværn", drones: "drone"
 };
 
 function factoryEnabled() {
@@ -8148,6 +8226,7 @@ function discounted(n) {
 }
 
 function equipmentAvailable(item) {
+    if (GEAR_ITEMS.includes(item)) return gearEnabled() && factoryEnabled();
     if (!factoryEnabled()) return item.startsWith("howitzer") ? GAME_CONFIG.HOWITZER.enabled : true;
     if (item.startsWith("howitzer") && !GAME_CONFIG.HOWITZER.enabled) return false;
     return true;
@@ -8172,7 +8251,8 @@ function nearestOwnBarracks(lat, lon) {
 // Lageret i barrakken: morterer, granater, lastbiler og haubitser.
 function stockLinesHtml() {
     return `<div class="item-sub" style="color:#FFB74D">🧨 Morterer på lager: ${state.mortarsHome} · 💣 Granater: ${state.shells} · 🚚 Lastbiler: ${state.trucksHome}</div>
-        ${GAME_CONFIG.HOWITZER.enabled ? `<div class="item-sub" style="color:#FFB74D">💥 Haubitser: ${state.howitzersHome} · 🎯 Haubitsgranater: ${state.howitzerShells}</div>` : ""}`;
+        ${GAME_CONFIG.HOWITZER.enabled ? `<div class="item-sub" style="color:#FFB74D">💥 Haubitser: ${state.howitzersHome} · 🎯 Haubitsgranater: ${state.howitzerShells}</div>` : ""}
+        ${gearEnabled() ? `<div class="item-sub" style="color:#FFB74D">🛡️ Kampvogne: ${state.tanksHome || 0} · 🚀 Panserværn: ${state.atHome || 0} · 🛸 Droner: ${state.dronesHome || 0}</div>` : ""}`;
 }
 
 function factoryLineText(bld) {
@@ -8197,6 +8277,21 @@ function equipmentInfo(item) {
         title: "🧨 Køb let morter", img: "morter", steps: M.priceSteps, steel: M.priceSteel, max: 10,
         one: "morter", many: "morterer", done: n => `🧨 ${n} ${n === 1 ? "morter" : "morterer"} står nu i barrakken.`,
         desc: `En let morter, som soldaterne bærer med. Den kan skyde op til <strong>${formatDistance(M.rangeM)}</strong>, når soldaterne står vagt, og kræver ${M.crew} soldater. Den står på lager i barrakken, til du sender den ud med soldater.`
+    };
+    if (item === "tanks") return {
+        title: "🛡️ Køb kampvogn", imgSrc: tankImageUrl(), steps: codexRule("tank_price_steps", 1500), steel: codexRule("tank_price_steel", 600), max: 10,
+        one: "kampvogn", many: "kampvogne", done: n => `🛡️ ${n} ${n === 1 ? "kampvogn står" : "kampvogne står"} nu ved barrakken.`,
+        desc: `En kampvogn følger en gruppe soldater. Den skyder som <strong>${fmtNum(codexRule("tank_fire_power", 8))} soldater</strong>, og fjendens geværild preller delvist af på panseret. Kræver ${fmtNum(codexRule("tank_crew", 3))} soldater. Granater og panserværn kan ødelægge den.`
+    };
+    if (item === "at_launchers") return {
+        title: "🚀 Køb panserværn", img: "panservaern", steps: codexRule("at_price_steps", 500), steel: codexRule("at_price_steel", 80), max: 20,
+        one: "panserværnsvåben", many: "panserværnsvåben", done: n => `🚀 ${n} panserværnsvåben ligger nu på lager.`,
+        desc: `Et skulderbåret panserværnsvåben. Hvert våben skyder på fjendens kampvogne i hver skudrunde (${fmtPct(codexRule("at_hit_chance", 0.35))} chance for træf). Kræver ${fmtNum(codexRule("at_crew", 2))} skytter, som ikke skyder med gevær.`
+    };
+    if (item === "drones") return {
+        title: "🛸 Køb drone", img: "spejder", steps: codexRule("drone_price_steps", 400), steel: codexRule("drone_price_steel", 40), max: 10,
+        one: "drone", many: "droner", done: n => `🛸 ${n} ${n === 1 ? "drone" : "droner"} ligger nu på lager.`,
+        desc: `En spejderdrone til en gruppe soldater. Gruppen ser <strong>${formatDistance(codexRule("drone_vision_m", 1000))}</strong> i stedet for ${formatDistance(GAME_CONFIG.SOLDIER_VISION_M)}. Én drone pr. gruppe er nok.`
     };
     const H = GAME_CONFIG.HOWITZER;
     if (item === "howitzers") return {
@@ -8232,7 +8327,7 @@ window.openBuyEquipmentModal = function(item) {
     document.getElementById("modal-title").textContent = E.title;
     document.getElementById("modal-body").innerHTML = `
         <div class="item-row-top" style="margin-bottom:8px;">
-            <img src="assets/${E.img}.png" class="pixel-img item-sprite" />
+            <img src="${E.imgSrc || `assets/${E.img}.png`}" class="pixel-img item-sprite" />
             <p class="muted-hint" style="margin:0;">${E.desc}</p>
         </div>
         <p>Pris pr. stk.: <strong>${steps} skridt + ${steel} stål</strong>${disc > 0 ? ` (${Math.round(disc * 100)} % rabat fra våbenfabrikken)` : ""}. Du har ${state.balance.toLocaleString("da-DK")} skridt og ${state.steel.toLocaleString("da-DK")} stål.</p>
@@ -8855,6 +8950,8 @@ const REPORT_TEXT = {
     flag_lost:  r => `🏳️ Du har mistet flaget ${r.note || ""}.`,
     town_taken: r => `🏙️ ${r.note || "En by"} er nu under din kontrol!`,
     town_lost:  r => `💔 Du har mistet kontrollen over ${r.note || "en by"}.`,
+    tank_lost:   r => `💥 ${r.count === 1 ? "En af dine kampvogne er" : `${r.count} af dine kampvogne er`} ødelagt${r.survivors > 0 ? ` (${r.survivors} tilbage i gruppen)` : ""}.`,
+    tank_killed: r => `🎯 Dine panserværnsskytter har ødelagt ${r.count === 1 ? "en fjendtlig kampvogn" : `${r.count} fjendtlige kampvogne`}${r.note ? ` (${r.note})` : ""}.`,
     flag_attacked:  r => `🚨 Dit flag ${r.note || ""} er ved at blive taget! Send soldater derhen.`,
     counter_attack: r => `🚨 Modangreb! ${r.count} soldater er på vej mod ${r.note || "din by"} og er fremme om ca. ${formatMinutes(r.survivors)}.`,
     shelled: r => r.survivors <= 0
@@ -9050,7 +9147,7 @@ async function loadReports() {
     // Kamp mod patruljer ændrer antallet af soldater; hjemkomne sårede lægges på hospitalet.
     if (data.some(r => r.kind !== "returned" && r.kind !== "arrived" && r.kind !== "stopped")) loadBattles();
     if (data.some(r => r.kind.startsWith("flag_") || r.kind.startsWith("town_"))) pollFlagStates();
-    if (data.some(r => r.kind.startsWith("patrol_") || r.kind.startsWith("truck_") || r.kind === "returned" || r.kind === "shelled" || r.kind === "stopped")) {
+    if (data.some(r => r.kind.startsWith("patrol_") || r.kind.startsWith("truck_") || r.kind.startsWith("tank_") || r.kind === "returned" || r.kind === "shelled" || r.kind === "stopped")) {
         await loadArmy();
         await syncAllFromSupabase();
     }
@@ -9713,6 +9810,7 @@ const RULE_GROUPS = [
     ["mortar", "Let morter"],
     ["howitzer", "Haubits"],
     ["truck", "Lastbil"],
+    ["armor", "Kampvogn, panserværn og drone"],
     ["mapfire", "Brændende bygninger på kortet"],
     ["npc", "Fjendtlige patruljer"],
     ["sweden", "Den svenske hær (invasion)"],
@@ -9791,6 +9889,29 @@ const RULE_INFO = {
     truck_hit_share:            ["truck", "Andel af træfferne, der rammer en lastbil (0,4 = 40 %)", "0–1"],
     truck_wreck_hours:          ["truck", "Så længe et udbrændt vrag kan ses", "timer"],
     truck_board_m:              ["truck", "Så tæt skal soldater stå på tomme lastbiler for at stige på", "m"],
+    tank_price_steps:           ["armor", "Kampvogn: pris", "skridt"],
+    tank_price_steel:           ["armor", "Kampvogn: pris", "stål"],
+    tank_crew:                  ["armor", "Kampvogn: soldater pr. kampvogn", "stk."],
+    tank_hp:                    ["armor", "Kampvogn: energi", "energi"],
+    tank_fire_power:            ["armor", "Kampvogn: skyder som så mange soldater", "soldater"],
+    tank_shield:                ["armor", "Kampvogn: dækker så mange soldater mod geværild", "soldater"],
+    tank_hit_share:             ["armor", "Kampvogn: højst så stor en del af træfferne rammer panseret (0,6 = 60 %)", "0–1"],
+    tank_mortar_damage:         ["armor", "Kampvogn: energi, en mortergranat koster", "energi"],
+    tank_howitzer_damage:       ["armor", "Kampvogn: energi, en haubitsgranat koster", "energi"],
+    at_price_steps:             ["armor", "Panserværn: pris", "skridt"],
+    at_price_steel:             ["armor", "Panserværn: pris", "stål"],
+    at_crew:                    ["armor", "Panserværn: skytter pr. våben (de skyder ikke med gevær)", "stk."],
+    at_hit_chance:              ["armor", "Panserværn: chance for at ramme en kampvogn pr. skudrunde (0,35 = 35 %)", "0–1"],
+    at_damage:                  ["armor", "Panserværn: energi, et træf koster kampvognen", "energi"],
+    drone_price_steps:          ["armor", "Drone: pris", "skridt"],
+    drone_price_steel:          ["armor", "Drone: pris", "stål"],
+    drone_vision_m:             ["armor", "Drone: så langt ser en gruppe med drone", "m"],
+    city_npc_tanks_storby:      ["city", "Kampvogne ved bymidten i en storby (gælder, når byen bemandes)", "stk."],
+    city_npc_tanks_by:          ["city", "Kampvogne ved bymidten i en by", "stk."],
+    city_npc_at_storby:         ["city", "Panserværnsvåben ved bymidten i en storby", "stk."],
+    city_npc_at_by:             ["city", "Panserværnsvåben ved bymidten i en by", "stk."],
+    sweden_motor_tanks:         ["sweden", "Motoriseret kompagni: kampvogne", "stk."],
+    sweden_infantry_at:         ["sweden", "Infanterikompagni: panserværnsvåben", "stk."],
     map_fire_chance:            ["mapfire", "Chance for at en mortergranat sætter kortets bygning i brand (0,3 = 30 %)", "0–1"],
     map_fire_hours:             ["mapfire", "Så længe bygningen brænder", "timer"],
     map_ruin_hours:             ["mapfire", "Så længe den udbrændte ruin kan ses bagefter (168 = en uge)", "timer"],
@@ -9904,7 +10025,8 @@ const RULE_SUBLABELS = {
     per_hour: "pr. time", capacity: "lager", material: "materiale",
     soldiers: "soldater", steel: "stål",
     mortars: "morter", mortar_shells: "mortergranater", trucks: "lastbil",
-    howitzers: "haubits", howitzer_shells: "haubitsgranater"
+    howitzers: "haubits", howitzer_shells: "haubitsgranater",
+    tanks: "kampvogn", at_launchers: "panserværn", drones: "drone"
 };
 
 let adminRules = null;   // reglerne, som de så ud, da fanen blev åbnet
@@ -10561,7 +10683,7 @@ function codexVehiclesHtml() {
     const T = GAME_CONFIG.TRUCK;
     return `
         <details class="codex-section">
-            <summary><span class="codex-sum-title">🚚 Køretøjer</span><span class="codex-sum-sub">lastbil til troppetransport</span></summary>
+            <summary><span class="codex-sum-title">🚚 Køretøjer og udstyr</span><span class="codex-sum-sub">lastbil, kampvogn, panserværn og drone</span></summary>
             <div class="codex-grid codex-grid-3">
                 <div class="codex-card">
                     <div class="codex-card-head"><h3>Lastbil</h3><span class="badge">${buyWhere("trucks")}</span></div>
@@ -10581,7 +10703,7 @@ function codexVehiclesHtml() {
                     <div class="codex-card-head"><h3>Udbrændt lastbil</h3><span class="badge">vrag</span></div>
                     <div class="codex-weapon-img"><img src="assets/lastbil_vrag.png" class="pixel-img" alt="" /></div>
                     <p class="muted-hint">Sådan ser en lastbil ud, når den er skudt i brand. Vraget kan ses af alle i ${fmtNum(T.wreckHours)} timer.</p>
-                </div>
+                </div>${codexGearCardsHtml()}
             </div>
         </details>`;
 }
@@ -11557,7 +11679,7 @@ function updateRankButton() {
 
 // ---------------------------------------------------------------- alarm: besked uden for fanen
 // Rapporter, der er vigtige nok til en besked fra computeren, når fanen ikke er fremme.
-const ALERT_KINDS = new Set(["flag_attacked", "counter_attack", "flag_lost", "town_lost", "lost",
+const ALERT_KINDS = new Set(["flag_attacked", "counter_attack", "flag_lost", "town_lost", "lost", "tank_lost",
     "patrol_won", "skirmish_lost", "shelled", "engaged"]);
 // Rapporter, der ændrer point og statistik.
 const SCORE_KINDS = new Set(["flag_taken", "flag_lost", "town_taken", "town_lost", "patrol_defeated",
@@ -11882,6 +12004,281 @@ window.claimOrder = async function(key) {
 };
 setInterval(loadDailyOrders, 60000);
 
+
+// ============================================================================
+// Kampvogn, panserværn og drone (0059_kampvogn_panservaern_drone.sql)
+// Udstyret følger en gruppe soldater ligesom morteren, men ligger i sin egen tabel (group_gear).
+// Egne grupper har g.tanks (energi pr. kampvogn), g.at og g.drones; fjender og allierede kommer
+// med antallet af kampvogne (og computerens styrker også panserværn). Alt afgøres på serveren.
+// Virker uden fejl, før 0059 er kørt (det nye er så skjult).
+// ============================================================================
+function gearEnabled() {
+    return GAME_CONFIG.RULES?.tank_price_steps != null;
+}
+
+function tankCount(g) {
+    return Array.isArray(g?.tanks) ? g.tanks.length : Number(g?.tanks || 0);
+}
+function atCount(g) { return Number(g?.at || 0); }
+function droneCount(g) { return Number(g?.drones || 0); }
+
+function gearCrew() {
+    return { tank: Math.max(1, codexRule("tank_crew", 3)), at: Math.max(1, codexRule("at_crew", 2)) };
+}
+// Kampvogne og panserværnsvåben, der har mandskab nok (samme regler som på serveren).
+function usableTanks(g) {
+    return Math.min(tankCount(g), Math.floor((g.count || 0) / gearCrew().tank));
+}
+function usableAt(g) {
+    const c = gearCrew();
+    return Math.min(atCount(g), Math.floor(Math.max((g.count || 0) - usableTanks(g) * c.tank, 0) / c.at));
+}
+function gearFirePower(g) {
+    return Math.max((g.count || 0) - usableAt(g) * gearCrew().at, 0) + usableTanks(g) * codexRule("tank_fire_power", 8);
+}
+
+// " · 🛡️ 2 · 🚀 1 · 🛸" til listerne.
+function gearTag(g) {
+    const t = tankCount(g), a = atCount(g), d = droneCount(g);
+    return `${t > 0 ? ` · 🛡️ ${t}` : ""}${a > 0 ? ` · 🚀 ${a}` : ""}${d > 0 ? " · 🛸" : ""}`;
+}
+
+// "🛡️ 2 kampvogne · 🚀 1 panserværnsvåben" (til fjender og allierede, hvor kun antallet kendes).
+function gearWords(g) {
+    const parts = [];
+    const t = tankCount(g), a = atCount(g), d = droneCount(g);
+    if (t) parts.push(`🛡️ ${t} ${t === 1 ? "kampvogn" : "kampvogne"}`);
+    if (a) parts.push(`🚀 ${a} panserværnsvåben`);
+    if (d) parts.push(`🛸 ${d === 1 ? "drone" : `${d} droner`}`);
+    return parts.join(" · ");
+}
+
+// Linjer i gruppens popup: kampvognenes energi, panserværn og drone, og hvad det betyder i kamp.
+function gearLineHtml(kind, g) {
+    const t = g.tanks || [];
+    const a = atCount(g), d = droneCount(g);
+    if (!t.length && !a && !d) return "";
+    const c = gearCrew();
+    const hpMax = Math.max(1, codexRule("tank_hp", 600));
+    let html = "";
+    if (t.length) {
+        const use = usableTanks(g);
+        const cards = [...t].sort((x, y) => x - y).map(hp => {
+            const pct = Math.max(0, Math.min(100, Math.round(hp / hpMax * 100)));
+            return `<div class="truck-card" title="${hp} / ${hpMax} energi">
+                <img src="${tankImageUrl()}" class="pixel-img" alt="" />
+                <div class="progress-track"><div class="progress-fill" style="width:${pct}%;background:${energyColor(pct)}"></div></div>
+                <span>${pct} %</span>
+            </div>`;
+        }).join("");
+        const share = Math.min(codexRule("tank_hit_share", 0.6), t.length * codexRule("tank_shield", 8) / Math.max(g.count, 1));
+        html += `<p class="muted-hint">🛡️ ${t.length} ${t.length === 1 ? "kampvogn" : "kampvogne"}${use < t.length ? ` (kun mandskab til ${use}: ${c.tank} soldater pr. kampvogn)` : ""}. ${fmtPct(share)} af geværtræfferne preller af på panseret. Granater og panserværn kan ødelægge dem.</p><div class="truck-list">${cards}</div>`;
+    }
+    if (a) {
+        const use = usableAt(g);
+        html += `<p class="muted-hint">🚀 ${a} panserværnsvåben${use < a ? ` (kun skytter til ${use})` : ""}: skyder på fjendens kampvogne i hver skudrunde. De ${use * c.at} skytter skyder ikke med gevær.</p>`;
+    }
+    if (d) html += `<p class="muted-hint">🛸 Drone: gruppen ser <strong>${formatDistance(codexRule("drone_vision_m", 1000))}</strong> i stedet for ${formatDistance(GAME_CONFIG.SOLDIER_VISION_M)}.</p>`;
+    if (t.length || a) html += `<p class="muted-hint">⚔️ Ildkraft mod soldater: som <strong>${fmtNum(gearFirePower(g))}</strong> soldater.</p>`;
+    return html;
+}
+
+// ---------------------------------------------------------------- tegning af kampvognen
+// Kampvognen tegnes i koden (set fra siden, kanonen mod højre) i gruppens farve.
+const tankCanvasCache = new Map();
+function tankCanvas(style = "own", flipX = false) {
+    const key = `${style}|${flipX ? 1 : 0}`;
+    if (tankCanvasCache.has(key)) return tankCanvasCache.get(key);
+    const pal = soldierPalette(style);
+    const outline = "#252934";
+    const c = document.createElement("canvas");
+    c.width = 58;
+    c.height = 30;
+    const ctx = c.getContext("2d");
+    if (flipX) {
+        ctx.translate(c.width, 0);
+        ctx.scale(-1, 1);
+    }
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = outline;
+    // bælter
+    ctx.fillStyle = "#2b2d33";
+    ctx.beginPath(); ctx.roundRect(3, 18.5, 50, 9.5, 4.7); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#555962";
+    for (let i = 0; i < 6; i++) { ctx.beginPath(); ctx.arc(9 + i * 7.6, 23.3, 2.5, 0, Math.PI * 2); ctx.fill(); }
+    // skrog
+    ctx.fillStyle = pal.u;
+    ctx.beginPath(); ctx.moveTo(5, 19); ctx.lineTo(9, 12); ctx.lineTo(47, 12); ctx.lineTo(53, 19); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = pal.ud;
+    ctx.fillRect(8, 16.2, 43, 2.2);
+    // kanon
+    ctx.fillStyle = pal.ud;
+    ctx.beginPath(); ctx.rect(38, 7.2, 17, 2.8); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.rect(54, 6.5, 2.6, 4.2); ctx.fill(); ctx.stroke();
+    // tårn
+    ctx.fillStyle = pal.h;
+    ctx.beginPath(); ctx.roundRect(19, 4.5, 21, 8.5, 3); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = pal.ud;
+    ctx.fillRect(25, 2.6, 7, 2.2);
+    tankCanvasCache.set(key, c);
+    return c;
+}
+
+let tankUrlCache = null;
+function tankImageUrl() {
+    if (!tankUrlCache) tankUrlCache = tankCanvas("own").toDataURL();
+    return tankUrlCache;
+}
+
+// ---------------------------------------------------------------- udrust en vagtstyrke ved basen
+function gearStockTotal() {
+    return (state.tanksHome || 0) + (state.atHome || 0) + (state.dronesHome || 0);
+}
+
+function nearOwnBase(g) {
+    const reach = codexRule("resupply_reach_m", 25);
+    return state.myBuildings.some(b => (b.kind === "barracks" || b.kind === "weapons_factory") && gapToBuildingM(b, g.lat, g.lon) <= reach);
+}
+
+function equipButtonHtml(g) {
+    if (!gearEnabled() || !g || !(g.count > 0) || !nearOwnBase(g)) return "";
+    if (gearStockTotal() <= 0 && tankCount(g) + atCount(g) + droneCount(g) <= 0) return "";
+    return `<button class="btn btn-gold" onclick="openEquipModal(${g.id})">🛡️ Kampvogne, panserværn og drone</button>`;
+}
+
+// Tre skydere (kampvogne, panserværn, drone) med de grænser, mandskabet og lageret sætter.
+// have = det, gruppen har i forvejen; stock = det, der er på lager.
+function gearSlidersHtml() {
+    return `
+        <div id="tank-val-label" class="mortar-pick-label"></div>
+        <input type="range" min="0" max="0" value="0" class="range-slider" id="tank-range-input" />
+        <div id="at-val-label" class="mortar-pick-label"></div>
+        <input type="range" min="0" max="0" value="0" class="range-slider" id="at-range-input" />
+        <div id="drone-val-label" class="mortar-pick-label"></div>
+        <input type="range" min="0" max="0" value="0" class="range-slider" id="drone-range-input" />
+        <p id="gear-pick-hint" class="muted-hint"></p>`;
+}
+
+function wireGearSliders(getCount, have, start = null) {
+    const tk = document.getElementById("tank-range-input");
+    const at = document.getElementById("at-range-input");
+    const dr = document.getElementById("drone-range-input");
+    const c = gearCrew();
+    const total = { t: have.t + (state.tanksHome || 0), a: have.a + (state.atHome || 0), d: have.d + (state.dronesHome || 0) };
+    if (start) { tk.max = String(total.t); at.max = String(total.a); dr.max = String(total.d); tk.value = String(start.t); at.value = String(start.a); dr.value = String(start.d); }
+    const update = () => {
+        const n = getCount();
+        const tMax = Math.min(total.t, Math.floor(n / c.tank));
+        tk.max = String(tMax);
+        if (Number(tk.value) > tMax) tk.value = String(tMax);
+        const t = Number(tk.value);
+        const aMax = Math.min(total.a, Math.floor(Math.max(n - t * c.tank, 0) / c.at));
+        at.max = String(aMax);
+        if (Number(at.value) > aMax) at.value = String(aMax);
+        const dMax = Math.min(total.d, Math.max(1, have.d));
+        dr.max = String(dMax);
+        if (Number(dr.value) > dMax) dr.value = String(dMax);
+        tk.disabled = total.t <= 0; at.disabled = total.a <= 0; dr.disabled = total.d <= 0;
+        document.getElementById("tank-val-label").textContent = `🛡️ ${tk.value} / ${total.t} kampvogne med (${c.tank} soldater pr. kampvogn)`;
+        document.getElementById("at-val-label").textContent = `🚀 ${at.value} / ${total.a} panserværnsvåben med (${c.at} skytter pr. våben)`;
+        document.getElementById("drone-val-label").textContent = `🛸 ${Number(dr.value) > 0 ? "Drone med" : "Ingen drone"} (${total.d} i alt)`;
+        document.getElementById("gear-pick-hint").textContent = "Kampvogne giver ildkraft og dækker mod geværild. Panserværn skyder på fjendens kampvogne, men skytterne skyder ikke med gevær. En drone lader gruppen se 1 km.";
+    };
+    tk.oninput = update; at.oninput = update; dr.oninput = update;
+    update();
+    return { update, values: () => ({ tanks: Number(tk.value) || 0, at: Number(at.value) || 0, drones: Number(dr.value) || 0 }) };
+}
+
+window.openEquipModal = function(id) {
+    const g = state.garrisons.find(x => String(x.id) === String(id));
+    if (!g) return;
+    state.groupModal = null;
+    const have = { t: tankCount(g), a: atCount(g), d: droneCount(g) };
+    document.getElementById("modal-title").textContent = `🛡️ Udrust vagtstyrken (${g.count} soldater)`;
+    document.getElementById("modal-body").innerHTML = `
+        <p class="muted-hint">Vælg, hvad vagtstyrken skal have med. Det, du tager fra, kommer tilbage på lageret (kampvogne bliver repareret). På lager: 🛡️ ${state.tanksHome || 0} · 🚀 ${state.atHome || 0} · 🛸 ${state.dronesHome || 0}.</p>
+        <div class="mortar-pick">${gearSlidersHtml()}</div>`;
+    document.getElementById("modal-actions").innerHTML = `
+        <button class="btn" onclick="closeModal()">Luk</button>
+        <button class="btn btn-gold" id="btn-equip-confirm">✅ Udrust</button>`;
+    const w = wireGearSliders(() => g.count, have, have);
+    document.getElementById("btn-equip-confirm").onclick = async () => {
+        const v = w.values();
+        const { error } = await sb.rpc("equip_group", { p_kind: "garrison", p_id: g.id, p_tanks: v.tanks, p_at: v.at, p_drones: v.drones });
+        if (error) {
+            showToast("Kunne ikke udruste vagtstyrken: " + error.message);
+            return;
+        }
+        closeModal();
+        showToast(`🛡️ Vagtstyrken har nu ${v.tanks} ${v.tanks === 1 ? "kampvogn" : "kampvogne"}, ${v.at} panserværnsvåben og ${v.drones > 0 ? "en drone" : "ingen drone"}.`);
+        await syncAllFromSupabase();
+        await loadArmy();
+    };
+    document.getElementById("modal-overlay").classList.remove("hidden");
+};
+
+// "Med 2 kampvogne, 1 panserværnsvåben og drone" i bekræftelsen, når en deling sendes fra barrakken.
+function gearOrderLine(order) {
+    const v = order?.gear;
+    if (!v || !(v.tanks || v.at || v.drones)) return "";
+    return `<p>${gearWords(v)} følger med fra lageret.</p>`;
+}
+
+// Sæt udstyret på delingen, lige når den er sendt fra barrakken (den står da stadig ved bygningen).
+async function equipNewMarch(order, started) {
+    const v = order?.gear;
+    if (!v || !(v.tanks || v.at || v.drones) || !started?.id) return;
+    const { error } = await sb.rpc("equip_group", { p_kind: "march", p_id: started.id, p_tanks: v.tanks, p_at: v.at, p_drones: v.drones });
+    if (error) showToast("Soldaterne er sendt, men udstyret kom ikke med: " + error.message);
+}
+
+function codexGearCardsHtml() {
+    if (!gearEnabled()) return "";
+    const c = gearCrew();
+    return `
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Kampvogn</h3><span class="badge">${buyWhere("tanks")}</span></div>
+                    <div class="codex-weapon-img"><img src="${tankImageUrl()}" class="pixel-img" alt="Kampvogn" /></div>
+                    <p class="muted-hint">Følger en gruppe soldater i deres tempo. Skyder som mange soldater og dækker gruppen: en del af fjendens geværtræffere preller af på panseret. Geværer kan ikke skade en kampvogn. Det kan granater (især haubitsen) og panserværn. Falder hele gruppen, er kampvognene tabt.</p>
+                    ${codexStats([
+                        ["Pris", codexPrice(codexRule("tank_price_steps", 1500), codexRule("tank_price_steel", 600))],
+                        ["Mandskab", `${fmtNum(c.tank)} soldater`],
+                        ["Ildkraft", `som ${fmtNum(codexRule("tank_fire_power", 8))} soldater`],
+                        ["Dækker", `${fmtNum(codexRule("tank_shield", 8))} soldater pr. kampvogn (højst ${fmtPct(codexRule("tank_hit_share", 0.6))} af træfferne)`],
+                        ["Energi", fmtNum(codexRule("tank_hp", 600))],
+                        ["Skade fra granat", `morter ${fmtNum(codexRule("tank_mortar_damage", 60))} · haubits ${fmtNum(codexRule("tank_howitzer_damage", 250))}`],
+                        ["Skade fra panserværn", fmtNum(codexRule("at_damage", 300))]
+                    ])}
+                </div>
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Panserværn</h3><span class="badge">${buyWhere("at_launchers")}</span></div>
+                    <div class="codex-weapon-img"><img src="assets/panservaern.png" class="pixel-img" alt="Panserværn" /></div>
+                    <p class="muted-hint">Et skulderbåret panserværnsvåben, som soldaterne bærer med. I hver skudrunde skyder hvert våben på fjendens kampvogne inden for skudafstand. Skytterne skyder ikke med gevær, så en gruppe med meget panserværn er svagere mod almindelige soldater.</p>
+                    ${codexStats([
+                        ["Pris", codexPrice(codexRule("at_price_steps", 500), codexRule("at_price_steel", 80))],
+                        ["Skytter", `${fmtNum(c.at)} soldater pr. våben`],
+                        ["Chance for træf", `${fmtPct(codexRule("at_hit_chance", 0.35))} pr. skudrunde`],
+                        ["Skade på kampvogn", `${fmtNum(codexRule("at_damage", 300))} af ${fmtNum(codexRule("tank_hp", 600))} energi`]
+                    ])}
+                </div>
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Drone</h3><span class="badge">${buyWhere("drones")}</span></div>
+                    <div class="codex-weapon-img"><img src="assets/spejder.png" class="pixel-img" alt="Drone" /></div>
+                    <p class="muted-hint">En lille spejderdrone, som gruppen har med. Gruppen ser meget længere, så du kan finde fjenden, før han finder dig, og se, hvor dine granater skal lande. Dronen kan ikke kæmpe, og én pr. gruppe er nok.</p>
+                    ${codexStats([
+                        ["Pris", codexPrice(codexRule("drone_price_steps", 400), codexRule("drone_price_steel", 40))],
+                        ["Udsyn med drone", formatDistance(codexRule("drone_vision_m", 1000))],
+                        ["Udsyn uden", formatDistance(GAME_CONFIG.SOLDIER_VISION_M)]
+                    ])}
+                </div>
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Sten, saks, papir</h3><span class="badge">taktik</span></div>
+                    <p class="muted-hint"><strong>Kampvogne</strong> slår soldater med gevær. <strong>Panserværn</strong> og <strong>haubitser</strong> slår kampvogne. <strong>Soldater med gevær</strong> slår panserværn, fordi skytterne ikke skyder med gevær. <strong>Dronen</strong> finder målene til artilleriet.</p>
+                    <p class="muted-hint">Udstyret sættes på en gruppe, når den sendes fra barrakken, eller med knappen 🛡️ på en vagtstyrke, der står ved en barrak eller våbenfabrik. Går hele gruppen videre, følger det med; går kun en del, bliver det stående. Kommer gruppen hjem til barrakken, kommer det på lager igen.</p>
+                    <p class="muted-hint">Computeren har det også: bygarnisonen ved bymidten i storbyer (${fmtNum(codexRule("city_npc_tanks_storby", 2))} kampvogne, ${fmtNum(codexRule("city_npc_at_storby", 2))} panserværn) og byer (${fmtNum(codexRule("city_npc_at_by", 1))} panserværn), og den svenske hærs motoriserede kompagnier (kampvogn) og infanterikompagnier (panserværn).</p>
+                </div>`;
+}
 
 // Visningsknap med tre trin: soldater + flag → kun flag → kun soldater → forfra.
 const TROOP_LAYERS = ["lyr-troops", "lyr-street-units", "lyr-street-badges", "lyr-street-rings", "lyr-parked-trucks",
