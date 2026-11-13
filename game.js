@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 155;
+const APP_VERSION = 156;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -5238,7 +5238,8 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
     // Kampvognenes mandskab sidder inde i kampvognene (0059); kun resten tegnes til fods.
     const footCount = Math.max(0, group.count - usableTanks(group) * gearCrew().tank);
     const isMoving = !!marchObj && (marchObj.arrivesAtMillis > marchObj.startedAtMillis + 500) && now < marchObj.arrivesAtMillis;
-    const isDriving = trucks > 0 && (marchObj ? (marchObj.driving !== false && truckCanDrive(group.count, trucks)) : truckCanDrive(group.count, trucks));
+    const footN = group.count - (style === "npc" ? 0 : ridingCrew(group));
+    const isDriving = trucks > 0 && (marchObj ? (marchObj.driving !== false && truckCanDrive(footN, trucks)) : truckCanDrive(footN, trucks));
 
     const pushUnit = (uLat, uLon, img, kind, rot = 0, off = null) => {
         positions.push([uLat, uLon]);
@@ -7064,22 +7065,29 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
     state.groupModal = null;
     const overlay = document.getElementById("modal-overlay");
     const fromText = from.type === "building" ? "din barrak" : "vagtstyrken";
+    // Fra barrakken starter alle skydere på 0 (v156): man vælger selv soldater og udstyr, og soldaterne
+    // følger med udstyret (en lastbil giver plads til TRUCK.capacity, en kampvogn har tank_crew mand).
+    // Fra en vagtstyrke starter soldaterne som før på hele vagtstyrken, så dens udstyr følger med.
+    const fromBase = from.type === "building";
+    const startN = fromBase ? 0 : maxAvail;
     document.getElementById("modal-title").textContent = "Send soldater på march";
     document.getElementById("modal-body").innerHTML = `
         <p>Vælg hvor mange soldater du vil sende af sted fra ${fromText}${target ? ` mod ${escapeHtml(target.label)}` : ""}:</p>
-        <div style="text-align:center;font-size:20px;font-weight:800;color:#39FF14;" id="slider-val-label">${maxAvail} / ${maxAvail} soldater</div>
-        <input type="range" min="1" max="${maxAvail}" value="${maxAvail}" class="range-slider" id="soldier-range-input" />
+        <div style="text-align:center;font-size:20px;font-weight:800;color:#39FF14;" id="slider-val-label">${startN} / ${maxAvail} soldater</div>
+        <input type="range" min="${fromBase ? 0 : 1}" max="${maxAvail}" value="${startN}" class="range-slider" id="soldier-range-input" />
+        <p id="soldier-pick-hint" class="muted-hint"></p>
+        <div id="truck-pick" class="mortar-pick hidden">
+            <div id="truck-val-label" class="mortar-pick-label"></div>
+            <input type="range" min="0" max="0" value="0" class="range-slider" id="truck-range-input" />
+            <p id="truck-pick-hint" class="muted-hint"></p>
+        </div>
+        <div id="gear-pick" class="mortar-pick hidden">${gearSlidersHtml()}</div>
         <div id="mortar-pick" class="mortar-pick hidden">
             <div id="mortar-val-label" class="mortar-pick-label"></div>
             <input type="range" min="0" max="0" value="0" class="range-slider" id="mortar-range-input" />
             <p id="mortar-pick-hint" class="muted-hint"></p>
             <div id="shell-val-label" class="mortar-pick-label"></div>
             <input type="range" min="0" max="0" value="0" class="range-slider" id="shell-range-input" />
-        </div>
-        <div id="truck-pick" class="mortar-pick hidden">
-            <div id="truck-val-label" class="mortar-pick-label"></div>
-            <input type="range" min="0" max="0" value="0" class="range-slider" id="truck-range-input" />
-            <p id="truck-pick-hint" class="muted-hint"></p>
         </div>
         <div id="howitzer-pick" class="mortar-pick hidden">
             <div id="howitzer-val-label" class="mortar-pick-label"></div>
@@ -7088,53 +7096,66 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
             <div id="howitzer-shell-val-label" class="mortar-pick-label"></div>
             <input type="range" min="0" max="0" value="0" class="range-slider" id="howitzer-shell-range-input" />
         </div>
-        <div id="gear-pick" class="mortar-pick hidden">${gearSlidersHtml()}</div>
     `;
     const slider = document.getElementById("soldier-range-input");
     const label = document.getElementById("slider-val-label");
+    const count = () => parseInt(slider.value, 10) || 0;
+    const garrison = from.type === "garrison" ? state.garrisons.find(x => String(x.id) === String(from.id)) : null;
+    const allGo = () => !!garrison && count() >= garrison.count;
 
-    // Kampvogne, panserværn og drone (0059). Fra barrakken vælges de på skydere og sættes på delingen,
-    // når den er sendt. Fra en vagtstyrke følger de med, hvis hele vagtstyrken går, ellers bliver de.
-    const gearGarrison = from.type === "garrison" ? state.garrisons.find(x => String(x.id) === String(from.id)) : null;
+    // Sæt antallet af soldater (inden for 0 … maxAvail) og opdatér alle skydere.
+    let updateAll = () => {};
+    const setCount = n => {
+        slider.value = String(Math.max(fromBase ? 0 : 1, Math.min(maxAvail, Math.round(n))));
+        updateAll();
+    };
+    // Sørg for mindst n soldater.
+    const atLeast = n => { if (count() < n) setCount(n); };
+
+    // Kampvogne, panserværn og drone (0059). Fra barrakken vælges de på skydere. Fra en vagtstyrke
+    // følger de med, hvis hele vagtstyrken går, ellers bliver de.
     let gearPickW = null;
-    if (gearEnabled() && !gearGarrison && from.type === "building" && gearStockTotal() > 0) {
+    let gearSay = null;
+    if (gearEnabled() && fromBase && gearStockTotal() > 0) {
         document.getElementById("gear-pick").classList.remove("hidden");
-        gearPickW = wireGearSliders(() => parseInt(slider.value, 10) || 1, { t: 0, a: 0, d: 0, s: 0 });
-        slider.addEventListener("input", () => gearPickW.update());
-    } else if (gearGarrison && tankCount(gearGarrison) + atCount(gearGarrison) + droneCount(gearGarrison) > 0) {
+        gearPickW = wireGearSliders(count, { t: 0, a: 0, d: 0, s: 0 }, null, { setCount, atLeast, onChange: () => updateAll() });
+    } else if (garrison && tankCount(garrison) + atCount(garrison) + droneCount(garrison) > 0) {
         const box = document.getElementById("gear-pick");
         box.classList.remove("hidden");
-        const say = () => {
-            const all = (parseInt(slider.value, 10) || 1) >= gearGarrison.count;
-            box.innerHTML = `<p class="muted-hint">${gearWords(gearGarrison)}: ${all
+        gearSay = () => {
+            box.innerHTML = `<p class="muted-hint">${gearWords(garrison)}: ${allGo()
                 ? "hele vagtstyrken går, så det følger med."
                 : "kun en del af vagtstyrken går, så det bliver stående hos vagten. Send hele vagtstyrken for at tage det med."}</p>`;
         };
-        slider.addEventListener("input", say);
-        say();
     }
+    // Soldater, der sidder i kampvognene (tæller ikke i lastbilernes pladser, 0061).
+    const riding = () => {
+        if (gearPickW) {
+            const v = gearPickW.values();
+            return Math.min(v.tanks, Math.floor(count() / gearCrew().tank)) * gearCrew().tank;
+        }
+        return allGo() ? ridingCrew(garrison) : 0;
+    };
 
-    // Morterer, der kan gå med: fra barrakkens lager eller vagtstyrkens egne. Hver morter kræver
-    // MORTAR.crew soldater. Går hele vagtstyrken, går alle dens morterer med.
+    // Morterer: fra barrakkens lager eller vagtstyrkens egne. Hver morter kræver MORTAR.crew soldater.
     const crew = GAME_CONFIG.MORTAR.crew;
-    const garrison = from.type === "garrison" ? state.garrisons.find(x => String(x.id) === String(from.id)) : null;
     const mortarsHere = garrison ? (garrison.mortars || 0) : state.mortarsHome;
     const mSlider = document.getElementById("mortar-range-input");
     const mLabel = document.getElementById("mortar-val-label");
     const mHint = document.getElementById("mortar-pick-hint");
-    // Granater: soldaterne bærer dem. Fra barrakkens lager eller vagtstyrkens egne; kun med en morter.
     const shellsHere = garrison ? (garrison.shells || 0) : state.shells;
     const sSlider = document.getElementById("shell-range-input");
     const sLabel = document.getElementById("shell-val-label");
     let shellsTouched = false;
     document.getElementById("mortar-pick").classList.toggle("hidden", mortarsHere <= 0);
     const updateMortars = () => {
-        const n = parseInt(slider.value, 10) || 1;
-        const all = garrison && n >= garrison.count;
-        const max = all ? mortarsHere : Math.min(mortarsHere, Math.floor(n / crew));
-        mSlider.max = String(max);
+        const n = count();
+        const all = allGo();
+        mSlider.max = String(mortarsHere);
         mSlider.disabled = all;
-        if (all || Number(mSlider.value) > max) mSlider.value = String(all ? mortarsHere : max);
+        const fit = Math.min(mortarsHere, Math.floor(n / crew));
+        if (all) mSlider.value = String(mortarsHere);
+        else if (Number(mSlider.value) > fit) mSlider.value = String(fit);
         mLabel.textContent = `🧨 ${mSlider.value} / ${mortarsHere} morterer med`;
         mHint.textContent = all
             ? "Hele vagtstyrken går, så alle dens morterer og granater går med."
@@ -7151,35 +7172,43 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
             : `💣 Granater kan kun gå med en morter (${shellsHere} ${garrison ? "hos vagten" : "på lager"})`;
     };
     sSlider.oninput = () => { shellsTouched = true; updateMortars(); };
+    mSlider.oninput = () => { atLeast(Number(mSlider.value) * crew); updateAll(); };
 
-    // Lastbiler: fra barrakkens lager eller vagtstyrkens egne. Som udgangspunkt så mange, at alle
-    // kan køre. Går hele vagtstyrken, kører alle dens lastbiler med.
+    // Lastbiler: hver lastbil, man vælger, giver plads til TRUCK.capacity soldater mere (og fjerner
+    // dem igen, når man vælger en fra). Går hele vagtstyrken, kører alle dens lastbiler med.
     const T = GAME_CONFIG.TRUCK;
     const trucksHere = garrison ? truckCount(garrison) : state.trucksHome;
     const tSlider = document.getElementById("truck-range-input");
     const tLabel = document.getElementById("truck-val-label");
     const tHint = document.getElementById("truck-pick-hint");
-    let trucksTouched = false;
+    let prevTrucks = 0;
     document.getElementById("truck-pick").classList.toggle("hidden", trucksHere <= 0);
     const updateTrucks = () => {
-        const n = parseInt(slider.value, 10) || 1;
-        const all = garrison && n >= garrison.count;
-        const max = all ? trucksHere : Math.min(trucksHere, n);
-        tSlider.max = String(max);
+        const n = count();
+        const all = allGo();
+        tSlider.max = String(trucksHere);
         tSlider.disabled = all;
         if (all) tSlider.value = String(trucksHere);
-        else if (!trucksTouched) tSlider.value = String(Math.min(max, Math.ceil(n / T.capacity)));
-        else if (Number(tSlider.value) > max) tSlider.value = String(max);
-        const k = Number(tSlider.value);
+        else if (Number(tSlider.value) > n) tSlider.value = String(n);  // mindst 1 soldat pr. lastbil
+        prevTrucks = Number(tSlider.value);
+        const k = prevTrucks;
+        const foot = n - riding();
         tLabel.textContent = `🚚 ${k} / ${trucksHere} ${trucksHere === 1 ? "lastbil" : "lastbiler"} med`;
         tHint.textContent = k === 0
             ? `Soldaterne går (${fmtKmh(GAME_CONFIG.SOLDIER_SPEED_MPS)}).`
-            : truckCanDrive(n, k)
-                ? `Kører ${fmtKmh(T.roadMps)} på vej og ${fmtKmh(T.fieldMps)} uden for vejene. Plads til ${k * T.capacity} soldater.${all ? " Hele vagtstyrken går, så alle lastbilerne kører med." : ""}`
-                : n < k
+            : truckCanDrive(foot, k)
+                ? `Kører ${fmtKmh(T.roadMps)} på vej og ${fmtKmh(T.fieldMps)} uden for vejene. Plads til ${k * T.capacity} soldater${riding() ? ` (+ ${riding()} i kampvognene)` : ""}.${all ? " Hele vagtstyrken går, så alle lastbilerne kører med." : ""}`
+                : foot < k
                     ? "⚠️ Der skal mindst 1 soldat i hver lastbil, så alle går i gåtempo."
-                    : `⚠️ Der er kun plads til ${k * T.capacity} soldater i ${k} ${k === 1 ? "lastbil" : "lastbiler"}, så alle går i gåtempo, og lastbilerne følger med.`;
+                    : `⚠️ Der er kun plads til ${k * T.capacity} soldater i ${k} ${k === 1 ? "lastbil" : "lastbiler"}${riding() ? ` (+ ${riding()} i kampvognene)` : ""}, så alle går i gåtempo, og lastbilerne følger med.`;
     };
+    tSlider.oninput = () => {
+        const k = Number(tSlider.value);
+        const delta = k - prevTrucks;
+        prevTrucks = k;
+        setCount(count() + delta * T.capacity);
+    };
+
     // Haubitser: skal trækkes af lastbil (1 lastbil pr. haubits) og kræver HOWITZER.crew soldater.
     const hCrew = GAME_CONFIG.HOWITZER.crew;
     const howitzersHere = garrison ? (garrison.howitzers || 0) : state.howitzersHome;
@@ -7191,21 +7220,19 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
     const hsLabel = document.getElementById("howitzer-shell-val-label");
     let howitzerShellsTouched = false;
     document.getElementById("howitzer-pick").classList.toggle("hidden", howitzersHere <= 0);
-
     const updateHowitzers = () => {
-        const n = parseInt(slider.value, 10) || 1;
+        const n = count();
         const trucks = parseInt(tSlider.value, 10) || 0;
-        const all = garrison && n >= garrison.count;
-        const max = all ? howitzersHere : Math.min(howitzersHere, Math.floor(n / hCrew), trucks);
-        hSlider.max = String(max);
+        const all = allGo();
+        hSlider.max = String(all ? howitzersHere : Math.min(howitzersHere, trucksHere));
         hSlider.disabled = all;
-        if (all || Number(hSlider.value) > max) hSlider.value = String(all ? howitzersHere : max);
+        const fit = Math.min(howitzersHere, Math.floor(n / hCrew), trucks);
+        if (all) hSlider.value = String(howitzersHere);
+        else if (Number(hSlider.value) > fit) hSlider.value = String(fit);
         hLabel.textContent = `💥 ${hSlider.value} / ${howitzersHere} haubitser med`;
         hHint.textContent = all
             ? "Hele vagtstyrken går, så alle dens haubitser og granater går med."
-            : trucks < howitzersHere && Math.floor(n / hCrew) >= howitzersHere
-                ? `Hver haubits kræver 1 lastbil til bugsering (${trucks} lastbiler valgt).`
-                : `Hver haubits trækkes af 1 lastbil og kræver ${hCrew} soldater. ${garrison ? "Resten bliver hos vagten." : "Resten bliver på lager i barrakken."}`;
+            : `Hver haubits trækkes af 1 lastbil og kræver ${hCrew} soldater. ${garrison ? "Resten bliver hos vagten." : "Resten bliver på lager i barrakken."}`;
 
         const withHowitzer = Number(hSlider.value) > 0;
         const sMax = withHowitzer ? howitzerShellsHere : 0;
@@ -7218,27 +7245,44 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
             : `🎯 Haubitsgranater kan kun gå med en haubits (${howitzerShellsHere} ${garrison ? "hos vagten" : "på lager"})`;
     };
     hsSlider.oninput = () => { howitzerShellsTouched = true; updateHowitzers(); };
-    hSlider.oninput = updateHowitzers;
-
-    tSlider.oninput = () => { trucksTouched = true; updateTrucks(); updateHowitzers(); };
-
-    slider.oninput = () => {
-        label.textContent = `${slider.value} / ${maxAvail} soldater`;
-        updateMortars();
-        updateTrucks();
-        updateHowitzers();
+    hSlider.oninput = () => {
+        const h = Number(hSlider.value);
+        // En haubits skal have en lastbil: vælg selv de lastbiler, der mangler (de giver også plads).
+        const trucks = parseInt(tSlider.value, 10) || 0;
+        if (h > trucks) {
+            tSlider.value = String(Math.min(trucksHere, h));
+            const delta = Number(tSlider.value) - prevTrucks;
+            prevTrucks = Number(tSlider.value);
+            slider.value = String(Math.min(maxAvail, count() + delta * T.capacity));
+        }
+        atLeast(h * hCrew);
+        hSlider.value = String(h);
+        updateAll();
     };
-    mSlider.oninput = updateMortars;
-    updateMortars();
-    updateTrucks();
-    updateHowitzers();
+
+    const confirmBtn = () => document.getElementById("btn-pick-target-confirm");
+    updateAll = () => {
+        label.textContent = `${count()} / ${maxAvail} soldater`;
+        updateTrucks();
+        updateMortars();
+        updateHowitzers();
+        if (gearPickW) gearPickW.update();
+        if (gearSay) gearSay();
+        document.getElementById("soldier-pick-hint").textContent = fromBase && count() === 0
+            ? "Vælg soldater, eller vælg lastbiler og kampvogne nedenfor, så kommer soldaterne med af sig selv."
+            : "";
+        if (confirmBtn()) confirmBtn().disabled = count() <= 0;
+    };
+    slider.oninput = () => updateAll();
 
     document.getElementById("modal-actions").innerHTML = `
         <button class="btn" onclick="closeModal()">Luk</button>
         <button class="btn btn-primary" id="btn-pick-target-confirm">${target ? "➡️ Videre" : "🎯 Vælg mål på kortet"}</button>
     `;
-    document.getElementById("btn-pick-target-confirm").onclick = () => {
-        const chosen = parseInt(slider.value, 10) || 1;
+    updateAll();
+    confirmBtn().onclick = () => {
+        const chosen = count();
+        if (chosen <= 0) return;
         const mortars = parseInt(mSlider.value, 10) || 0;
         const shells = mortars > 0 ? (parseInt(sSlider.value, 10) || 0) : 0;
         const trucks = parseInt(tSlider.value, 10) || 0;
@@ -7374,7 +7418,8 @@ async function openConfirmMarchModal(order, target) {
         return;
     }
     const trucks = orderTrucks(order);
-    const driving = truckCanDrive(order.count, trucks);
+    const rideN = orderRiding(order);
+    const driving = truckCanDrive(order.count - rideN, trucks);
     if (order.patrol && trucks > 0) {
         showToast("Lastbiler kan ikke gå patrulje endnu. Send soldaterne uden lastbilerne.");
         return;
@@ -7394,8 +7439,8 @@ async function openConfirmMarchModal(order, target) {
     const T = GAME_CONFIG.TRUCK;
     const truckWord = n => n === 1 ? "lastbil" : "lastbiler";
     const truckInfo = trucks === 0 ? "" : driving
-        ? `<p>🚚 <strong>Kører i ${trucks} ${truckWord(trucks)}:</strong> ${fmtKmh(T.roadMps)} på vej (ca. ${formatDistance(Math.round(roadDistanceM(landPath)))}), ${fmtKmh(T.fieldMps)} uden for vejene.</p>`
-        : `<p style="color:#FFB74D">🚚 ${trucks} ${truckWord(trucks)} følger med, men ${order.count < trucks ? "der skal mindst 1 soldat i hver lastbil" : `der er kun plads til ${trucks * T.capacity} soldater`}, så alle går i gåtempo.</p>`;
+        ? `<p>🚚 <strong>Kører i ${trucks} ${truckWord(trucks)}${rideN ? ` (${rideN} sidder i kampvognene)` : ""}:</strong> ${fmtKmh(T.roadMps)} på vej (ca. ${formatDistance(Math.round(roadDistanceM(landPath)))}), ${fmtKmh(T.fieldMps)} uden for vejene.</p>`
+        : `<p style="color:#FFB74D">🚚 ${trucks} ${truckWord(trucks)} følger med, men ${order.count - rideN < trucks ? "der skal mindst 1 soldat i hver lastbil" : `der er kun plads til ${trucks * T.capacity} soldater${rideN ? ` (+ ${rideN} i kampvognene)` : ""}`}, så alle går i gåtempo.</p>`;
     const loopM = loopPath ? Math.round(pathDistanceM(loopPath)) : 0;
     const loopSec = Math.max(2, Math.round(loopM / GAME_CONFIG.SOLDIER_SPEED_MPS));
     const via = wps.length > 1 ? ` via ${wps.length - 1} punkt${wps.length > 2 ? "er" : ""}` : "";
@@ -7433,8 +7478,9 @@ async function openConfirmMarchModal(order, target) {
     overlay.classList.remove("hidden");
 }
 
+let marchGearedOff = false;   // databasen har ikke fået 0061 endnu
 async function executeMarchOrder(order, target, landPath, loopPath = null) {
-    let error, started = null;
+    let error, started = null, geared = false;
     if (order.patrol && order.redirectMarchId) {
         const m = findMarch(order.redirectMarchId);
         const path = m ? [marchCurrentPos(m, serverNow()), ...landPath.slice(1)] : landPath;
@@ -7465,7 +7511,7 @@ async function executeMarchOrder(order, target, landPath, loopPath = null) {
             p_from_garrison: order.from.id, p_to_lat: target.lat, p_to_lon: target.lon, p_path: landPath
         }));
     } else {
-        ({ data: started, error } = await sb.rpc("start_march", {
+        const args = {
             p_from_building: order.from.type === "building" ? order.from.id : null,
             p_from_garrison: order.from.type === "garrison" ? order.from.id : null,
             p_to_lat: target.lat, p_to_lon: target.lon,
@@ -7475,13 +7521,28 @@ async function executeMarchOrder(order, target, landPath, loopPath = null) {
             ...(order.trucks > 0 ? { p_trucks: order.trucks } : {}),
             ...(order.howitzers > 0 ? { p_howitzers: order.howitzers } : {}),
             ...(order.howitzer_shells > 0 ? { p_howitzer_shells: order.howitzer_shells } : {})
-        }));
+        };
+        // 0061: soldater og kampvogne i ét kald, så kampvognenes mandskab ikke fylder i lastbilerne.
+        if (!marchGearedOff) {
+            const v = order.gear || {};
+            ({ data: started, error } = await sb.rpc("start_march_geared", {
+                ...args, p_tanks: v.tanks || 0, p_at: v.at || 0, p_drones: v.drones || 0, p_tank_shells: v.shells || 0
+            }));
+            if (error && (error.code === "PGRST202" || /start_march_geared/.test(error.message || ""))) {
+                marchGearedOff = true;
+                error = null;
+                started = null;
+            } else if (!error) {
+                geared = true;
+            }
+        }
+        if (marchGearedOff && !started) ({ data: started, error } = await sb.rpc("start_march", args));
     }
     if (error) {
         showToast("Kunne ikke sende soldaterne: " + error.message);
         return;
     }
-    await equipNewMarch(order, started);
+    if (!geared) await equipNewMarch(order, started);
     await loadArmy();
     if ((order.mortars > 0 || order.trucks > 0 || order.howitzers > 0 || order.gear) && order.from.type === "building") await syncAllFromSupabase();
     showToast(order.patrol
@@ -7513,7 +7574,7 @@ window.recallMarch = async function(marchId) {
     if (!m) return;
     const cur = marchCurrentPos(m, serverNow());
     showToast("Beregner ruten hjem…");
-    const find = truckCanDrive(m.count, truckCount(m)) ? findTruckPathAsync : findLandPathAsync;
+    const find = truckCanDrive(m.count - ridingCrew(m), truckCount(m)) ? findTruckPathAsync : findLandPathAsync;
     const homePath = await find(cur[0], cur[1], m.homeLat, m.homeLon);
     const path = [marchCurrentPos(m, serverNow()), ...homePath.slice(1)];
     const { error } = await sb.rpc("redirect_march", {
@@ -12050,7 +12111,7 @@ function atCount(g) { return Number(g?.at || 0); }
 function droneCount(g) { return Number(g?.drones || 0); }
 
 function gearCrew() {
-    return { tank: Math.max(1, codexRule("tank_crew", 3)), at: Math.max(1, codexRule("at_crew", 2)) };
+    return { tank: Math.max(1, codexRule("tank_crew", 4)), at: Math.max(1, codexRule("at_crew", 2)) };
 }
 // Kampvogne og panserværnsvåben, der har mandskab nok (samme regler som på serveren).
 function usableTanks(g) {
@@ -12059,6 +12120,20 @@ function usableTanks(g) {
 function usableAt(g) {
     const c = gearCrew();
     return Math.min(atCount(g), Math.floor(Math.max((g.count || 0) - usableTanks(g) * c.tank, 0) / c.at));
+}
+// Soldater, der sidder i gruppens kampvogne. De fylder ikke i lastbilerne (0061).
+function ridingCrew(g) {
+    return g ? usableTanks(g) * gearCrew().tank : 0;
+}
+// Det samme for en ordre, før den er sendt: kampvogne fra lageret, eller vagtstyrkens, hvis hele vagten går.
+function orderRiding(order) {
+    if (!gearEnabled() || !order) return 0;
+    if (order.gear) return Math.min(order.gear.tanks || 0, Math.floor(order.count / gearCrew().tank)) * gearCrew().tank;
+    if (order.from?.type === "garrison") {
+        const g = state.garrisons.find(x => String(x.id) === String(order.from.id));
+        if (g && order.count >= g.count) return ridingCrew(g);
+    }
+    return 0;
 }
 function gearFirePower(g) {
     return Math.max((g.count || 0) - usableAt(g) * gearCrew().at, 0) + usableTanks(g) * codexRule("tank_fire_power", 8);
@@ -12283,7 +12358,10 @@ function gearSlidersHtml() {
         <p id="gear-pick-hint" class="muted-hint"></p>`;
 }
 
-function wireGearSliders(getCount, have, start = null) {
+// opts (fra "Send soldater", v156): { setCount, atLeast, onChange }. Så kan skyderne gå over det,
+// soldaterne rækker til: en kampvogn lægger sit mandskab oven i soldaterne, panserværn og drone
+// henter de soldater, der mangler. Uden opts (🛡️ på en vagtstyrke) er antallet fast.
+function wireGearSliders(getCount, have, start = null, opts = null) {
     const tk = document.getElementById("tank-range-input");
     const at = document.getElementById("at-range-input");
     const dr = document.getElementById("drone-range-input");
@@ -12298,12 +12376,14 @@ function wireGearSliders(getCount, have, start = null) {
         tk.value = String(start.t); at.value = String(start.a); dr.value = String(start.d); sh.value = String(start.s || 0);
     }
     if (!gunEnabled()) { sh.classList.add("hidden"); shLabel.classList.add("hidden"); }
+    let prevT = Number(tk.value) || 0;
     const update = () => {
         const n = getCount();
-        const tMax = Math.min(total.t, Math.floor(n / c.tank));
-        tk.max = String(tMax);
-        if (Number(tk.value) > tMax) tk.value = String(tMax);
+        const tFit = Math.min(total.t, Math.floor(n / c.tank));
+        tk.max = String(opts ? total.t : tFit);
+        if (Number(tk.value) > tFit) tk.value = String(tFit);
         const t = Number(tk.value);
+        prevT = t;
         // Granater til kanonen: højst tank_shells_max pr. kampvogn. Fyldes op, til man selv vælger.
         const sMax = Math.min(total.s, t * perTank);
         sh.max = String(sMax);
@@ -12312,19 +12392,43 @@ function wireGearSliders(getCount, have, start = null) {
         shLabel.textContent = t > 0
             ? `💥 ${sh.value} / ${total.s} kampvognsgranater med (højst ${perTank} pr. kampvogn)`
             : `💥 Kampvognsgranater kan kun gå med en kampvogn (${total.s} i alt)`;
-        const aMax = Math.min(total.a, Math.floor(Math.max(n - t * c.tank, 0) / c.at));
-        at.max = String(aMax);
-        if (Number(at.value) > aMax) at.value = String(aMax);
+        const aFit = Math.min(total.a, Math.floor(Math.max(n - t * c.tank, 0) / c.at));
+        at.max = String(opts ? total.a : aFit);
+        if (Number(at.value) > aFit) at.value = String(aFit);
         const dMax = Math.min(total.d, Math.max(1, have.d));
         dr.max = String(dMax);
         if (Number(dr.value) > dMax) dr.value = String(dMax);
+        if (opts && n <= 0 && Number(dr.value) > 0) dr.value = "0";
         tk.disabled = total.t <= 0; at.disabled = total.a <= 0; dr.disabled = total.d <= 0;
         document.getElementById("tank-val-label").textContent = `🛡️ ${tk.value} / ${total.t} kampvogne med (${c.tank} soldater pr. kampvogn)`;
         document.getElementById("at-val-label").textContent = `🚀 ${at.value} / ${total.a} panserværnsvåben med (${c.at} skytter pr. våben)`;
         document.getElementById("drone-val-label").textContent = `🛸 ${Number(dr.value) > 0 ? "Drone med" : "Ingen drone"} (${total.d} i alt)`;
-        document.getElementById("gear-pick-hint").textContent = "Kampvogne giver ildkraft og dækker mod geværild; med granater skyder kanonen langt. Panserværn skyder på fjendens kampvogne, men skytterne skyder ikke med gevær. En drone lader gruppen se 1 km.";
+        document.getElementById("gear-pick-hint").textContent = opts
+            ? `Hver kampvogn lægger ${c.tank} soldater oven i (mandskabet sidder i kampvognen og fylder ikke i lastbilerne). Kampvogne giver ildkraft og dækker mod geværild; med granater skyder kanonen langt. Panserværn skyder på fjendens kampvogne, men skytterne skyder ikke med gevær. En drone lader gruppen se 1 km.`
+            : "Kampvogne giver ildkraft og dækker mod geværild; med granater skyder kanonen langt. Panserværn skyder på fjendens kampvogne, men skytterne skyder ikke med gevær. En drone lader gruppen se 1 km.";
     };
-    tk.oninput = update; at.oninput = update; dr.oninput = update;
+    if (opts) {
+        tk.oninput = () => {
+            const t = Number(tk.value);
+            const delta = t - prevT;
+            prevT = t;
+            opts.setCount(getCount() + delta * c.tank);
+        };
+        at.oninput = () => {
+            const want = Number(at.value);
+            opts.atLeast(Number(tk.value) * c.tank + want * c.at);
+            at.value = String(want);
+            opts.onChange();
+        };
+        dr.oninput = () => {
+            const want = Number(dr.value);
+            if (want > 0) opts.atLeast(1);
+            dr.value = String(want);
+            opts.onChange();
+        };
+    } else {
+        tk.oninput = update; at.oninput = update; dr.oninput = update;
+    }
     sh.oninput = () => { shellsTouched = true; update(); };
     update();
     return { update, values: () => ({ tanks: Number(tk.value) || 0, at: Number(at.value) || 0, drones: Number(dr.value) || 0, shells: Number(sh.value) || 0 }) };
@@ -12383,7 +12487,7 @@ function codexGearCardsHtml() {
                     <p class="muted-hint">Følger en gruppe soldater i deres tempo. Skyder som mange soldater og dækker gruppen: en del af fjendens geværtræffere preller af på panseret. Geværer kan ikke skade en kampvogn. Det kan granater (især haubitsen) og panserværn. Falder hele gruppen, er kampvognene tabt.</p>
                     ${codexStats([
                         ["Pris", codexPrice(codexRule("tank_price_steps", 1500), codexRule("tank_price_steel", 600))],
-                        ["Mandskab", `${fmtNum(c.tank)} soldater (sidder inde i kampvognen)`],
+                        ["Mandskab", `${fmtNum(c.tank)} soldater (sidder inde i kampvognen og fylder ikke i lastbilerne)`],
                         ["Ildkraft", `som ${fmtNum(codexRule("tank_fire_power", 8))} soldater`],
                         ["Dækker", `${fmtNum(codexRule("tank_shield", 8))} soldater pr. kampvogn (højst ${fmtPct(codexRule("tank_hit_share", 0.6))} af træfferne)`],
                         ["Energi", fmtNum(codexRule("tank_hp", 600))],
