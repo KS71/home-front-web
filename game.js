@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 162;
+const APP_VERSION = 163;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -11067,31 +11067,109 @@ document.getElementById("btn-jump-home").onclick = () => {
 
 // Start kortet og 1-sekunds march-løkke
 // ============================================================================
-// Sammenfoldelige sektioner i sidepanelet (én åben ad gangen, huskes i browseren)
+// Listerne i sidepanelet: én vises ad gangen og vælges med fanerne (huskes i browseren)
 // ============================================================================
 const OPEN_SECTION_KEY = "hf_open_section";
 
+// Fanerne i sidepanelet (v163): rækkefølge, tegn og kort navn. Tallet hentes fra listens eget mærke.
+const SIDEBAR_TABS = [
+    ["troops", "🪖", "Soldater"], ["buildings", "🏰", "Bygninger"], ["contacts", "👁️", "Fjender"],
+    ["battles", "💥", "Kampe"], ["bookmarks", "📌", "Bogmærker"], ["orders", "📋", "Ordrer"]
+];
+
+function sidebarSection(key) {
+    return document.querySelector(`.panel-section.collapsible[data-section="${key}"]`);
+}
+
 function openSidebarSection(key) {
+    // Der er altid én liste fremme. En skjult liste (fx Dagens ordrer før 0058) kan ikke vælges.
+    const wanted = sidebarSection(key);
+    if (!wanted || wanted.classList.contains("hidden")) key = "troops";
     document.querySelectorAll(".panel-section.collapsible").forEach(sec => {
         const open = sec.dataset.section === key;
         sec.classList.toggle("collapsed", !open);
-        sec.querySelector(".section-header")?.setAttribute("aria-expanded", String(open));
+    });
+    document.querySelectorAll("#sidebar-tabs .sidebar-tab").forEach(tab => {
+        const on = tab.dataset.section === key;
+        tab.classList.toggle("active", on);
+        tab.setAttribute("aria-selected", String(on));
     });
     try { localStorage.setItem(OPEN_SECTION_KEY, key || ""); } catch (_) {}
 }
 
-function initCollapsibleSections() {
-    document.querySelectorAll(".panel-section.collapsible").forEach(sec => {
-        const header = sec.querySelector(".section-header");
-        const toggle = () => openSidebarSection(sec.classList.contains("collapsed") ? sec.dataset.section : null);
-        header.addEventListener("click", toggle);
-        header.addEventListener("keydown", e => {
-            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
-        });
+// "3 gemt" -> "3", "2 af 4" -> "2/4", "120 soldater ude" -> "120".
+function sidebarTabCount(text) {
+    const of = /^\s*(\d+)\s+af\s+(\d+)/.exec(text || "");
+    if (of) return `${of[1]}/${of[2]}`;
+    const n = /\d[\d.]*/.exec(text || "");
+    return n ? n[0] : "";
+}
+
+function refreshSidebarTab(key) {
+    const sec = sidebarSection(key);
+    const tab = document.querySelector(`#sidebar-tabs .sidebar-tab[data-section="${key}"]`);
+    if (!sec || !tab) return;
+    const count = sidebarTabCount(sec.querySelector(".section-header .badge")?.textContent);
+    tab.querySelector(".sidebar-tab-count").textContent = count;
+    tab.classList.toggle("hidden", sec.classList.contains("hidden"));
+    // Fjender i sigte skal kunne ses, uanset hvilken fane der er fremme.
+    if (key === "contacts") tab.classList.toggle("sidebar-tab-alert", Number(count) > 0);
+    if (sec.classList.contains("hidden") && tab.classList.contains("active")) openSidebarSection("troops");
+}
+
+function buildSidebarTabs() {
+    const nav = document.getElementById("sidebar-tabs");
+    if (!nav) return;
+    nav.setAttribute("role", "tablist");
+    nav.innerHTML = SIDEBAR_TABS.filter(([key]) => sidebarSection(key)).map(([key, icon, name]) =>
+        `<button type="button" class="sidebar-tab" role="tab" data-section="${key}" title="${sidebarSection(key).querySelector("h2")?.textContent.trim() || name}">
+            <span class="sidebar-tab-icon">${icon}</span>
+            <span class="sidebar-tab-name">${name}</span>
+            <span class="sidebar-tab-count"></span>
+        </button>`).join("");
+    nav.querySelectorAll(".sidebar-tab").forEach(tab => {
+        const key = tab.dataset.section;
+        tab.addEventListener("click", () => openSidebarSection(key));
+        const sec = sidebarSection(key);
+        // Tallet og om listen er skjult følger listen selv, uanset hvem der ændrer den.
+        new MutationObserver(() => refreshSidebarTab(key))
+            .observe(sec, { attributes: true, attributeFilter: ["class"] });
+        const badge = sec.querySelector(".section-header .badge");
+        if (badge) new MutationObserver(() => refreshSidebarTab(key))
+            .observe(badge, { childList: true, characterData: true, subtree: true });
+        refreshSidebarTab(key);
     });
+}
+
+function initCollapsibleSections() {
+    // Overskrifterne er ikke længere knapper: man skifter liste med fanerne.
+    document.querySelectorAll(".panel-section.collapsible .section-header").forEach(header => {
+        header.removeAttribute("role");
+        header.removeAttribute("tabindex");
+        header.removeAttribute("aria-expanded");
+    });
+    buildSidebarTabs();
     let saved = "troops";
-    try { saved = localStorage.getItem(OPEN_SECTION_KEY) ?? "troops"; } catch (_) {}
+    try { saved = localStorage.getItem(OPEN_SECTION_KEY) || "troops"; } catch (_) {}
     openSidebarSection(saved);
+}
+
+// ☰ Menu i toppen: de knapper, man sjældent bruger. Lukker ved valg, klik udenfor og Esc.
+function initHudMenu() {
+    const btn = document.getElementById("btn-menu");
+    const panel = document.getElementById("hud-menu-panel");
+    if (!btn || !panel) return;
+    const set = open => {
+        panel.classList.toggle("hidden", !open);
+        btn.setAttribute("aria-expanded", String(open));
+    };
+    btn.addEventListener("click", e => {
+        e.stopPropagation();
+        set(panel.classList.contains("hidden"));
+    });
+    panel.addEventListener("click", e => { if (e.target.closest("button")) set(false); });
+    document.addEventListener("click", e => { if (!e.target.closest(".hud-menu")) set(false); });
+    document.addEventListener("keydown", e => { if (e.key === "Escape") set(false); });
 }
 
 // ============================================================================
@@ -12820,6 +12898,7 @@ setInterval(pollFlagStates, FLAG_POLL_MS);
 
 showAppVersion();
 initCollapsibleSections();
+initHudMenu();
 initMap();
 checkAuthSession();
 setInterval(() => {

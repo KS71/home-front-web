@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>HOME FRONT — Command Center</title>
     <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
-    <link rel="stylesheet" href="style.css?v=162" />
+    <link rel="stylesheet" href="style.css?v=163" />
 </head>
 <body>
     <!-- Login / Titelskærm Overlay -->
@@ -79,17 +79,23 @@
                     <span id="hud-online" class="stat-val online-color">–</span>
                     <span class="stat-label">ONLINE</span>
                 </div>
+                <!-- Kun det, man bruger hele tiden, står fremme. Resten ligger under ☰ Menu (v163). -->
                 <div class="hud-actions">
                     <button id="btn-jump-home" class="btn btn-small" title="Hop til din første barrak/base">🏠 Hop til Base</button>
-                    <button id="btn-sync" class="btn btn-small" title="Opdatér data fra Supabase">🔄 Synkronisér</button>
-                    <button id="btn-codex" class="btn btn-small" title="Soldater, bygninger, våben og fjender">📖 Oversigt</button>
-                    <button id="btn-towns" class="btn btn-small" title="Byer under kontrol og hvem der ejer dem">🏙️ Byer</button>
-                    <button id="btn-rank" class="btn btn-small" title="Rangliste, point og din krigsstatistik">🏆 Rangliste</button>
-                    <button id="btn-soldiers-page" class="btn btn-small" title="Dine navngivne soldater med rang og mindelisten">🎖️ Mine soldater</button>
                     <button id="btn-flags-only" class="btn btn-small" title="Skift visning: soldater + flag, kun flag, kun soldater">🪖🚩 Soldater + flag</button>
-                    <button id="btn-alerts" class="btn btn-small" title="Få besked på computeren, når dine flag og soldater angribes, også når fanen ikke er fremme">🔕 Alarm</button>
-                    <button id="btn-admin" class="btn btn-small btn-gold hidden" title="Spillere og testkonti">🛠 Admin</button>
-                    <button id="btn-logout" class="btn btn-small btn-muted" title="Log ud">Log ud</button>
+                    <div class="hud-menu">
+                        <button id="btn-menu" class="btn btn-small" aria-haspopup="true" aria-expanded="false" title="Oversigt, byer, rangliste, alarm og mere">☰ Menu</button>
+                        <div id="hud-menu-panel" class="hud-menu-panel hidden">
+                            <button id="btn-towns" class="btn btn-small" title="Byer under kontrol og hvem der ejer dem">🏙️ Byer</button>
+                            <button id="btn-rank" class="btn btn-small" title="Rangliste, point og din krigsstatistik">🏆 Rangliste</button>
+                            <button id="btn-soldiers-page" class="btn btn-small" title="Dine navngivne soldater med rang og mindelisten">🎖️ Mine soldater</button>
+                            <button id="btn-codex" class="btn btn-small" title="Soldater, bygninger, våben og fjender">📖 Oversigt</button>
+                            <button id="btn-alerts" class="btn btn-small" title="Få besked på computeren, når dine flag og soldater angribes, også når fanen ikke er fremme">🔕 Alarm</button>
+                            <button id="btn-sync" class="btn btn-small" title="Opdatér data fra Supabase">🔄 Synkronisér</button>
+                            <button id="btn-admin" class="btn btn-small btn-gold hidden" title="Spillere og testkonti">🛠 Admin</button>
+                            <button id="btn-logout" class="btn btn-small btn-muted" title="Log ud">Log ud</button>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -145,6 +151,9 @@
                     <p class="muted-hint">Klik et vilkårligt sted på kortet for at bygge, opgradere dine bygninger eller sende soldater dertil. Nye bygninger skal stå i et byggepladsbogmærke fra telefonen eller højst 100 m fra en af dine bygninger. Fjender er skjulte, medmindre din telefon er tæt på.</p>
                 </div>
             </section>
+
+            <!-- Faner: én liste vises ad gangen, og man skifter med ét tryk (v163). Bygges i game.js. -->
+            <nav id="sidebar-tabs" class="sidebar-tabs" aria-label="Lister"></nav>
 
             <!-- 2. Bogmærker fra telefonen -->
             <section class="panel-section collapsible" data-section="bookmarks">
@@ -236,6 +245,6 @@
 
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="game.js?v=162"></script>
+    <script src="game.js?v=163"></script>
 </body>
 </html>
