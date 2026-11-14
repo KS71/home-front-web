@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 157;
+const APP_VERSION = 158;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -324,14 +324,19 @@ async function loadArmy() {
         // Kampvogne, panserværn og droner (0059). Fejler stille, før tabellen findes.
         sb.from("group_gear").select("*")
     ]);
+    // Ordrer til vagtstyrker (0062). Fejler også stille.
+    const ordRes = await sb.from("group_orders").select("*");
+    const orders = new Map((ordRes.data || []).map(x => [`${x.place}:${x.group_id}`, x]));
     const gear = new Map((gearRes.data || []).map(x => [`${x.place}:${x.group_id}`, x]));
     const withGear = (place, row) => {
         const x = gear.get(`${place}:${row.id}`);
-        return { ...row, tanks: x?.tanks || [], at: x?.at || 0, drones: x?.drones || 0, tankShells: x?.shells || 0 };
+        return { ...row, tanks: x?.tanks || [], at: x?.at || 0, drones: x?.drones || 0, tankShells: x?.shells || 0,
+                 order: orders.get(`${place}:${row.id}`) || null };
     };
     if (mRes.data) state.marches = mRes.data.map(marchFromRow).map(m => withGear("march", m));
     if (gRes.data) state.garrisons = gRes.data.map(g => withGear("garrison", g));
     if (pRes.data) state.parkedTrucks = pRes.data;
+    reportOwnTerrain();
     await loadNamedSoldiers();
     renderGroupModal();
     renderTroopsSidebar();
@@ -4541,8 +4546,8 @@ function truckCount(g) {
 
 // Rejsetid for en lastbil-rute: hvert punkt har et tredje tal for stykket hen til punktet,
 // 1 = vej, 0 = mark.
-function truckPathSeconds(path) {
-    const T = GAME_CONFIG.TRUCK;
+function truckPathSeconds(path, speeds = null) {
+    const T = speeds || GAME_CONFIG.TRUCK;
     let sec = 0;
     for (let i = 0; i < path.length - 1; i++) {
         const d = Geo.distanceM(path[i][0], path[i][1], path[i + 1][0], path[i + 1][1]);
@@ -4551,8 +4556,8 @@ function truckPathSeconds(path) {
     return sec;
 }
 
-function pathSeconds(path, driving) {
-    return Math.max(2, driving ? truckPathSeconds(path) : pathDistanceM(path) / GAME_CONFIG.SOLDIER_SPEED_MPS);
+function pathSeconds(path, driving, speeds = null) {
+    return Math.max(2, driving ? truckPathSeconds(path, speeds) : pathDistanceM(path) / GAME_CONFIG.SOLDIER_SPEED_MPS);
 }
 
 // Lastbilens rute for ét ben: ad vejene (OSRM "driving"), med stykket hen til vejen og fra vejen
@@ -7002,7 +7007,7 @@ function renderTroopsSidebar() {
                 <div class="item-row-top">
                     <img src="assets/tropper.png" class="pixel-img item-sprite" />
                     <div class="item-info">
-                        <div class="item-title item-title-green">${g.count} soldater på vagt${mortarTag(g)}${howitzerTag(g)}${truckTag(g)}${gearTag(g)}${digInTag(g)}</div>
+                        <div class="item-title item-title-green">${g.count} soldater på vagt${mortarTag(g)}${howitzerTag(g)}${truckTag(g)}${gearTag(g)}${digInTag(g)}${terrainTag(g)}${orderTag(g)}</div>
                         <div class="item-sub">${where}</div>
                         <div class="item-sub">${energyText(g)}</div>
                     </div>
@@ -7268,9 +7273,14 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
         updateHowitzers();
         if (gearPickW) gearPickW.update();
         if (gearSay) gearSay();
+        const kv = driveSpeeds(0, 1);
         document.getElementById("soldier-pick-hint").textContent = fromBase && count() === 0
             ? "Vælg soldater, eller vælg lastbiler og kampvogne nedenfor, så kommer soldaterne med af sig selv."
-            : "";
+            : driveEnabled() && riding() > 0 && Number(tSlider.value) === 0
+                ? (riding() >= count()
+                    ? `🛡️ Alle sidder i kampvognene og kører ${fmtKmh(kv.roadMps)} på vej og ${fmtKmh(kv.fieldMps)} uden for vejene.`
+                    : `🛡️ ${count() - riding()} soldater går til fods, så kampvognene følger med i gåtempo.`)
+                : "";
         if (confirmBtn()) confirmBtn().disabled = count() <= 0;
     };
     slider.oninput = () => updateAll();
@@ -7419,7 +7429,8 @@ async function openConfirmMarchModal(order, target) {
     }
     const trucks = orderTrucks(order);
     const rideN = orderRiding(order);
-    const driving = truckCanDrive(order.count - rideN, trucks);
+    const driving = !order.patrol && groupDrives(order.count, trucks, rideN);
+    const speeds = driveSpeeds(trucks, rideN);
     if (order.patrol && trucks > 0) {
         showToast("Lastbiler kan ikke gå patrulje endnu. Send soldaterne uden lastbilerne.");
         return;
@@ -7435,10 +7446,13 @@ async function openConfirmMarchModal(order, target) {
         landPath = await landPathThrough([startPos, ...wps], driving);
     }
     const distM = Math.round(pathDistanceM(landPath));
-    const durationSec = Math.round(pathSeconds(landPath, driving));
-    const T = GAME_CONFIG.TRUCK;
+    const durationSec = Math.round(pathSeconds(landPath, driving, speeds));
+    const T = { ...GAME_CONFIG.TRUCK, ...speeds };
     const truckWord = n => n === 1 ? "lastbil" : "lastbiler";
-    const truckInfo = trucks === 0 ? "" : driving
+    const truckInfo = trucks === 0
+        ? (driving ? `<p>🛡️ <strong>Alle sidder i kampvognene og kører:</strong> ${fmtKmh(T.roadMps)} på vej (ca. ${formatDistance(Math.round(roadDistanceM(landPath)))}), ${fmtKmh(T.fieldMps)} uden for vejene.</p>`
+            : (rideN > 0 && driveEnabled() && !order.patrol ? `<p style="color:#FFB74D">🛡️ ${order.count - rideN} soldater går til fods, så kampvognene følger med i gåtempo. Sidder alle i kampvogne (eller lastbiler), kører de.</p>` : ""))
+        : driving
         ? `<p>🚚 <strong>Kører i ${trucks} ${truckWord(trucks)}${rideN ? ` (${rideN} sidder i kampvognene)` : ""}:</strong> ${fmtKmh(T.roadMps)} på vej (ca. ${formatDistance(Math.round(roadDistanceM(landPath)))}), ${fmtKmh(T.fieldMps)} uden for vejene.</p>`
         : `<p style="color:#FFB74D">🚚 ${trucks} ${truckWord(trucks)} følger med, men ${order.count - rideN < trucks ? "der skal mindst 1 soldat i hver lastbil" : `der er kun plads til ${trucks * T.capacity} soldater${rideN ? ` (+ ${rideN} i kampvognene)` : ""}`}, så alle går i gåtempo.</p>`;
     const loopM = loopPath ? Math.round(pathDistanceM(loopPath)) : 0;
@@ -7574,7 +7588,7 @@ window.recallMarch = async function(marchId) {
     if (!m) return;
     const cur = marchCurrentPos(m, serverNow());
     showToast("Beregner ruten hjem…");
-    const find = truckCanDrive(m.count - ridingCrew(m), truckCount(m)) ? findTruckPathAsync : findLandPathAsync;
+    const find = groupDrives(m.count, truckCount(m), ridingCrew(m)) ? findTruckPathAsync : findLandPathAsync;
     const homePath = await find(cur[0], cur[1], m.homeLat, m.homeLon);
     const path = [marchCurrentPos(m, serverNow()), ...homePath.slice(1)];
     const { error } = await sb.rpc("redirect_march", {
@@ -7795,7 +7809,7 @@ function renderGroupModal() {
         body.innerHTML = `
             <p class="muted-hint">${where} · ${g.count - hurt} raske, ${hurt} ${hurt === 1 ? "såret" : "sårede"}. Sårede heles kun på et felthospital.</p>
             ${namedLineHtml(gm.kind, g)}
-            ${gm.kind === "garrison" ? digInLineHtml(g) : ""}
+            ${gm.kind === "garrison" ? orderLineHtml(g) + terrainLineHtml(g) + digInLineHtml(g) : ""}
             ${mortarLineHtml(gm.kind, g)}
             ${howitzerLineHtml(gm.kind, g)}
             ${truckLineHtml(gm.kind, g)}
@@ -9031,6 +9045,10 @@ const REPORT_TEXT = {
     town_taken: r => `🏙️ ${r.note || "En by"} er nu under din kontrol!`,
     town_lost:  r => `💔 Du har mistet kontrollen over ${r.note || "en by"}.`,
     tank_lost:   r => `💥 ${r.count === 1 ? "En af dine kampvogne er" : `${r.count} af dine kampvogne er`} ødelagt${r.survivors > 0 ? ` (${r.survivors} tilbage i gruppen)` : ""}.`,
+    order_retreat: r => `🏃 Ordre udført: vagtstyrken har mistet ${r.losses} af ${r.count} soldater og trækker sig hjem til barrakken med ${r.survivors}.`,
+    order_sortie:  r => `⚔️ Ordre udført: ${r.count} soldater rykker ud mod ${r.enemy_losses} fjender tæt på posten.`,
+    town_help:     r => `🚨 Computeren sender forstærkning: ${r.count} soldater er på vej til ${r.note || "byen"} (fremme om ca. ${formatMinutes(r.survivors)}).`,
+    town_raid:     r => `🚨 Computeren angriber! ${r.count} soldater er på vej mod ${r.note || "din by"} (fremme om ca. ${formatMinutes(r.survivors)}).`,
     tank_killed: r => `🎯 Dine panserværnsskytter har ødelagt ${r.count === 1 ? "en fjendtlig kampvogn" : `${r.count} fjendtlige kampvogne`}${r.note ? ` (${r.note})` : ""}.`,
     flag_attacked:  r => `🚨 Dit flag ${r.note || ""} er ved at blive taget! Send soldater derhen.`,
     counter_attack: r => `🚨 Modangreb! ${r.count} soldater er på vej mod ${r.note || "din by"} og er fremme om ca. ${formatMinutes(r.survivors)}.`,
@@ -9227,7 +9245,7 @@ async function loadReports() {
     // Kamp mod patruljer ændrer antallet af soldater; hjemkomne sårede lægges på hospitalet.
     if (data.some(r => r.kind !== "returned" && r.kind !== "arrived" && r.kind !== "stopped")) loadBattles();
     if (data.some(r => r.kind.startsWith("flag_") || r.kind.startsWith("town_"))) pollFlagStates();
-    if (data.some(r => r.kind.startsWith("patrol_") || r.kind.startsWith("truck_") || r.kind.startsWith("tank_") || r.kind === "returned" || r.kind === "shelled" || r.kind === "stopped")) {
+    if (data.some(r => r.kind.startsWith("patrol_") || r.kind.startsWith("truck_") || r.kind.startsWith("tank_") || r.kind.startsWith("order_") || r.kind === "returned" || r.kind === "shelled" || r.kind === "stopped")) {
         await loadArmy();
         await syncAllFromSupabase();
     }
@@ -9978,6 +9996,13 @@ const RULE_INFO = {
     tank_hit_share:             ["armor", "Kampvogn: højst så stor en del af træfferne rammer panseret (0,6 = 60 %)", "0–1"],
     tank_mortar_damage:         ["armor", "Kampvogn: energi, en mortergranat koster", "energi"],
     tank_howitzer_damage:       ["armor", "Kampvogn: energi, en haubitsgranat koster", "energi"],
+    tank_road_speed_mps:        ["armor", "Kampvogn: fart på vej (når alle sidder i kampvogne eller lastbiler)", "km/t"],
+    tank_field_speed_mps:       ["armor", "Kampvogn: fart uden for vejene", "km/t"],
+    stance_defend_m:            ["fire", "Ordren \"ryk ud\": fjender så tæt på posten angribes", "m"],
+    stance_defend_ratio:        ["fire", "Ordren \"ryk ud\": kun hvis vagtstyrken er mindst så stor en del af fjendens antal (0,8 = 80 %)", "0–2"],
+    stance_retreat_share:       ["fire", "Ordren \"træk tilbage\": når så stor en del af soldaterne er tabt (0,5 = halvdelen)", "0–1"],
+    terrain_cover_wood:         ["fire", "Terræn: andel af geværtræfferne, der går forbi i skov (0,25 = 25 %)", "0–1"],
+    terrain_cover_town:         ["fire", "Terræn: andel af geværtræfferne, der går forbi ved huse (0,2 = 20 %)", "0–1"],
     tank_range_m:               ["armor", "Kampvognens kanon: rækkevidde (lige linje, fri skudlinje)", "m"],
     tank_reload_s:              ["armor", "Kampvognens kanon: sekunder mellem to granater", "s"],
     tank_shell_hit_chance:      ["armor", "Kampvognens kanon: chance for at en granat rammer (0,6 = 60 %)", "0–1"],
@@ -10566,6 +10591,8 @@ function codexSoldierHtml() {
                         ["Skade", `${fmtNum(dmgMin)}–${fmtNum(dmgMax)} (${fmtPct(codexRule("hit_kill_chance", 0.05))} øjeblikkelig død)`],
                         ["Uddannes straks for", codexPrice(C.INSTANT_SOLDIER_STEPS, 0)],
                         ["Bliver én vagtstyrke inden for", formatDistance(C.GARRISON_MERGE_M)],
+                        ...(terrainEnabled() ? [["Dækning i terrænet", `i skov går ${fmtPct(codexRule("terrain_cover_wood", 0.25))} af geværtræfferne forbi, ved huse ${fmtPct(codexRule("terrain_cover_town", 0.2))} (gælder vagtstyrker, ikke delinger på march)`]] : []),
+                        ...(ordersEnabled() ? [["Ordrer til en vagtstyrke", "🛡️ hold stillingen · ⚔️ ryk ud mod fjender tæt på posten · 🏃 træk tilbage ved store tab"]] : []),
                         ["Graver sig ned efter", `${formatMinutes(codexRule("dig_in_s", 600) / 60)} på samme sted (⛏️)`],
                         ["Nedgravet", `${fmtPct(codexRule("dig_in_cover", 0.4))} af geværtræfferne og ${fmtPct(codexRule("dig_in_cover_shell", 0.15))} af granattræfferne går forbi`]
                     ])}
@@ -11767,7 +11794,7 @@ function updateRankButton() {
 
 // ---------------------------------------------------------------- alarm: besked uden for fanen
 // Rapporter, der er vigtige nok til en besked fra computeren, når fanen ikke er fremme.
-const ALERT_KINDS = new Set(["flag_attacked", "counter_attack", "flag_lost", "town_lost", "lost", "tank_lost",
+const ALERT_KINDS = new Set(["flag_attacked", "counter_attack", "flag_lost", "town_lost", "lost", "tank_lost", "town_raid", "order_retreat",
     "patrol_won", "skirmish_lost", "shelled", "engaged"]);
 // Rapporter, der ændrer point og statistik.
 const SCORE_KINDS = new Set(["flag_taken", "flag_lost", "town_taken", "town_lost", "patrol_defeated",
@@ -12192,6 +12219,107 @@ function gearLineHtml(kind, g) {
 }
 
 
+
+// ---------------------------------------------------------------- kampvogne kører (0062)
+// En gruppe, hvor alle sidder i kampvogne, kører. Med lastbiler: dem til fods skal kunne være i
+// lastbilerne. Samme regler som group_drives og drive_speeds_set på serveren.
+function driveEnabled() {
+    return GAME_CONFIG.RULES?.tank_road_speed_mps != null;
+}
+function groupDrives(count, trucks, riding) {
+    if (!driveEnabled()) return truckCanDrive(count - riding, trucks);
+    if (trucks <= 0) return riding > 0 && count - riding <= 0;
+    return truckCanDrive(count - riding, trucks);
+}
+// Fart i m/s på vej og uden for vejene for en kørende gruppe.
+function driveSpeeds(trucks, riding) {
+    const T = GAME_CONFIG.TRUCK;
+    if (!driveEnabled() || riding <= 0) return { roadMps: T.roadMps, fieldMps: T.fieldMps };
+    const kr = codexRule("tank_road_speed_mps", 16.667), kf = codexRule("tank_field_speed_mps", 8.333);
+    if (trucks <= 0) return { roadMps: kr, fieldMps: kf };
+    return { roadMps: Math.min(T.roadMps, kr), fieldMps: Math.min(T.fieldMps, kf) };
+}
+
+// ---------------------------------------------------------------- ordrer til vagtstyrker (0062)
+const ORDER_STANCES = {
+    hold:    ["🛡️", "Hold stillingen", "Bliver stående og skyder på fjender i skudhold."],
+    defend:  ["⚔️", "Ryk ud", "Rykker ud mod fjender tæt på posten, hvis vagtstyrken er stærk nok, og går tilbage bagefter."],
+    retreat: ["🏃", "Træk tilbage ved store tab", "Går hjem til nærmeste barrak, når en stor del af soldaterne er tabt."]
+};
+function ordersEnabled() {
+    return GAME_CONFIG.RULES?.stance_defend_m != null;
+}
+function orderTag(g) {
+    const st = g?.order?.stance;
+    return st && ORDER_STANCES[st] ? ` <span title="Ordre: ${ORDER_STANCES[st][1]}">${ORDER_STANCES[st][0]}</span>` : "";
+}
+function orderLineHtml(g) {
+    if (!ordersEnabled()) return "";
+    const cur = g.order?.stance || "hold";
+    const detail = cur === "defend"
+        ? `Rykker ud mod fjender inden for ${formatDistance(codexRule("stance_defend_m", 200))} af posten, når vagtstyrken er mindst ${fmtPct(codexRule("stance_defend_ratio", 0.8))} af fjendens antal.${g.order?.state === "out" ? " <strong>Er rykket ud nu.</strong>" : ""}`
+        : cur === "retreat"
+            ? `Går hjem til nærmeste barrak, når ${fmtPct(codexRule("stance_retreat_share", 0.5))} af de ${g.order?.base_count ?? g.count} soldater er tabt.`
+            : ORDER_STANCES.hold[2];
+    const buttons = Object.entries(ORDER_STANCES).map(([k, [icon, name, how]]) =>
+        `<button class="btn btn-small ${k === cur ? "btn-primary" : ""}" title="${how}" onclick="setGroupOrder(${g.id}, '${k}')">${icon} ${name}</button>`).join("");
+    return `<p class="muted-hint" style="margin-bottom:4px;">📜 <strong>Ordre:</strong> ${detail}</p><div class="item-actions" style="margin-bottom:8px;">${buttons}</div>`;
+}
+window.setGroupOrder = async function(id, stance) {
+    const { error } = await sb.rpc("set_group_order", { p_garrison: id, p_stance: stance });
+    if (error) {
+        showToast("Ordren kunne ikke gives: " + error.message);
+        return;
+    }
+    showToast(`📜 Ordre: ${ORDER_STANCES[stance][1].toLowerCase()}.`);
+    await loadArmy();
+};
+
+// ---------------------------------------------------------------- terræn (0062)
+// Serveren kender ikke kortet, så browseren melder, om egne vagtstyrker står i skov eller ved huse.
+const TERRAIN_INFO = {
+    wood: ["🌲", "I skov", "terrain_cover_wood", 0.25],
+    town: ["🏘️", "Ved huse", "terrain_cover_town", 0.2]
+};
+function terrainEnabled() {
+    return GAME_CONFIG.RULES?.terrain_cover_wood != null;
+}
+// Terrænet et sted, eller null, hvis kortet ikke er tegnet tæt nok på til at afgøre det.
+function coverTerrainAt(lat, lon) {
+    if (!mapReady || map.getZoom() < HOUSE_MIN_ZOOM || !isPointOnScreen(lat, lon)) return null;
+    if (!rawChunks.has(Math.floor(lon / CHUNK_LON) + ":" + Math.floor(lat / CHUNK_LAT))) return null;
+    if (mapBuildingDistanceM(lat, lon, 12) < 12) return "town";
+    return terrainAt(lat, lon).id === "wood" ? "wood" : "open";
+}
+let reportingTerrain = false;
+async function reportOwnTerrain() {
+    if (!terrainEnabled() || reportingTerrain || !state.user) return;
+    const items = [];
+    for (const g of state.garrisons) {
+        if (!(g.count > 0)) continue;
+        const t = coverTerrainAt(g.lat, g.lon);
+        if (t && t !== (g.terrain || "open")) items.push({ id: g.id, terrain: t });
+    }
+    if (!items.length) return;
+    reportingTerrain = true;
+    try {
+        const { error } = await sb.rpc("report_terrain", { p_items: items });
+        if (!error) for (const it of items) { const g = state.garrisons.find(x => x.id === it.id); if (g) g.terrain = it.terrain; }
+    } finally {
+        reportingTerrain = false;
+    }
+}
+function terrainLineHtml(g) {
+    const T = TERRAIN_INFO[g.terrain];
+    if (!terrainEnabled() || !T) return "";
+    return `<p class="muted-hint">${T[0]} <strong>${T[1]}:</strong> ${fmtPct(codexRule(T[2], T[3]))} af geværtræfferne går forbi. Granater rammer som altid.</p>`;
+}
+function terrainTag(g) {
+    const T = TERRAIN_INFO[g?.terrain];
+    return terrainEnabled() && T ? ` <span title="${T[1]}: dækning mod geværild">${T[0]}</span>` : "";
+}
+setInterval(reportOwnTerrain, 15000);
+
 // ---------------------------------------------------------------- kampvognens kanon (0060)
 // Kampvogne med granater skyder i lige linje på fjender inden for tank_range_m, når der er fri
 // skudlinje. Det afgøres på serveren (tank_gun_tick); her tegnes kun lyssporene. Står et hus i
@@ -12488,6 +12616,7 @@ function codexGearCardsHtml() {
                     ${codexStats([
                         ["Pris", codexPrice(codexRule("tank_price_steps", 1500), codexRule("tank_price_steel", 600))],
                         ["Mandskab", `${fmtNum(c.tank)} soldater (sidder inde i kampvognen og fylder ikke i lastbilerne)`],
+                        ...(driveEnabled() ? [["Fart", `${fmtKmh(codexRule("tank_road_speed_mps", 16.667))} på vej og ${fmtKmh(codexRule("tank_field_speed_mps", 8.333))} uden for vejene, når alle sidder i kampvogne eller lastbiler; ellers gåtempo`]] : []),
                         ["Ildkraft", `som ${fmtNum(codexRule("tank_fire_power", 8))} soldater`],
                         ["Dækker", `${fmtNum(codexRule("tank_shield", 8))} soldater pr. kampvogn (højst ${fmtPct(codexRule("tank_hit_share", 0.6))} af træfferne)`],
                         ["Energi", fmtNum(codexRule("tank_hp", 600))],
