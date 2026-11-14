@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 161;
+const APP_VERSION = 162;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -6112,6 +6112,7 @@ function updateHud() {
     document.getElementById("hud-steps").textContent = fmt(state.balance);
     document.getElementById("hud-steel").textContent = fmt(state.steel);
     document.getElementById("hud-soldiers").textContent = `${fmt(state.soldiers)} / ${fmt(totalSoldierCapacity())}`;
+    renderQuickBar();
 }
 
 // ============================================================================
@@ -6911,12 +6912,106 @@ async function recruitSoldierInstant() {
 }
 
 // ============================================================================
+// Hurtige handlinger (v162): de ting, man gør hele tiden, øverst i sidepanelet, så man ikke skal
+// finde den rigtige bygning i listen først. Indkald/Hent tømmer ALLE militærskoler/stålværker i ét tryk.
+// ============================================================================
+function readyProduction(material) {
+    let amount = 0;
+    const buildings = [];
+    for (const b of state.myBuildings) {
+        const prod = computeProductionContents(b);
+        if (prod && prod.material === material && prod.amount > 0) {
+            amount += prod.amount;
+            buildings.push(b);
+        }
+    }
+    return { amount, buildings };
+}
+
+function renderQuickBar() {
+    const box = document.getElementById("quick-actions");
+    if (!box) return;
+    const fmt = n => Number(n || 0).toLocaleString("da-DK");
+    const hasBarracks = state.myBuildings.some(b => b.kind === "barracks");
+    const hasAcademy = state.myBuildings.some(b => b.kind === "academy");
+    const hasSteel = state.myBuildings.some(b => GAME_CONFIG.BUILDINGS[b.kind]?.production?.material === "steel");
+    if (!hasBarracks && !hasAcademy && !hasSteel) {
+        box.innerHTML = `<p class="muted-hint">Når du har en barrak og en militærskole, kan du indkalde og sende soldater herfra.</p>`;
+        return;
+    }
+    const avail = availableInBarracks();
+    const soldiers = readyProduction("soldiers");
+    const steel = readyProduction("steel");
+    const room = Math.max(0, totalSoldierCapacity() - state.soldiers);
+    let html = "";
+    if (hasBarracks) {
+        html += `<button class="btn btn-primary quick-btn" ${avail <= 0 ? "disabled" : ""} onclick="quickSend()" title="Send ledige soldater fra din barrak. Har du flere barrakker, bruges den, der er nærmest midten af kortet.">
+            <span class="quick-icon">🪖</span><span class="quick-text">Send soldater<small>${fmt(avail)} ledige</small></span></button>`;
+    }
+    if (hasAcademy) {
+        html += `<button class="btn btn-primary quick-btn" ${soldiers.amount <= 0 ? "disabled" : ""} onclick="quickCollect('soldiers')" title="Indkald alle færdige soldater fra alle dine militærskoler på én gang.">
+            <span class="quick-icon">📥</span><span class="quick-text">Indkald soldater<small>${fmt(soldiers.amount)} klar${soldiers.amount > 0 && room < soldiers.amount ? ` · plads til ${fmt(room)}` : ""}</small></span></button>`;
+    }
+    if (hasSteel) {
+        html += `<button class="btn btn-primary quick-btn" ${steel.amount <= 0 ? "disabled" : ""} onclick="quickCollect('steel')" title="Hent alt færdigt stål fra alle dine stålværker på én gang.">
+            <span class="quick-icon">🔩</span><span class="quick-text">Hent stål<small>${fmt(steel.amount)} klar</small></span></button>`;
+    }
+    box.innerHTML = html;
+}
+
+// Send soldater uden at finde barrakken i listen. Med flere barrakker bruges den nærmest kortets midte
+// (soldaterne er fælles for alle barrakker; barrakken afgør kun, hvor de går fra).
+window.quickSend = function() {
+    const barracks = state.myBuildings.filter(b => b.kind === "barracks");
+    if (barracks.length === 0) return;
+    if (availableInBarracks() <= 0) { showToast("Ingen ledige soldater i barrakkerne."); return; }
+    let from = barracks[0];
+    if (barracks.length > 1 && mapReady) {
+        const c = map.getCenter();
+        from = barracks.reduce((best, b) =>
+            Geo.distanceM(c.lat, c.lng, b.lat, b.lon) < Geo.distanceM(c.lat, c.lng, best.lat, best.lon) ? b : best);
+    }
+    sendFromBuilding(from.id);
+};
+
+let quickCollectBusy = false;
+window.quickCollect = async function(material) {
+    if (quickCollectBusy) return;
+    const ready = readyProduction(material);
+    if (ready.buildings.length === 0) return;
+    if (material === "soldiers" && state.soldiers >= totalSoldierCapacity()) {
+        showToast(`Dine barrakker er fulde (${state.soldiers}/${totalSoldierCapacity()})! Opgradér en barrak først.`);
+        return;
+    }
+    quickCollectBusy = true;
+    let total = 0, lastError = null;
+    try {
+        for (const b of ready.buildings) {
+            const { data, error } = await sb.rpc("collect", { p_building: b.id, p_remote: true });
+            if (error) { lastError = error; continue; }
+            total += Number(data?.amount || 0);
+        }
+    } finally {
+        quickCollectBusy = false;
+    }
+    if (total > 0) {
+        showToast(material === "steel"
+            ? `🔩 +${total} stål hentet fra ${ready.buildings.length === 1 ? "stålværket" : `${ready.buildings.length} stålværker`}!`
+            : `📥 +${total} soldater indkaldt til barrakkerne!`);
+    } else if (lastError) {
+        showToast((material === "steel" ? "Kunne ikke hente stål: " : "Kunne ikke indkalde: ") + lastError.message);
+    }
+    await syncAllFromSupabase();
+};
+
+// ============================================================================
 // Sidepanel: Dine Militærbygninger & Soldater ude på kortet
 // ============================================================================
 function renderBuildingsSidebar() {
     const list = document.getElementById("buildings-list");
     const badge = document.getElementById("buildings-summary-badge");
     badge.textContent = `${state.myBuildings.length} bygninger`;
+    renderQuickBar();
 
     if (state.myBuildings.length === 0) {
         list.innerHTML = `<p class="muted-hint">Du har ingen bygninger endnu. Tag telefonen med ud og sæt et byggepladsbogmærke — så kan du bygge der herfra.</p>`;
@@ -12739,6 +12834,8 @@ setInterval(async () => {
     await loadReports();
 }, GAME_CONFIG.WORLD_POLL_MS);
 setInterval(loadBattles, 60000);
+// Tallene på de hurtige handlinger (klar på skolen, ledige i barrakken) ændrer sig hele tiden.
+setInterval(() => { if (state.user) renderQuickBar(); }, 15000);
 setInterval(() => { if (state.user) loadCraters(); }, GAME_CONFIG.CRATER_POLL_MS);
 
 // Spillere online: meld dig hvert halve minut og hent antallet.

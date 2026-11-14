@@ -638,6 +638,38 @@ body, html {
     background: rgba(255, 82, 82, 0.08);
 }
 
+/* Hurtige handlinger øverst i sidepanelet: store knapper med tal under */
+.quick-actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 8px;
+}
+
+.quick-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    text-align: left;
+    line-height: 1.2;
+}
+
+.quick-btn .quick-icon {
+    font-size: 20px;
+}
+
+.quick-btn .quick-text {
+    display: flex;
+    flex-direction: column;
+    font-weight: 700;
+}
+
+.quick-btn small {
+    font-weight: 400;
+    font-size: 11px;
+    opacity: 0.85;
+}
+
 .bookmark-chip.bookmark-enemy,
 .bookmark-icon.bookmark-enemy {
     border-color: #FF9100;

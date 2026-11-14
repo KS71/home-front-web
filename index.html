@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>HOME FRONT — Command Center</title>
     <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
-    <link rel="stylesheet" href="style.css?v=161" />
+    <link rel="stylesheet" href="style.css?v=162" />
 </head>
 <body>
     <!-- Login / Titelskærm Overlay -->
@@ -127,6 +127,14 @@
 
         <!-- Højre: Fast Kommandopanel med fuldt overblik -->
         <aside class="command-sidebar">
+            <!-- Hurtige handlinger: det, man gør hele tiden, uden at lede i listerne -->
+            <section class="panel-section">
+                <div class="section-header">
+                    <h2>⚡ HURTIGE HANDLINGER</h2>
+                </div>
+                <div id="quick-actions" class="quick-actions"></div>
+            </section>
+
             <!-- 1. Valgt sted på kortet -->
             <section class="panel-section">
                 <div class="section-header">
@@ -228,6 +236,6 @@
 
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="game.js?v=161"></script>
+    <script src="game.js?v=162"></script>
 </body>
 </html>
