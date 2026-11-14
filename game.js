@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 164;
+const APP_VERSION = 165;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -144,6 +144,19 @@ const GAME_CONFIG = {
             discount: [0, 0.05, 0.10, 0.15, 0.20],
             size: 60,
             needsRules: true,      // vises først, når 0033 er kørt (reglerne kender bygningen)
+            enabled: false
+        },
+        depot: {
+            id: "depot",
+            name: "Depot",
+            shortName: "depot",
+            desc: "Et fremskudt lager i en by, du ejer. Soldater ved depotet kan fylde granater, morterer, panserværn, droner, både og ingeniørudstyr op fra dit lager, så de ikke skal helt hjem. Kræver ikke byggepladsbogmærke. Virker kun, mens du eller en allieret ejer byen. Nye kampvogne hentes stadig hjemme.",
+            stages: ["Depot"],
+            sprites: [],
+            prices: [600],
+            materials: [{ steel: 150 }],
+            size: 30,
+            needsRules: true,      // vises først, når 0066 er kørt
             enabled: false
         }
     }
@@ -331,12 +344,14 @@ async function loadArmy() {
     const withGear = (place, row) => {
         const x = gear.get(`${place}:${row.id}`);
         return { ...row, tanks: x?.tanks || [], at: x?.at || 0, drones: x?.drones || 0, tankShells: x?.shells || 0,
+                 engineers: x?.engineers || 0, boats: x?.boats || 0,
                  order: orders.get(`${place}:${row.id}`) || null };
     };
     if (mRes.data) state.marches = mRes.data.map(marchFromRow).map(m => withGear("march", m));
     if (gRes.data) state.garrisons = gRes.data.map(g => withGear("garrison", g));
     if (pRes.data) state.parkedTrucks = pRes.data;
     reportOwnTerrain();
+    loadFieldworks();
     await loadNamedSoldiers();
     renderGroupModal();
     renderTroopsSidebar();
@@ -2715,6 +2730,36 @@ function installGameLayers() {
         }
     });
 
+    // Ingeniørernes broer og sandsække (0066).
+    map.addSource("src-fieldworks", { type: "geojson", data: empty });
+    const bridgeW = k => ["interpolate", ["exponential", 2], ["zoom"], 12, 1.2 * k, 15, 2.4 * k, 17, 6 * k, 19, 22 * k, 21, 88 * k];
+    map.addLayer({
+        id: "lyr-bridge-edge", type: "line", source: "src-fieldworks", filter: ["==", ["get", "kind"], "bridge"],
+        layout: { "line-cap": "butt" },
+        paint: { "line-color": "#3e2f1f", "line-width": bridgeW(1.25), "line-opacity": ["case", ["==", ["get", "ready"], 1], 1, 0.45] }
+    });
+    map.addLayer({
+        id: "lyr-bridge", type: "line", source: "src-fieldworks", filter: ["==", ["get", "kind"], "bridge"],
+        layout: { "line-cap": "butt" },
+        paint: { "line-color": "#b08a55", "line-width": bridgeW(1), "line-opacity": ["case", ["==", ["get", "ready"], 1], 1, 0.45] }
+    });
+    map.addLayer({
+        id: "lyr-bridge-planks", type: "line", source: "src-fieldworks", minzoom: 15,
+        filter: ["all", ["==", ["get", "kind"], "bridge"], ["==", ["get", "ready"], 1]],
+        layout: { "line-cap": "butt" },
+        paint: { "line-color": "#7a5c36", "line-width": bridgeW(1), "line-dasharray": [0.12, 0.5] }
+    });
+    map.addLayer({
+        id: "lyr-sandbag-area", type: "line", source: "src-fieldworks", minzoom: 14, filter: ["==", ["get", "kind"], "area"],
+        paint: { "line-color": "#d9c08a", "line-width": 1.5, "line-dasharray": [2, 2], "line-opacity": ["case", ["==", ["get", "ready"], 1], 0.9, 0.4] }
+    });
+    map.addLayer({
+        id: "lyr-sandbags", type: "line", source: "src-fieldworks", minzoom: 13, filter: ["==", ["get", "kind"], "wall"],
+        layout: { "line-cap": "round" },
+        paint: { "line-color": "#cdb47a", "line-width": ["interpolate", ["exponential", 2], ["zoom"], 13, 1.5, 16, 3, 18, 8, 20, 30],
+                 "line-opacity": ["case", ["==", ["get", "ready"], 1], 1, 0.45] }
+    });
+
     // Kratere efter mortergranater: hullet i jorden blegner, jo ældre det er.
     map.addLayer({
         id: "lyr-craters",
@@ -3395,8 +3440,11 @@ function terrainAt(lat, lon) {
     return { id: "ground", name: "Åbent land" };
 }
 
+// Mens en rute beregnes for en gruppe, der kan sejle (0066), spærrer vand ikke.
+let sailRouting = false;
+
 function segmentCrossesWater(lat1, lon1, lat2, lon2, customSamples = null) {
-    if (!mapReady || !map) return false;
+    if (!mapReady || !map || sailRouting) return false;
     if (!isPointOnScreen(lat1, lon1) || !isPointOnScreen(lat2, lon2)) return true;
     const pt1 = map.project([lon1, lat1]);
     const pt2 = map.project([lon2, lat2]);
@@ -3687,6 +3735,7 @@ function hasLineOfSight(lat1, lon1, lat2, lon2) {
 
 // Er punktet på en bro (vej eller sti mærket som bro i kortet)? Så kan man gå der, selv om der er vand under.
 function isNearBridgeFast(lat, lon, maxDistM = 6) {
+    if (nearFieldBridge(lat, lon, maxDistM)) return true;   // ingeniørernes broer (0066)
     const cx = Math.floor(lon / CHUNK_LON), cy = Math.floor(lat / CHUNK_LAT);
     const ch = rawChunks.get(cx + ":" + cy);
     if (!ch || !ch.roadSegs.length) return false;
@@ -3894,6 +3943,7 @@ function findTacticalBuildingPath(startLat, startLon, endLat, endLon) {
     const wCols = Math.ceil((maxLon - minLon) * mPerLon / WATER_M) + 2;
     const waterGrid = new Uint8Array(wRows * wCols); // 0=ukendt, 1=land, 2=vand
     const waterAt = (la, lo) => {
+        if (sailRouting) return false;
         const wr = Math.round((la - minLat) * mPerLat / WATER_M);
         const wc = Math.round((lo - minLon) * mPerLon / WATER_M);
         const k = wr * wCols + wc;
@@ -4556,7 +4606,67 @@ function truckPathSeconds(path, speeds = null) {
     return sec;
 }
 
+// Meter over vand i en sejlrute (stykker mærket 2) og rejsetiden til fods og i båd.
+function waterDistanceM(path) {
+    let sum = 0;
+    for (let i = 0; i < path.length - 1; i++) {
+        if (path[i + 1][2] === 2) sum += Geo.distanceM(path[i][0], path[i][1], path[i + 1][0], path[i + 1][1]);
+    }
+    return sum;
+}
+function sailPathSeconds(path) {
+    const walk = GAME_CONFIG.SOLDIER_SPEED_MPS, boat = Math.max(0.1, codexRule("boat_speed_mps", 4.167));
+    let sec = 0;
+    for (let i = 0; i < path.length - 1; i++) {
+        sec += Geo.distanceM(path[i][0], path[i][1], path[i + 1][0], path[i + 1][1]) / (path[i + 1][2] === 2 ? boat : walk);
+    }
+    return sec;
+}
+// Er punktet ude på vandet (ikke på en bro)? Kun til at se på: kortet skal være tegnet der.
+function afloatAt(lat, lon) {
+    return mapReady && isPointOnScreen(lat, lon) && isWaterAt(lat, lon) && !isNearBridgeFast(lat, lon, 7);
+}
+// Deler en rute op ved vandkanten og mærker stykkerne over vand med 2 (serveren regner dem med bådens fart).
+function markWaterLegs(path) {
+    const out = [[path[0][0], path[0][1]]];
+    for (let i = 1; i < path.length; i++) {
+        const aLat = path[i - 1][0], aLon = path[i - 1][1], bLat = path[i][0], bLon = path[i][1];
+        const d = Geo.distanceM(aLat, aLon, bLat, bLon);
+        const n = Math.max(1, Math.min(500, Math.ceil(d / 8)));
+        const wetAt = k => afloatAt(aLat + (bLat - aLat) * (k + 0.5) / n, aLon + (bLon - aLon) * (k + 0.5) / n);
+        let wet = wetAt(0);
+        for (let k = 1; k <= n; k++) {
+            const next = k < n ? wetAt(k) : null;
+            if (k === n || next !== wet) {
+                const la = k === n ? bLat : aLat + (bLat - aLat) * k / n;
+                const lo = k === n ? bLon : aLon + (bLon - aLon) * k / n;
+                out.push(wet ? [la, lo, 2] : [la, lo]);
+                wet = next;
+            }
+        }
+    }
+    return out;
+}
+// Rute for en gruppe med både: den korteste vej uden om huse, lige over vandet.
+async function findSailPathAsync(startLat, startLon, endLat, endLon) {
+    await ensureRouteInView(startLat, startLon, endLat, endLon);
+    const direct = Geo.distanceM(startLat, startLon, endLat, endLon);
+    let path = null;
+    sailRouting = true;
+    try {
+        path = await findLandPathAsync(startLat, startLon, endLat, endLon);
+    } catch (_) {
+        path = null;
+    } finally {
+        sailRouting = false;
+    }
+    // Har rutetjenesten sendt gruppen en lang vej ad vejene (uden om vandet), sejles der lige over.
+    if (!path || path.length < 2 || pathDistanceM(path) > direct * 1.5 + 100) path = [[startLat, startLon], [endLat, endLon]];
+    return markWaterLegs(path);
+}
+
 function pathSeconds(path, driving, speeds = null) {
+    if (!driving && path.some(q => q[2] === 2)) return Math.max(2, sailPathSeconds(path));
     return Math.max(2, driving ? truckPathSeconds(path, speeds) : pathDistanceM(path) / GAME_CONFIG.SOLDIER_SPEED_MPS);
 }
 
@@ -4574,11 +4684,15 @@ async function findTruckPathAsync(startLat, startLon, endLat, endLon) {
             const coords = json?.routes?.[0]?.geometry?.coordinates;
             if (Array.isArray(coords) && coords.length >= 2) {
                 const road = simplifyPolyline(coords.map(c => [c[1], c[0]]), 0.00012);
-                best = [
+                const byRoad = [
                     [startLat, startLon],
                     ...road.map((p, i) => [p[0], p[1], i === 0 ? 0 : 1]),
                     [endLat, endLon, 0]
                 ];
+                // Rutetjenesten kender ikke ingeniørernes broer (0066): går markruten over en af dem
+                // og er hurtigere, køres den vej.
+                const overFieldBridge = field.some(q => nearFieldBridge(q[0], q[1], 8));
+                best = overFieldBridge && truckPathSeconds(field) < truckPathSeconds(byRoad) ? field : byRoad;
             }
         }
     } catch (e) {
@@ -5020,6 +5134,8 @@ async function ensureStreetUnitSprites(style = "own") {
     addShadowedSprite("st-howitzer-l", howitzerImg, 1, true);
     addShadowedSprite(`st-tank-${solKey}`, tankCanvas(style, false), 1.45, false);
     addShadowedSprite(`st-tank-${solKey}-l`, tankCanvas(style, true), 1.45, false);
+    addShadowedSprite(`st-boat-${solKey}`, boatCanvas(style, false), 1.45, false);
+    addShadowedSprite(`st-boat-${solKey}-l`, boatCanvas(style, true), 1.45, false);
 }
 
 function streetBadgeId(count, strokeColor, pct, tag = "", medic = false, mortar = false) {
@@ -5261,7 +5377,24 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
         });
     };
 
-    if (isMoving) {
+    // På vandet (0066): gruppen sidder i sine både. Kun til at se på; serveren afgør, hvem der kan sejle.
+    const afloat = trucks === 0 && tankCount(group) === 0 && afloatAt(lat, lon);
+    if (afloat) {
+        const nB = Math.max(1, Math.min(5, Math.ceil(group.count / boatCapacity())));
+        if (isMoving) {
+            const headOff = Math.min(10, (nB - 1) * 4.5);
+            for (let i = 0; i < nB; i++) {
+                const pt = pointAlongMarchByMeters(marchObj, now, headOff - i * 9);
+                const bob = Math.sin(now / 600 + i * 1.9) * 0.25;
+                pushUnit(pt.lat + bob * invLat, pt.lon, `st-boat-${solKey}${pt.ux < -0.05 ? "-l" : ""}`, "truck", 0);
+            }
+        } else {
+            for (let i = 0; i < nB; i++) {
+                const bob = Math.sin(now / 700 + i * 1.9) * 0.2;
+                pushUnit(lat + (((i % 2) * 2 - 1) * (i > 0 ? 2.5 : 0) + bob) * invLat, lon + (i - (nB - 1) * 0.5) * 9 * invLon, `st-boat-${solKey}`, "truck", 0);
+            }
+        }
+    } else if (isMoving) {
         if (isDriving) {
             // Kørende lastbil-kolonne langs vejen (op til 6 synlige vogne i kolonne)
             const nVis = Math.min(trucks, 6);
@@ -5403,7 +5536,7 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
     }
 
     // Kampvogne (0059): foran kolonnen på march, ellers på række langs gaden ved siden af gruppen.
-    const tanks = Math.min(tankCount(group), 4);
+    const tanks = afloat ? 0 : Math.min(tankCount(group), 4);
     if (tanks > 0) {
         if (isMoving) {
             for (let t = 0; t < tanks; t++) {
@@ -5998,6 +6131,7 @@ async function syncAllFromSupabase() {
                 }
                 const wf = GAME_CONFIG.BUILDINGS.weapons_factory;
                 wf.enabled = !!r.building_prices?.weapons_factory;
+                GAME_CONFIG.BUILDINGS.depot.enabled = !!r.building_prices?.depot;
                 if (r.factory_unlock) wf.unlock = r.factory_unlock;
                 if (r.factory_discount) wf.discount = r.factory_discount.map(Number);
                 const mortarRules = {
@@ -6063,6 +6197,8 @@ async function syncAllFromSupabase() {
         state.atHome = mapMat.at_launchers || 0;
         state.dronesHome = mapMat.drones || 0;
         state.tankShellsHome = mapMat.tank_shells || 0;
+        state.engineersHome = mapMat.engineers || 0;
+        state.boatsHome = mapMat.boats || 0;
     }
     if (myBldRes.data) {
         state.myBuildings = myBldRes.data;
@@ -6222,7 +6358,7 @@ function buildRight(lat, lon, size) {
     if (state.isTester) return "tester";
     if (state.bookmarks.some(b => b.purpose === "build"
         && Geo.pointInSquare(lat, lon, b.lat, b.lon, GAME_CONFIG.BUILD_BOOKMARK_M))) return "bookmark";
-    if (state.myBuildings.some(b =>
+    if (state.myBuildings.some(b => b.kind !== "depot" &&
         Geo.rectGapM(b.lat, b.lon, buildingSize(b.kind), lat, lon, size) <= GAME_CONFIG.BUILD_CHAIN_M)) return "chain";
     return null;
 }
@@ -6242,6 +6378,10 @@ function onMapClicked(lat, lon) {
         openFireMortarModal(lat, lon);
         return;
     }
+    if (state.bridgeAim) {
+        openBridgeConfirm(lat, lon);
+        return;
+    }
     if (state.pendingMarchOrder) {
         // Tjek om der er klikket på en anden egne vagtstyrke (snapper præcist til dens koordinater)
         const nearGar = garrisonsNear(state.garrisons, lat, lon, true).find(g => {
@@ -6254,8 +6394,8 @@ function onMapClicked(lat, lon) {
         } else if (bld) {
             target = { lat: bld.lat, lon: bld.lon, label: buildingLabel(bld) };
         } else {
-            if (terrainAt(lat, lon).id === "water") {
-                showToast("Stedet ligger ude i vandet! Vælg et sted på land.");
+            if (terrainAt(lat, lon).id === "water" && !orderSails(state.pendingMarchOrder)) {
+                showToast("Stedet ligger ude i vandet! Vælg et sted på land (eller giv gruppen både nok til alle).");
                 return;
             }
             // Hvis man klikker oven på et af kortets huse, stiller soldaterne sig på fortovet/gaden lige uden for huset
@@ -6266,6 +6406,7 @@ function onMapClicked(lat, lon) {
         return;
     }
     if (openFlagModalNear(lat, lon)) return;
+    if (!garrisonsNear(state.garrisons, lat, lon).length && !marchesNear(lat, lon).length && openFieldworkNear(lat, lon)) return;
     selectPoint(lat, lon);
     openGroupModalAt(lat, lon);
 }
@@ -6387,7 +6528,8 @@ function renderBuildingBox(bld, box, badge) {
                         <div class="item-sub">${cfg ? cfg.desc : ""}</div>
                         <div class="item-sub">${size}×${size} m · ${formatPos(bld.lat, bld.lon)}</div>
                         ${housing ? `<div class="item-sub" style="color:#76FF03">Plads her: ${housing} · Ledige i barrak: ${avail}</div>` : ""}
-                        ${bld.kind === "barracks" || bld.kind === "weapons_factory" ? stockLinesHtml() : ""}
+                        ${bld.kind === "barracks" || bld.kind === "weapons_factory" || bld.kind === "depot" ? stockLinesHtml() : ""}
+                        ${depotLineHtml(bld)}
                         ${bld.kind === "barracks" && factoryEnabled() ? `<div class="item-sub">Våben, granater og køretøjer købes i våbenfabrikken og står på lager her.</div>` : ""}
                         ${bld.kind === "weapons_factory" ? `<div class="item-sub" style="color:#FFB74D">${factoryLineText(bld)}</div>
                         <div class="item-sub">${hasBarracks ? "Købt udstyr leveres til din barrak. Soldater sendes ud og haubitser affyres fra barrakken." : "Du skal have en barrak for at kunne opbevare udstyr."}</div>` : ""}
@@ -6593,7 +6735,9 @@ function renderPointBox(lat, lon, box, badge) {
     const near = nearestBuildingGap(lat, lon, size);
     const tooClose = near && near.gap < GAME_CONFIG.BUILDING_GAP_M;
     const water = terr.id === "water";
-    const canBuild = right && !tooClose && !water;
+    // Et depot (0066) kan bygges i en by, du ejer, også uden bogmærke.
+    const depotOk = GAME_CONFIG.BUILDINGS.depot.enabled && !depotProblem(lat, lon);
+    const canBuild = (right || depotOk) && !tooClose && !water;
     sketchShape = squareFeature(lat, lon, size, { state: canBuild ? "ok" : "no" });
     setSelectedShape(sketchShape);
 
@@ -6602,9 +6746,9 @@ function renderPointBox(lat, lon, box, badge) {
             tester: `<span class="badge badge-gold">Testkonto</span> Du må bygge her uden bogmærke fra telefonen:`,
             bookmark: "Stedet ligger i dit byggepladsbogmærke, så du kan bygge her hjemmefra:",
             chain: `Stedet er højst ${GAME_CONFIG.BUILD_CHAIN_M} m fra en af dine bygninger, så du kan bygge her:`
-        }[right];
+        }[right] || "Stedet ligger i en by, du ejer, så du kan bygge et depot her uden bogmærke fra telefonen:";
         html += `<div class="muted-hint" style="margin:8px 0;">${why}</div>`;
-        html += buildChoicesHtml(lat, lon, terr);
+        html += buildChoicesHtml(lat, lon, terr, !right);
     } else if (water) {
         html += `<p class="muted-hint">Der kan ikke bygges ude i vandet.</p>`;
     } else if (tooClose) {
@@ -6632,14 +6776,19 @@ function clearFootprintPreview() {
     setSelectedShape(sketchShape);
 }
 
-function buildChoicesHtml(lat, lon, terr) {
+function buildChoicesHtml(lat, lon, terr, depotOnly = false) {
     let html = "";
+    const ownsTown = [...flagData.towns.values()].some(t => t.owner_id && t.owner_id === state.user?.id);
     for (const cfg of Object.values(GAME_CONFIG.BUILDINGS)) {
         if (cfg.needsRules && !cfg.enabled) continue;
+        if (depotOnly && cfg.id !== "depot") continue;
         const p = cfg.prices[0];
         const size = cfg.size || 30;
         const near = nearestBuildingGap(lat, lon, size);
-        const blocked = (near && near.gap < GAME_CONFIG.BUILDING_GAP_M) || !buildRight(lat, lon, size);
+        // Depotet (0066) kræver ikke bogmærke, men en by, du ejer.
+        const depotWhy = cfg.id === "depot" ? depotProblem(lat, lon) : null;
+        if (cfg.id === "depot" && depotWhy && !ownsTown) continue;   // vises først, når du ejer en by
+        const blocked = (near && near.gap < GAME_CONFIG.BUILDING_GAP_M) || (cfg.id === "depot" ? !!depotWhy : !buildRight(lat, lon, size));
         html += `
             <div class="item-row" style="margin-bottom:6px;" onmouseenter="previewFootprint(${lat}, ${lon}, ${size}, ${!blocked})" onmouseleave="clearFootprintPreview()">
                 <div class="item-row-top">
@@ -6647,11 +6796,11 @@ function buildChoicesHtml(lat, lon, terr) {
                     <div class="item-info">
                         <div class="item-title">${cfg.name} (trin 1)</div>
                         <div class="item-sub">${cfg.desc} ${size}×${size} m.</div>
-                        ${blocked ? `<div class="item-sub" style="color:#FF8A80">Ikke plads her: ${size}×${size} m skal holde ${GAME_CONFIG.BUILDING_GAP_M} m afstand til andre bygninger og ligge i dit byggeområde. Hold musen over denne boks for at se, hvor meget den fylder.</div>` : ""}
+                        ${depotWhy ? `<div class="item-sub" style="color:#FF8A80">${escapeHtml(depotWhy)}</div>` : blocked ? `<div class="item-sub" style="color:#FF8A80">Ikke plads her: ${size}×${size} m skal holde ${GAME_CONFIG.BUILDING_GAP_M} m afstand til andre bygninger og ligge i dit byggeområde. Hold musen over denne boks for at se, hvor meget den fylder.</div>` : ""}
                     </div>
                 </div>
                 <div class="item-actions">
-                    <button class="btn btn-small btn-primary" ${blocked ? "disabled" : ""} onclick="buildAt('${cfg.id}', ${lat}, ${lon}, '${terr.id}')">🔨 Byg her (${p} skridt)</button>
+                    <button class="btn btn-small btn-primary" ${blocked ? "disabled" : ""} onclick="buildAt('${cfg.id}', ${lat}, ${lon}, '${terr.id}')">🔨 Byg her (${p} skridt${cfg.materials?.[0]?.steel ? ` + ${cfg.materials[0].steel} stål` : ""})</button>
                 </div>
             </div>
         `;
@@ -7228,11 +7377,11 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
     if (gearEnabled() && fromBase && gearStockTotal() > 0) {
         document.getElementById("gear-pick").classList.remove("hidden");
         gearPickW = wireGearSliders(count, { t: 0, a: 0, d: 0, s: 0 }, null, { setCount, atLeast, onChange: () => updateAll() });
-    } else if (garrison && tankCount(garrison) + atCount(garrison) + droneCount(garrison) > 0) {
+    } else if (garrison && tankCount(garrison) + atCount(garrison) + droneCount(garrison) + engineerCount(garrison) + boatCount(garrison) > 0) {
         const box = document.getElementById("gear-pick");
         box.classList.remove("hidden");
         gearSay = () => {
-            box.innerHTML = `<p class="muted-hint">${gearWords(garrison)}: ${allGo()
+            box.innerHTML = `<p class="muted-hint">${[gearWords(garrison), fieldGearTag(garrison).replace(/^ · /, "")].filter(Boolean).join(" · ")}: ${allGo()
                 ? "hele vagtstyrken går, så det følger med."
                 : "kun en del af vagtstyrken går, så det bliver stående hos vagten. Send hele vagtstyrken for at tage det med."}</p>`;
         };
@@ -7498,10 +7647,10 @@ function showRouteCalculating(target) {
 }
 
 // Ruten over land gennem flere punkter: ét ben ad gangen, lagt sammen.
-async function landPathThrough(points, driving = false) {
+async function landPathThrough(points, driving = false, sail = false) {
     let out = [points[0]];
     for (let i = 1; i < points.length; i++) {
-        const find = driving ? findTruckPathAsync : findLandPathAsync;
+        const find = sail ? findSailPathAsync : driving ? findTruckPathAsync : findLandPathAsync;
         const leg = await find(points[i - 1][0], points[i - 1][1], points[i][0], points[i][1]);
         out = out.concat(leg.slice(1));
     }
@@ -7534,6 +7683,7 @@ async function openConfirmMarchModal(order, target) {
     const trucks = orderTrucks(order);
     const rideN = orderRiding(order);
     const driving = !order.patrol && groupDrives(order.count, trucks, rideN);
+    const sail = !driving && orderSails(order);
     const speeds = driveSpeeds(trucks, rideN);
     if (order.patrol && trucks > 0) {
         showToast("Lastbiler kan ikke gå patrulje endnu. Send soldaterne uden lastbilerne.");
@@ -7547,8 +7697,12 @@ async function openConfirmMarchModal(order, target) {
         landPath = await landPathThrough([startPos, wps[0]]);
         loopPath = await landPathThrough([...wps, wps[0]]);
     } else {
-        landPath = await landPathThrough([startPos, ...wps], driving);
+        landPath = await landPathThrough([startPos, ...wps], driving, sail);
     }
+    const waterM = sail ? Math.round(waterDistanceM(landPath)) : 0;
+    const sailInfo = waterM > 0
+        ? `<p>🚤 <strong>Sejler ${formatDistance(waterM)} over vand</strong> med ${fmtKmh(codexRule("boat_speed_mps", 4.167))}; resten til fods.</p>`
+        : (!sail && !order.patrol && sailWhyNot(order) ? `<p style="color:#FFB74D">🚤 Bådene kan ikke bruges: ${sailWhyNot(order)}. Ruten går uden om vandet.</p>` : "");
     const distM = Math.round(pathDistanceM(landPath));
     const durationSec = Math.round(pathSeconds(landPath, driving, speeds));
     const T = { ...GAME_CONFIG.TRUCK, ...speeds };
@@ -7577,9 +7731,10 @@ async function openConfirmMarchModal(order, target) {
         <p style="color:#90A4AE;font-size:13px;">Patruljen skyder på fjender, den møder. Brug "Stop", "Nyt mål" eller "Kald hjem" for at stoppe den.</p>
     ` : `
         <p><strong>Mål:</strong> ${escapeHtml(target.label)}${via}</p>
-        <p><strong>Afstand langs land/kyst:</strong> ca. ${formatDistance(distM)}</p>
+        <p><strong>${waterM > 0 ? "Afstand over land og vand" : "Afstand langs land/kyst"}:</strong> ca. ${formatDistance(distM)}</p>
         <p><strong>Rejsetid:</strong> ${formatSeconds(durationSec)}</p>
         ${truckInfo}
+        ${sailInfo}
         ${gearOrderLine(order)}
         <p style="color:#90A4AE;font-size:13px;">Er du sikker på, at du vil sende soldaterne hertil?</p>
     `;
@@ -7644,7 +7799,8 @@ async function executeMarchOrder(order, target, landPath, loopPath = null) {
         if (!marchGearedOff) {
             const v = order.gear || {};
             ({ data: started, error } = await sb.rpc("start_march_geared", {
-                ...args, p_tanks: v.tanks || 0, p_at: v.at || 0, p_drones: v.drones || 0, p_tank_shells: v.shells || 0
+                ...args, p_tanks: v.tanks || 0, p_at: v.at || 0, p_drones: v.drones || 0, p_tank_shells: v.shells || 0,
+                ...(fieldEnabled() ? { p_engineers: v.engineers || 0, p_boats: v.boats || 0 } : {})
             }));
             if (error && (error.code === "PGRST202" || /start_march_geared/.test(error.message || ""))) {
                 marchGearedOff = true;
@@ -7692,7 +7848,7 @@ window.recallMarch = async function(marchId) {
     if (!m) return;
     const cur = marchCurrentPos(m, serverNow());
     showToast("Beregner ruten hjem…");
-    const find = groupDrives(m.count, truckCount(m), ridingCrew(m)) ? findTruckPathAsync : findLandPathAsync;
+    const find = groupDrives(m.count, truckCount(m), ridingCrew(m)) ? findTruckPathAsync : groupSails(m) ? findSailPathAsync : findLandPathAsync;
     const homePath = await find(cur[0], cur[1], m.homeLat, m.homeLon);
     const path = [marchCurrentPos(m, serverNow()), ...homePath.slice(1)];
     const { error } = await sb.rpc("redirect_march", {
@@ -7913,7 +8069,7 @@ function renderGroupModal() {
         body.innerHTML = `
             <p class="muted-hint">${where} · ${g.count - hurt} raske, ${hurt} ${hurt === 1 ? "såret" : "sårede"}. Sårede heles kun på et felthospital.</p>
             ${namedLineHtml(gm.kind, g)}
-            ${gm.kind === "garrison" ? orderLineHtml(g) + terrainLineHtml(g) + digInLineHtml(g) : ""}
+            ${gm.kind === "garrison" ? orderLineHtml(g) + terrainLineHtml(g) + digInLineHtml(g) + sandbagLineHtml(g) : ""}
             ${mortarLineHtml(gm.kind, g)}
             ${howitzerLineHtml(gm.kind, g)}
             ${truckLineHtml(gm.kind, g)}
@@ -7937,6 +8093,7 @@ function renderGroupModal() {
             ${hurt ? `<button class="btn btn-primary" onclick="closeModal(); sendWoundedToHospital(${g.id})">🏥 Send ${hurt} ${hurt === 1 ? "såret" : "sårede"} til hospitalet</button>` : ""}
             ${resupplyButtonHtml(g, "btn btn-gold", false, true)}
             ${equipButtonHtml(g)}
+            ${fieldButtonsHtml(g)}
             <button class="btn btn-danger" onclick="closeModal(); sendGarrisonHome(${g.id})">🏠 Send hjem</button>
             <button class="btn" onclick="closeModal()">Luk</button>`;
         return;
@@ -8097,9 +8254,7 @@ function gapToBuildingM(b, lat, lon) {
 }
 function resupplyOffer(g) {
     if (!g || !(g.count > 0)) return null;
-    const reach = codexRule("resupply_reach_m", 25);
-    const near = state.myBuildings.some(b => (b.kind === "barracks" || b.kind === "weapons_factory") && gapToBuildingM(b, g.lat, g.lon) <= reach);
-    if (!near) return null;
+    if (!supplySpot(g)) return null;
     // Morterer: der skal MORTAR.crew soldater til hver, så gruppen kan højst have floor(count / crew).
     const crew = Math.max(GAME_CONFIG.MORTAR.crew, 1);
     const roomMo = Math.max(0, Math.floor(g.count / crew) - (g.mortars || 0));
@@ -8118,7 +8273,7 @@ function resupplyButtonHtml(g, cls = "btn btn-gold", stop = false, close = false
     if (o.mo > 0) parts.push(`🧨 ${o.mo}`);
     if (o.m > 0) parts.push(`💣 ${o.m}`);
     if (o.h > 0) parts.push(`🎯 ${o.h}`);
-    return `<button class="${cls}" title="Vælg morterer og granater fra lageret i barrakken" onclick="${stop ? "event.stopPropagation(); " : ""}${close ? "closeModal(); " : ""}openResupplyModal(${g.id})">📦 Fyld op (op til ${parts.join(" · ")})</button>`;
+    return `<button class="${cls}" title="Vælg morterer og granater fra dit lager" onclick="${stop ? "event.stopPropagation(); " : ""}${close ? "closeModal(); " : ""}openResupplyModal(${g.id})">📦 Fyld op (op til ${parts.join(" · ")})</button>`;
 }
 // Vinduet, hvor man selv vælger, hvor mange morterer og granater der fyldes på gruppen (som ved køb).
 window.openResupplyModal = function(id) {
@@ -8384,13 +8539,17 @@ const EQUIPMENT_ITEMS = [
     ["at_launchers", "🚀 Køb panserværn"],
     ["drones", "🛸 Køb drone"],
     ["tanks", "🛡️ Køb kampvogn"],
-    ["tank_shells", "💥 Køb kampvognsgranater"]
+    ["tank_shells", "💥 Køb kampvognsgranater"],
+    ["engineers", "🧰 Køb ingeniørudstyr"],
+    ["boats", "🚤 Køb båd"]
 ];
 const GEAR_ITEMS = ["tanks", "at_launchers", "drones", "tank_shells"];
+const FIELD_ITEMS = ["engineers", "boats"];
 const EQUIPMENT_NAMES = {
     mortars: "morter", mortar_shells: "mortergranater", trucks: "lastbil",
     howitzers: "haubits", howitzer_shells: "haubitsgranater",
-    tanks: "kampvogn", at_launchers: "panserværn", drones: "drone", tank_shells: "kampvognsgranater"
+    tanks: "kampvogn", at_launchers: "panserværn", drones: "drone", tank_shells: "kampvognsgranater",
+    engineers: "ingeniørudstyr", boats: "båd"
 };
 
 function factoryEnabled() {
@@ -8419,6 +8578,7 @@ function discounted(n) {
 
 function equipmentAvailable(item) {
     if (item === "tank_shells") return gunEnabled() && factoryEnabled();
+    if (FIELD_ITEMS.includes(item)) return fieldEnabled() && factoryEnabled();
     if (GEAR_ITEMS.includes(item)) return gearEnabled() && factoryEnabled();
     if (!factoryEnabled()) return item.startsWith("howitzer") ? GAME_CONFIG.HOWITZER.enabled : true;
     if (item.startsWith("howitzer") && !GAME_CONFIG.HOWITZER.enabled) return false;
@@ -8445,7 +8605,8 @@ function nearestOwnBarracks(lat, lon) {
 function stockLinesHtml() {
     return `<div class="item-sub" style="color:#FFB74D">🧨 Morterer på lager: ${state.mortarsHome} · 💣 Granater: ${state.shells} · 🚚 Lastbiler: ${state.trucksHome}</div>
         ${GAME_CONFIG.HOWITZER.enabled ? `<div class="item-sub" style="color:#FFB74D">💥 Haubitser: ${state.howitzersHome} · 🎯 Haubitsgranater: ${state.howitzerShells}</div>` : ""}
-        ${gearEnabled() ? `<div class="item-sub" style="color:#FFB74D">🛡️ Kampvogne: ${state.tanksHome || 0}${gunEnabled() ? ` · 💥 Kampvognsgranater: ${state.tankShellsHome || 0}` : ""} · 🚀 Panserværn: ${state.atHome || 0} · 🛸 Droner: ${state.dronesHome || 0}</div>` : ""}`;
+        ${gearEnabled() ? `<div class="item-sub" style="color:#FFB74D">🛡️ Kampvogne: ${state.tanksHome || 0}${gunEnabled() ? ` · 💥 Kampvognsgranater: ${state.tankShellsHome || 0}` : ""} · 🚀 Panserværn: ${state.atHome || 0} · 🛸 Droner: ${state.dronesHome || 0}</div>` : ""}
+        ${fieldEnabled() ? `<div class="item-sub" style="color:#FFB74D">🧰 Ingeniørudstyr: ${state.engineersHome || 0} · 🚤 Både: ${state.boatsHome || 0}</div>` : ""}`;
 }
 
 function factoryLineText(bld) {
@@ -8480,6 +8641,16 @@ function equipmentInfo(item) {
         title: "💥 Køb kampvognsgranater", imgSrc: tankImageUrl(), steps: codexRule("tank_shell_price_steps", 40), steel: codexRule("tank_shell_price_steel", 15), max: 100,
         one: "kampvognsgranat", many: "kampvognsgranater", done: n => `💥 +${n} kampvognsgranater på lager.`,
         desc: `Granater til kampvognens kanon. Med granater skyder en kampvogn selv på fjender op til <strong>${formatDistance(codexRule("tank_range_m", 400))}</strong> væk, når der er fri skudlinje. Hver kampvogn kan have ${fmtNum(codexRule("tank_shells_max", 20))} med.`
+    };
+    if (item === "engineers") return {
+        title: "🧰 Køb ingeniørudstyr", img: "ingenioer", steps: codexRule("engineer_price_steps", 600), steel: codexRule("engineer_price_steel", 100), max: 10,
+        one: "sæt ingeniørudstyr", many: "sæt ingeniørudstyr", done: n => `🧰 ${n} sæt ingeniørudstyr ligger nu på lager.`,
+        desc: `Skovle, sandsække og pontoner til en gruppe soldater. En vagtstyrke med ingeniørudstyr kan bygge <strong>sandsække</strong> (dækning) og <strong>broer</strong> op til ${formatDistance(codexRule("bridge_max_m", 150))} over vand, og fjerne fjendens. Kræver ${fmtNum(engineerCrew())} soldater pr. sæt.`
+    };
+    if (item === "boats") return {
+        title: "🚤 Køb stormbåd", imgSrc: boatImageUrl(), steps: codexRule("boat_price_steps", 300), steel: codexRule("boat_price_steel", 60), max: 20,
+        one: "båd", many: "både", done: n => `🚤 ${n} ${n === 1 ? "båd ligger" : "både ligger"} nu på lager.`,
+        desc: `En let stormbåd, som soldaterne bærer med. Med både nok til alle (<strong>${fmtNum(boatCapacity())} soldater pr. båd</strong>) sejler gruppen lige over vand med ${fmtKmh(codexRule("boat_speed_mps", 4.167))}. Køretøjer kan ikke komme med.`
     };
     if (item === "at_launchers") return {
         title: "🚀 Køb panserværn", img: "panservaern", steps: codexRule("at_price_steps", 500), steel: codexRule("at_price_steel", 80), max: 20,
@@ -9152,6 +9323,7 @@ const REPORT_TEXT = {
     order_retreat: r => `🏃 Ordre udført: vagtstyrken har mistet ${r.losses} af ${r.count} soldater og trækker sig hjem til barrakken med ${r.survivors}.`,
     order_sortie:  r => `⚔️ Ordre udført: ${r.count} soldater rykker ud mod ${r.enemy_losses} fjender tæt på posten.`,
     town_help:     r => `🚨 Computeren sender forstærkning: ${r.count} soldater er på vej til ${r.note || "byen"} (fremme om ca. ${formatMinutes(r.survivors)}).`,
+    fieldwork_lost: r => r.count ? "💥 Fjendens ingeniører har sprængt en af dine broer." : "💥 Fjendens ingeniører har fjernet dine sandsække.",
     town_raid:     r => `🚨 Computeren angriber! ${r.count} soldater er på vej mod ${r.note || "din by"} (fremme om ca. ${formatMinutes(r.survivors)}).`,
     tank_killed: r => `🎯 Dine panserværnsskytter har ødelagt ${r.count === 1 ? "en fjendtlig kampvogn" : `${r.count} fjendtlige kampvogne`}${r.note ? ` (${r.note})` : ""}.`,
     flag_attacked:  r => `🚨 Dit flag ${r.note || ""} er ved at blive taget! Send soldater derhen.`,
@@ -10013,6 +10185,7 @@ const RULE_GROUPS = [
     ["howitzer", "Haubits"],
     ["truck", "Lastbil"],
     ["armor", "Kampvogn, panserværn og drone"],
+    ["field", "Ingeniører, sandsække, broer og både"],
     ["mapfire", "Brændende bygninger på kortet"],
     ["npc", "Fjendtlige patruljer"],
     ["sweden", "Den svenske hær (invasion)"],
@@ -10103,6 +10276,25 @@ const RULE_INFO = {
     tank_road_speed_mps:        ["armor", "Kampvogn: fart på vej (når alle sidder i kampvogne eller lastbiler)", "km/t"],
     tank_field_speed_mps:       ["armor", "Kampvogn: fart uden for vejene", "km/t"],
     stance_defend_m:            ["fire", "Ordren \"ryk ud\": fjender så tæt på posten angribes", "m"],
+    stance_town_m:              ["fire", "Ordren \"forsvar byen\": flag så tæt på posten forsvares", "m"],
+    depot_flag_m:               ["build", "Depot: skal ligge så tæt på et af dine flag i en by, du ejer", "m"],
+    engineer_price_steps:       ["field", "Ingeniørudstyr: pris i skridt", "skridt"],
+    engineer_price_steel:       ["field", "Ingeniørudstyr: pris i stål", "stål"],
+    engineer_crew:              ["field", "Ingeniørudstyr: soldater pr. sæt", "soldater"],
+    sandbag_steel:              ["field", "Sandsække: pris i stål", "stål"],
+    sandbag_build_s:            ["field", "Sandsække: byggetid", "s"],
+    sandbag_radius_m:           ["field", "Sandsække: vagtstyrker så tæt på er dækket", "m"],
+    sandbag_cover:              ["field", "Sandsække: andel af geværtræfferne, der går forbi (0,5 = 50 %)", "0–1"],
+    sandbag_cover_shell:        ["field", "Sandsække: andel af granattræfferne, der går forbi (0,25 = 25 %)", "0–1"],
+    bridge_max_m:               ["field", "Bro: største længde", "m"],
+    bridge_steel_per_m:         ["field", "Bro: stål pr. meter", "stål"],
+    bridge_build_s_per_m:       ["field", "Bro: byggetid pr. meter", "s"],
+    fieldwork_reach_m:          ["field", "Så tæt skal ingeniører stå for at fjerne en bro eller sandsække", "m"],
+    fieldwork_max:              ["field", "Flest broer og sandsækstillinger pr. spiller", "stk."],
+    boat_price_steps:           ["field", "Båd: pris i skridt", "skridt"],
+    boat_price_steel:           ["field", "Båd: pris i stål", "stål"],
+    boat_capacity:              ["field", "Båd: soldater pr. båd", "soldater"],
+    boat_speed_mps:             ["field", "Båd: fart på vandet", "km/t"],
     stance_defend_ratio:        ["fire", "Ordren \"ryk ud\": kun hvis vagtstyrken er mindst så stor en del af fjendens antal (0,8 = 80 %)", "0–2"],
     stance_retreat_share:       ["fire", "Ordren \"træk tilbage\": når så stor en del af soldaterne er tabt (0,5 = halvdelen)", "0–1"],
     terrain_cover_wood:         ["fire", "Terræn: andel af geværtræfferne, der går forbi i skov (0,25 = 25 %)", "0–1"],
@@ -10159,7 +10351,7 @@ const RULE_INFO = {
     sweden_salvo_per_gun:       ["sweden", "Granater pr. kanon pr. salve", "stk."],
     sweden_fire_pause_s:        ["sweden", "Mindst så lang tid mellem to salver fra samme enhed", "s"],
     rank_fire_bonus:            ["rank", "Mere ildkraft pr. rang (0,10 = 10 %)", "0–1"],
-    rank_fire_max:              ["rank", "Højeste ildkraftbonus pr. soldat (1,0 = +100 %)", "0–2"],
+    rank_fire_max:              ["rank", "Højeste ildkraftbonus pr. soldat (1,5 = +150 %, en oberst)", "0–2"],
     rank_survive_bonus:         ["rank", "Mindre chance for at falde pr. rang (0,08 = 8 %)", "0–1"],
     rank_survive_max:           ["rank", "Højeste overlevelsesbonus (0,6 = 60 %)", "0–1"],
     flag_radius_m:              ["flags", "Cirkel om flaget", "m"],
@@ -10256,7 +10448,8 @@ const RULE_SUBLABELS = {
     soldiers: "soldater", steel: "stål",
     mortars: "morter", mortar_shells: "mortergranater", trucks: "lastbil",
     howitzers: "haubits", howitzer_shells: "haubitsgranater",
-    tanks: "kampvogn", at_launchers: "panserværn", drones: "drone", tank_shells: "kampvognsgranater"
+    tanks: "kampvogn", at_launchers: "panserværn", drones: "drone", tank_shells: "kampvognsgranater",
+    engineers: "ingeniørudstyr", boats: "båd"
 };
 
 let adminRules = null;   // reglerne, som de så ud, da fanen blev åbnet
@@ -10673,6 +10866,7 @@ function codexStageEffect(b, i) {
     }
     if (b.beds) lines.push(`🩹 ${fmtNum(b.beds[i])} senge`);
     if (b.healPerHour) lines.push(`💚 ${fmtNum(b.healPerHour[i])} energi/time`);
+    if (b.id === "depot") lines.push(`📦 fyld op højst ${formatDistance(codexRule("resupply_reach_m", 25))} fra depotet`, `🏙 højst ${formatDistance(codexRule("depot_flag_m", 250))} fra et af dine flag i en by, du ejer`, "1 depot pr. by");
     if (b.unlock) {
         const items = EQUIPMENT_ITEMS.map(([it]) => it).filter(it => factoryUnlockLevel(it) === i + 1);
         if (items.length) lines.push(`🔓 ${items.map(it => EQUIPMENT_NAMES[it]).join(", ")}`);
@@ -10689,7 +10883,7 @@ function codexSoldierHtml() {
             <summary><span class="codex-sum-title">🪖 Soldater</span><span class="codex-sum-sub">infanteri i brug + 5 kommende specialsoldater</span></summary>
             
             <p class="muted-hint" style="margin-bottom: 12px;">Infanteriet er i brug nu. De øvrige specialiserede soldaterroller er under forberedelse. De kan ikke uddannes endnu, men deres egenskaber, våben og taktiske roller i spillet er fastlagt herunder.</p>
-            <p class="muted-hint" style="margin-bottom: 12px;">🎖️ <strong>Navngivne soldater og rang:</strong> En såret soldat, der heles på felthospitalet, får navn og bliver korporal. Hver heling derefter giver næste rang: sergent, oversergent, seniorsergent, løjtnant, premierløjtnant, kaptajn og major. De navngivne følger med grupperne: ved deling fordeles de jævnt, ved sammenlægning følger alle med, og i kamp falder de i forhold til deres andel af gruppen. De ses i gruppens popup. <strong>I kampen</strong> giver hver rang ${fmtPct(codexRule("rank_fire_bonus", 0.10))} mere ildkraft (højst +${fmtPct(codexRule("rank_fire_max", 1.0))} pr. soldat) og ${fmtPct(codexRule("rank_survive_bonus", 0.08))} mindre chance pr. rang for at falde (højst ${fmtPct(codexRule("rank_survive_max", 0.6))}). Siden <strong>🎖️ Mine soldater</strong> i toppen viser alle navngivne, hvor de er, og mindelisten over de faldne.</p>
+            <p class="muted-hint" style="margin-bottom: 12px;">🎖️ <strong>Navngivne soldater og rang:</strong> En såret soldat, der heles på felthospitalet, får navn og bliver korporal. Hver heling derefter giver næste rang: sergent, oversergent, seniorsergent, løjtnant, premierløjtnant, kaptajn, major (10 helinger), oberstløjtnant (12) og oberst (15). De navngivne følger med grupperne: ved deling fordeles de jævnt, ved sammenlægning følger alle med, og i kamp falder de i forhold til deres andel af gruppen. De ses i gruppens popup. <strong>I kampen</strong> giver hver rang ${fmtPct(codexRule("rank_fire_bonus", 0.10))} mere ildkraft (højst +${fmtPct(codexRule("rank_fire_max", 1.0))} pr. soldat) og ${fmtPct(codexRule("rank_survive_bonus", 0.08))} mindre chance pr. rang for at falde (højst ${fmtPct(codexRule("rank_survive_max", 0.6))}). Siden <strong>🎖️ Mine soldater</strong> i toppen viser alle navngivne, hvor de er, og mindelisten over de faldne.</p>
 
             <div class="codex-grid codex-grid-3">
                 <div class="codex-card">
@@ -10709,7 +10903,7 @@ function codexSoldierHtml() {
                         ["Uddannes straks for", codexPrice(C.INSTANT_SOLDIER_STEPS, 0)],
                         ["Bliver én vagtstyrke inden for", formatDistance(C.GARRISON_MERGE_M)],
                         ...(terrainEnabled() ? [["Dækning i terrænet", `i skov går ${fmtPct(codexRule("terrain_cover_wood", 0.25))} af geværtræfferne forbi, ved huse ${fmtPct(codexRule("terrain_cover_town", 0.2))} (gælder vagtstyrker, ikke delinger på march)`]] : []),
-                        ...(ordersEnabled() ? [["Ordrer til en vagtstyrke", "🛡️ hold stillingen · ⚔️ ryk ud mod fjender tæt på posten · 🏃 træk tilbage ved store tab"]] : []),
+                        ...(ordersEnabled() ? [["Ordrer til en vagtstyrke", `🛡️ hold stillingen · ⚔️ ryk ud mod fjender tæt på posten · 🏃 træk tilbage ved store tab${townOrderEnabled() ? ` · 🏙️ forsvar byen: ryk ud mod fjender i byens flag-cirkler højst ${formatDistance(codexRule("stance_town_m", 800))} fra posten` : ""}`]] : []),
                         ["Graver sig ned efter", `${formatMinutes(codexRule("dig_in_s", 600) / 60)} på samme sted (⛏️)`],
                         ["Nedgravet", `${fmtPct(codexRule("dig_in_cover", 0.4))} af geværtræfferne og ${fmtPct(codexRule("dig_in_cover_shell", 0.15))} af granattræfferne går forbi`]
                     ])}
@@ -10814,7 +11008,7 @@ function codexSoldierHtml() {
 }
 
 function codexBuildingsHtml() {
-    const cards = Object.values(GAME_CONFIG.BUILDINGS).map(b => `
+    const cards = Object.values(GAME_CONFIG.BUILDINGS).filter(b => !b.needsRules || b.enabled).map(b => `
         <div class="codex-card">
             <div class="codex-card-head">
                 <h3>${escapeHtml(b.name)}</h3>
@@ -10833,7 +11027,7 @@ function codexBuildingsHtml() {
         </div>`).join("");
     return `
         <details class="codex-section">
-            <summary><span class="codex-sum-title">🏰 Bygninger</span><span class="codex-sum-sub">${Object.keys(GAME_CONFIG.BUILDINGS).length} bygninger med 5 trin hver: priser og hvad de giver</span></summary>
+            <summary><span class="codex-sum-title">🏰 Bygninger</span><span class="codex-sum-sub">${Object.values(GAME_CONFIG.BUILDINGS).filter(b => !b.needsRules || b.enabled).length} bygninger: priser og hvad de giver</span></summary>
             <p class="muted-hint">Priserne gælder for at bygge eller opgradere til trinnet. En ny bygning skal stå i et byggepladsbogmærke fra telefonen eller højst ${formatDistance(GAME_CONFIG.BUILD_CHAIN_M)} fra en af dine egne, og mindst ${formatDistance(GAME_CONFIG.BUILDING_GAP_M)} fra andre bygninger. Når fjenden angriber en bygning, forsvarer den sig som ${fmtNum(GAME_CONFIG.BUILDING_DEFENSE_PER_LEVEL)} ekstra soldater pr. trin.</p>
             <div class="codex-grid">${cards}</div>
         </details>`;
@@ -10915,7 +11109,7 @@ function codexVehiclesHtml() {
     const T = GAME_CONFIG.TRUCK;
     return `
         <details class="codex-section">
-            <summary><span class="codex-sum-title">🚚 Køretøjer og udstyr</span><span class="codex-sum-sub">lastbil, kampvogn, panserværn og drone</span></summary>
+            <summary><span class="codex-sum-title">🚚 Køretøjer og udstyr</span><span class="codex-sum-sub">lastbil, kampvogn, panserværn, drone, ingeniørudstyr og båd</span></summary>
             <div class="codex-grid codex-grid-3">
                 <div class="codex-card">
                     <div class="codex-card-head"><h3>Lastbil</h3><span class="badge">${buyWhere("trucks")}</span></div>
@@ -10935,7 +11129,7 @@ function codexVehiclesHtml() {
                     <div class="codex-card-head"><h3>Udbrændt lastbil</h3><span class="badge">vrag</span></div>
                     <div class="codex-weapon-img"><img src="assets/lastbil_vrag.png" class="pixel-img" alt="" /></div>
                     <p class="muted-hint">Sådan ser en lastbil ud, når den er skudt i brand. Vraget kan ses af alle i ${fmtNum(T.wreckHours)} timer.</p>
-                </div>${codexGearCardsHtml()}
+                </div>${codexGearCardsHtml()}${codexFieldCardsHtml()}
             </div>
         </details>`;
 }
@@ -11200,6 +11394,7 @@ function showAppVersion() {
 // ============================================================================
 const namedData = { alive: [], fallen: [], loaded: false, supported: true };
 const RANKS = [
+    [15, "Oberst"], [12, "Oberstløjtnant"],
     [10, "Major"], [8, "Kaptajn"], [6, "Premierløjtnant"], [5, "Løjtnant"],
     [4, "Seniorsergent"], [3, "Oversergent"], [2, "Sergent"], [1, "Korporal"]
 ];
@@ -11999,7 +12194,7 @@ function updateRankButton() {
 
 // ---------------------------------------------------------------- alarm: besked uden for fanen
 // Rapporter, der er vigtige nok til en besked fra computeren, når fanen ikke er fremme.
-const ALERT_KINDS = new Set(["flag_attacked", "counter_attack", "flag_lost", "town_lost", "lost", "tank_lost", "town_raid", "order_retreat",
+const ALERT_KINDS = new Set(["fieldwork_lost", "flag_attacked", "counter_attack", "flag_lost", "town_lost", "lost", "tank_lost", "town_raid", "order_retreat",
     "patrol_won", "skirmish_lost", "shelled", "engaged"]);
 // Rapporter, der ændrer point og statistik.
 const SCORE_KINDS = new Set(["flag_taken", "flag_lost", "town_taken", "town_lost", "patrol_defeated",
@@ -12376,7 +12571,7 @@ function gearFirePower(g) {
 // " · 🛡️ 2 · 🚀 1 · 🛸" til listerne.
 function gearTag(g) {
     const t = tankCount(g), a = atCount(g), d = droneCount(g);
-    return `${t > 0 ? ` · 🛡️ ${t}${gunEnabled() ? ` · 💥 ${g.tankShells || 0}` : ""}` : ""}${a > 0 ? ` · 🚀 ${a}` : ""}${d > 0 ? " · 🛸" : ""}`;
+    return `${t > 0 ? ` · 🛡️ ${t}${gunEnabled() ? ` · 💥 ${g.tankShells || 0}` : ""}` : ""}${a > 0 ? ` · 🚀 ${a}` : ""}${d > 0 ? " · 🛸" : ""}${fieldGearTag(g)}`;
 }
 
 // "🛡️ 2 kampvogne · 🚀 1 panserværnsvåben" (til fjender og allierede, hvor kun antallet kendes).
@@ -12393,7 +12588,7 @@ function gearWords(g) {
 function gearLineHtml(kind, g) {
     const t = g.tanks || [];
     const a = atCount(g), d = droneCount(g);
-    if (!t.length && !a && !d) return "";
+    if (!t.length && !a && !d) return fieldGearLineHtml(g);
     const c = gearCrew();
     const hpMax = Math.max(1, codexRule("tank_hp", 600));
     let html = "";
@@ -12422,7 +12617,7 @@ function gearLineHtml(kind, g) {
     }
     if (d) html += `<p class="muted-hint">🛸 Drone: gruppen ser <strong>${formatDistance(codexRule("drone_vision_m", 1000))}</strong> i stedet for ${formatDistance(GAME_CONFIG.SOLDIER_VISION_M)}.</p>`;
     if (t.length || a) html += `<p class="muted-hint">⚔️ Ildkraft mod soldater: som <strong>${fmtNum(gearFirePower(g))}</strong> soldater.</p>`;
-    return html;
+    return html + fieldGearLineHtml(g);
 }
 
 
@@ -12451,8 +12646,12 @@ function driveSpeeds(trucks, riding) {
 const ORDER_STANCES = {
     hold:    ["🛡️", "Hold stillingen", "Bliver stående og skyder på fjender i skudhold."],
     defend:  ["⚔️", "Ryk ud", "Rykker ud mod fjender tæt på posten, hvis vagtstyrken er stærk nok, og går tilbage bagefter."],
-    retreat: ["🏃", "Træk tilbage ved store tab", "Går hjem til nærmeste barrak, når en stor del af soldaterne er tabt."]
+    retreat: ["🏃", "Træk tilbage ved store tab", "Går hjem til nærmeste barrak, når en stor del af soldaterne er tabt."],
+    town:    ["🏙️", "Forsvar byen", "Rykker ud mod fjender, der går ind i en af byens flag-cirkler, hvis vagtstyrken er stærk nok, og går tilbage bagefter."]
 };
+function townOrderEnabled() {
+    return GAME_CONFIG.RULES?.stance_town_m != null;
+}
 function ordersEnabled() {
     return GAME_CONFIG.RULES?.stance_defend_m != null;
 }
@@ -12463,12 +12662,14 @@ function orderTag(g) {
 function orderLineHtml(g) {
     if (!ordersEnabled()) return "";
     const cur = g.order?.stance || "hold";
-    const detail = cur === "defend"
+    const detail = cur === "town"
+        ? `Forsvarer ${escapeHtml(flagData.towns.get(g.order?.town_id)?.name || "byen")}: rykker ud mod fjender i flag-cirkler højst ${formatDistance(codexRule("stance_town_m", 800))} fra posten (flag, computeren ikke holder), når vagtstyrken er mindst ${fmtPct(codexRule("stance_defend_ratio", 0.8))} af fjendens antal.${g.order?.state === "out" ? " <strong>Er rykket ud nu.</strong>" : ""}`
+        : cur === "defend"
         ? `Rykker ud mod fjender inden for ${formatDistance(codexRule("stance_defend_m", 200))} af posten, når vagtstyrken er mindst ${fmtPct(codexRule("stance_defend_ratio", 0.8))} af fjendens antal.${g.order?.state === "out" ? " <strong>Er rykket ud nu.</strong>" : ""}`
         : cur === "retreat"
             ? `Går hjem til nærmeste barrak, når ${fmtPct(codexRule("stance_retreat_share", 0.5))} af de ${g.order?.base_count ?? g.count} soldater er tabt.`
             : ORDER_STANCES.hold[2];
-    const buttons = Object.entries(ORDER_STANCES).map(([k, [icon, name, how]]) =>
+    const buttons = Object.entries(ORDER_STANCES).filter(([k]) => k !== "town" || townOrderEnabled()).map(([k, [icon, name, how]]) =>
         `<button class="btn btn-small ${k === cur ? "btn-primary" : ""}" title="${how}" onclick="setGroupOrder(${g.id}, '${k}')">${icon} ${name}</button>`).join("");
     return `<p class="muted-hint" style="margin-bottom:4px;">📜 <strong>Ordre:</strong> ${detail}</p><div class="item-actions" style="margin-bottom:8px;">${buttons}</div>`;
 }
@@ -12664,18 +12865,18 @@ function tankImageUrl() {
 
 // ---------------------------------------------------------------- udrust en vagtstyrke ved basen
 function gearStockTotal() {
-    return (state.tanksHome || 0) + (state.atHome || 0) + (state.dronesHome || 0) + (state.tankShellsHome || 0);
+    return (state.tanksHome || 0) + (state.atHome || 0) + (state.dronesHome || 0) + (state.tankShellsHome || 0)
+        + (fieldEnabled() ? (state.engineersHome || 0) + (state.boatsHome || 0) : 0);
 }
 
 function nearOwnBase(g) {
-    const reach = codexRule("resupply_reach_m", 25);
-    return state.myBuildings.some(b => (b.kind === "barracks" || b.kind === "weapons_factory") && gapToBuildingM(b, g.lat, g.lon) <= reach);
+    return !!supplySpot(g);
 }
 
 function equipButtonHtml(g) {
     if (!gearEnabled() || !g || !(g.count > 0) || !nearOwnBase(g)) return "";
-    if (gearStockTotal() <= 0 && tankCount(g) + atCount(g) + droneCount(g) <= 0) return "";
-    return `<button class="btn btn-gold" onclick="openEquipModal(${g.id})">🛡️ Kampvogne, panserværn og drone</button>`;
+    if (gearStockTotal() <= 0 && tankCount(g) + atCount(g) + droneCount(g) + engineerCount(g) + boatCount(g) <= 0) return "";
+    return `<button class="btn btn-gold" onclick="openEquipModal(${g.id})">🛡️ ${fieldEnabled() ? "Udstyr: kampvogne, panserværn, drone, ingeniører og både" : "Kampvogne, panserværn og drone"}</button>`;
 }
 
 // Tre skydere (kampvogne, panserværn, drone) med de grænser, mandskabet og lageret sætter.
@@ -12690,6 +12891,10 @@ function gearSlidersHtml() {
         <input type="range" min="0" max="0" value="0" class="range-slider" id="at-range-input" />
         <div id="drone-val-label" class="mortar-pick-label"></div>
         <input type="range" min="0" max="0" value="0" class="range-slider" id="drone-range-input" />
+        <div id="eng-val-label" class="mortar-pick-label"></div>
+        <input type="range" min="0" max="0" value="0" class="range-slider" id="eng-range-input" />
+        <div id="boat-val-label" class="mortar-pick-label"></div>
+        <input type="range" min="0" max="0" value="0" class="range-slider" id="boat-range-input" />
         <p id="gear-pick-hint" class="muted-hint"></p>`;
 }
 
@@ -12703,7 +12908,19 @@ function wireGearSliders(getCount, have, start = null, opts = null) {
     const sh = document.getElementById("tank-shell-range-input");
     const shLabel = document.getElementById("tank-shell-val-label");
     const c = gearCrew();
-    const total = { t: have.t + (state.tanksHome || 0), a: have.a + (state.atHome || 0), d: have.d + (state.dronesHome || 0), s: (have.s || 0) + (state.tankShellsHome || 0) };
+    const en = document.getElementById("eng-range-input");
+    const bo = document.getElementById("boat-range-input");
+    const enLabel = document.getElementById("eng-val-label");
+    const boLabel = document.getElementById("boat-val-label");
+    const eCrew = engineerCrew(), bCap = boatCapacity();
+    const total = { t: have.t + (state.tanksHome || 0), a: have.a + (state.atHome || 0), d: have.d + (state.dronesHome || 0), s: (have.s || 0) + (state.tankShellsHome || 0),
+                    e: (have.e || 0) + (state.engineersHome || 0), b: (have.b || 0) + (state.boatsHome || 0) };
+    // Ved et depot (0066) kan der ikke hentes nye kampvogne: højst dem, gruppen har.
+    if (opts?.noNewTanks || start?.noNewTanks) total.t = have.t;
+    en.max = String(total.e); bo.max = String(total.b);
+    en.value = String(start?.e || 0); bo.value = String(start?.b || 0);
+    if (!fieldEnabled()) for (const x of [en, bo, enLabel, boLabel]) x.classList.add("hidden");
+    let prevB = Number(bo.value) || 0;
     const perTank = Math.max(0, codexRule("tank_shells_max", 20));
     let shellsTouched = false;
     if (start) {
@@ -12735,6 +12952,13 @@ function wireGearSliders(getCount, have, start = null, opts = null) {
         if (Number(dr.value) > dMax) dr.value = String(dMax);
         if (opts && n <= 0 && Number(dr.value) > 0) dr.value = "0";
         tk.disabled = total.t <= 0; at.disabled = total.a <= 0; dr.disabled = total.d <= 0;
+        const eFit = Math.min(total.e, Math.floor(n / eCrew));
+        en.max = String(opts ? total.e : eFit);
+        if (Number(en.value) > eFit) en.value = String(eFit);
+        prevB = Number(bo.value) || 0;
+        en.disabled = total.e <= 0; bo.disabled = total.b <= 0;
+        enLabel.textContent = `🧰 ${en.value} / ${total.e} sæt ingeniørudstyr med (${eCrew} soldater pr. sæt)`;
+        boLabel.textContent = `🚤 ${bo.value} / ${total.b} både med (${bCap} soldater pr. båd${prevB > 0 ? (n <= prevB * bCap && t === 0 ? ": kan sejle" : t > 0 ? ": kampvogne kan ikke sejle" : `: for få både til ${n} soldater`) : ""})`;
         document.getElementById("tank-val-label").textContent = `🛡️ ${tk.value} / ${total.t} kampvogne med (${c.tank} soldater pr. kampvogn)`;
         document.getElementById("at-val-label").textContent = `🚀 ${at.value} / ${total.a} panserværnsvåben med (${c.at} skytter pr. våben)`;
         document.getElementById("drone-val-label").textContent = `🛸 ${Number(dr.value) > 0 ? "Drone med" : "Ingen drone"} (${total.d} i alt)`;
@@ -12761,22 +12985,37 @@ function wireGearSliders(getCount, have, start = null, opts = null) {
             dr.value = String(want);
             opts.onChange();
         };
+        en.oninput = () => {
+            const want = Number(en.value);
+            opts.atLeast(want * eCrew);
+            en.value = String(want);
+            opts.onChange();
+        };
+        // En båd lægger sine pladser oven i soldaterne (som en lastbil) og tager dem med, når den vælges fra.
+        bo.oninput = () => {
+            const b = Number(bo.value);
+            const delta = b - prevB;
+            prevB = b;
+            opts.setCount(getCount() + delta * bCap);
+        };
     } else {
-        tk.oninput = update; at.oninput = update; dr.oninput = update;
+        tk.oninput = update; at.oninput = update; dr.oninput = update; en.oninput = update; bo.oninput = update;
     }
     sh.oninput = () => { shellsTouched = true; update(); };
     update();
-    return { update, values: () => ({ tanks: Number(tk.value) || 0, at: Number(at.value) || 0, drones: Number(dr.value) || 0, shells: Number(sh.value) || 0 }) };
+    return { update, values: () => ({ tanks: Number(tk.value) || 0, at: Number(at.value) || 0, drones: Number(dr.value) || 0, shells: Number(sh.value) || 0,
+                                      engineers: fieldEnabled() ? Number(en.value) || 0 : 0, boats: fieldEnabled() ? Number(bo.value) || 0 : 0 }) };
 }
 
 window.openEquipModal = function(id) {
     const g = state.garrisons.find(x => String(x.id) === String(id));
     if (!g) return;
     state.groupModal = null;
-    const have = { t: tankCount(g), a: atCount(g), d: droneCount(g), s: g.tankShells || 0 };
+    const atDepot = supplySpot(g) === "depot";
+    const have = { t: tankCount(g), a: atCount(g), d: droneCount(g), s: g.tankShells || 0, e: engineerCount(g), b: boatCount(g), noNewTanks: atDepot };
     document.getElementById("modal-title").textContent = `🛡️ Udrust vagtstyrken (${g.count} soldater)`;
     document.getElementById("modal-body").innerHTML = `
-        <p class="muted-hint">Vælg, hvad vagtstyrken skal have med. Det, du tager fra, kommer tilbage på lageret (kampvogne bliver repareret). På lager: 🛡️ ${state.tanksHome || 0} · 💥 ${state.tankShellsHome || 0} · 🚀 ${state.atHome || 0} · 🛸 ${state.dronesHome || 0}.</p>
+        <p class="muted-hint">Vælg, hvad vagtstyrken skal have med. Det, du tager fra, kommer tilbage på lageret (kampvogne bliver repareret). På lager: 🛡️ ${state.tanksHome || 0} · 💥 ${state.tankShellsHome || 0} · 🚀 ${state.atHome || 0} · 🛸 ${state.dronesHome || 0}${fieldEnabled() ? ` · 🧰 ${state.engineersHome || 0} · 🚤 ${state.boatsHome || 0}` : ""}.${atDepot ? " <strong>Ved et depot kan der ikke hentes nye kampvogne.</strong>" : ""}</p>
         <div class="mortar-pick">${gearSlidersHtml()}</div>`;
     document.getElementById("modal-actions").innerHTML = `
         <button class="btn" onclick="closeModal()">Luk</button>
@@ -12784,13 +13023,14 @@ window.openEquipModal = function(id) {
     const w = wireGearSliders(() => g.count, have, have);
     document.getElementById("btn-equip-confirm").onclick = async () => {
         const v = w.values();
-        const { error } = await sb.rpc("equip_group", { p_kind: "garrison", p_id: g.id, p_tanks: v.tanks, p_at: v.at, p_drones: v.drones, ...(gunEnabled() ? { p_shells: v.shells } : {}) });
+        const { error } = await sb.rpc("equip_group", { p_kind: "garrison", p_id: g.id, p_tanks: v.tanks, p_at: v.at, p_drones: v.drones, ...(gunEnabled() ? { p_shells: v.shells } : {}),
+                                                        ...(fieldEnabled() ? { p_engineers: v.engineers, p_boats: v.boats } : {}) });
         if (error) {
             showToast("Kunne ikke udruste vagtstyrken: " + error.message);
             return;
         }
         closeModal();
-        showToast(`🛡️ Vagtstyrken har nu ${v.tanks} ${v.tanks === 1 ? "kampvogn" : "kampvogne"}${gunEnabled() && v.tanks > 0 ? ` med ${v.shells} granater` : ""}, ${v.at} panserværnsvåben og ${v.drones > 0 ? "en drone" : "ingen drone"}.`);
+        showToast(`🛡️ Vagtstyrken har nu ${v.tanks} ${v.tanks === 1 ? "kampvogn" : "kampvogne"}${gunEnabled() && v.tanks > 0 ? ` med ${v.shells} granater` : ""}, ${v.at} panserværnsvåben og ${v.drones > 0 ? "en drone" : "ingen drone"}${fieldEnabled() ? `, ${v.engineers} sæt ingeniørudstyr og ${v.boats} ${v.boats === 1 ? "båd" : "både"}` : ""}.`);
         await syncAllFromSupabase();
         await loadArmy();
     };
@@ -12800,15 +13040,16 @@ window.openEquipModal = function(id) {
 // "Med 2 kampvogne, 1 panserværnsvåben og drone" i bekræftelsen, når en deling sendes fra barrakken.
 function gearOrderLine(order) {
     const v = order?.gear;
-    if (!v || !(v.tanks || v.at || v.drones)) return "";
-    return `<p>${gearWords(v)}${v.tanks && v.shells ? ` · 💥 ${v.shells} kampvognsgranater` : ""} følger med fra lageret.</p>`;
+    if (!v || !(v.tanks || v.at || v.drones || v.engineers || v.boats)) return "";
+    return `<p>${[gearWords(v), v.tanks && v.shells ? `💥 ${v.shells} kampvognsgranater` : "", v.engineers ? `🧰 ${v.engineers} sæt ingeniørudstyr` : "", v.boats ? `🚤 ${v.boats} ${v.boats === 1 ? "båd" : "både"}` : ""].filter(Boolean).join(" · ")} følger med fra lageret.</p>`;
 }
 
 // Sæt udstyret på delingen, lige når den er sendt fra barrakken (den står da stadig ved bygningen).
 async function equipNewMarch(order, started) {
     const v = order?.gear;
-    if (!v || !(v.tanks || v.at || v.drones) || !started?.id) return;
-    const { error } = await sb.rpc("equip_group", { p_kind: "march", p_id: started.id, p_tanks: v.tanks, p_at: v.at, p_drones: v.drones, ...(gunEnabled() ? { p_shells: v.shells || 0 } : {}) });
+    if (!v || !(v.tanks || v.at || v.drones || v.engineers || v.boats) || !started?.id) return;
+    const { error } = await sb.rpc("equip_group", { p_kind: "march", p_id: started.id, p_tanks: v.tanks, p_at: v.at, p_drones: v.drones, ...(gunEnabled() ? { p_shells: v.shells || 0 } : {}),
+                                                    ...(fieldEnabled() ? { p_engineers: v.engineers || 0, p_boats: v.boats || 0 } : {}) });
     if (error) showToast("Soldaterne er sendt, men udstyret kom ikke med: " + error.message);
 }
 
@@ -12863,6 +13104,407 @@ function codexGearCardsHtml() {
                     <p class="muted-hint">Udstyret sættes på en gruppe, når den sendes fra barrakken, eller med knappen 🛡️ på en vagtstyrke, der står ved en barrak eller våbenfabrik. Går hele gruppen videre, følger det med; går kun en del, bliver det stående. Kommer gruppen hjem til barrakken, kommer det på lager igen.</p>
                     <p class="muted-hint">Computeren har det også: bygarnisonen ved bymidten i storbyer (${fmtNum(codexRule("city_npc_tanks_storby", 2))} kampvogne, ${fmtNum(codexRule("city_npc_at_storby", 2))} panserværn) og byer (${fmtNum(codexRule("city_npc_at_by", 1))} panserværn), og den svenske hærs motoriserede kompagnier (kampvogn) og infanterikompagnier (panserværn).</p>
                 </div>`;
+}
+
+// ---------------------------------------------------------------- depot, ingeniører og både (0066)
+// Alt herunder vises først, når 0066 er kørt i databasen (reglerne kender tallene).
+function fieldEnabled() {
+    return GAME_CONFIG.RULES?.engineer_price_steps != null;
+}
+function engineerCount(g) { return Number(g?.engineers || 0); }
+function boatCount(g) { return Number(g?.boats || 0); }
+function engineerCrew() { return Math.max(1, codexRule("engineer_crew", 4)); }
+function boatCapacity() { return Math.max(1, codexRule("boat_capacity", 10)); }
+// Sæt ingeniørudstyr, der er soldater nok til at bruge (gear_usable_engineers på serveren).
+function usableEngineers(g) {
+    return Math.min(engineerCount(g), Math.floor((g?.count || 0) / engineerCrew()));
+}
+// Kan gruppen sejle? Både nok til alle, og ingen køretøjer eller haubitser (group_can_sail på serveren).
+function groupCanSail(count, boats, trucks, tanks, howitzers) {
+    return fieldEnabled() && boats > 0 && count <= boats * boatCapacity() && !trucks && !tanks && !howitzers;
+}
+function groupSails(g) {
+    return !!g && groupCanSail(g.count || 0, boatCount(g), truckCount(g), tankCount(g), g.howitzers || 0);
+}
+// Det samme for en ordre, før den er sendt: { count, boats, trucks, tanks, howitzers, part } eller null.
+function orderSailGroup(order) {
+    if (!fieldEnabled() || !order || order.patrol || order.woundedOnly) return null;
+    const of = g => g ? { count: g.count || 0, boats: boatCount(g), trucks: truckCount(g), tanks: tankCount(g), howitzers: g.howitzers || 0 } : null;
+    if (order.redirectMarchId) return of(findMarch(order.redirectMarchId));
+    if (order.from?.type === "march") return of(findMarch(order.from.id));
+    if (order.from?.type === "building") {
+        const v = order.gear || {};
+        return { count: order.count, boats: v.boats || 0, trucks: order.trucks || 0, tanks: v.tanks || 0, howitzers: order.howitzers || 0 };
+    }
+    if (order.from?.type === "garrison") {
+        const g = state.garrisons.find(x => String(x.id) === String(order.from.id));
+        const x = of(g);
+        if (x && order.count < g.count) x.part = true;   // udstyret bliver hos vagten
+        return x;
+    }
+    return null;
+}
+function orderSails(order) {
+    const x = orderSailGroup(order);
+    return !!x && !x.part && groupCanSail(x.count, x.boats, x.trucks, x.tanks, x.howitzers);
+}
+// Hvorfor kan gruppen med både ikke sejle? "" = den har ingen både (eller kan sejle).
+function sailWhyNot(order) {
+    const x = orderSailGroup(order);
+    if (!x || x.boats <= 0 || orderSails(order)) return "";
+    if (x.part) return "kun en del af vagtstyrken går, så bådene bliver hos vagten";
+    if (x.trucks || x.tanks || x.howitzers) return "lastbiler, kampvogne og haubitser kan ikke komme med i bådene";
+    return `${x.boats} ${x.boats === 1 ? "båd" : "både"} har kun plads til ${x.boats * boatCapacity()} soldater`;
+}
+
+// Depotet hører til den by, det nærmeste flag ligger i. Det virker, mens du eller en allieret ejer byen.
+function townNear(lat, lon, maxM) {
+    let best = null, bestD = maxM;
+    for (const f of flagData.flags.values()) {
+        const d = Geo.distanceM(lat, lon, f.lat, f.lon);
+        if (d <= bestD) { bestD = d; best = f; }
+    }
+    return best ? flagData.towns.get(best.town_id) || null : null;
+}
+function depotActive(b) {
+    const t = townNear(b.lat, b.lon, codexRule("depot_flag_m", 250) + 5);
+    return !!t && !t.npc && !!t.owner_id && (t.owner_id === state.user?.id || isAlly(t.owner_id));
+}
+// Må der bygges et depot her? null = ja, ellers forklaringen.
+function depotProblem(lat, lon) {
+    const me = state.user?.id;
+    const reach = codexRule("depot_flag_m", 250);
+    let town = null, bestD = reach;
+    for (const f of flagData.flags.values()) {
+        if (f.owner_id !== me || f.npc) continue;
+        const t = flagData.towns.get(f.town_id);
+        if (!t || t.owner_id !== me) continue;
+        const d = Geo.distanceM(lat, lon, f.lat, f.lon);
+        if (d <= bestD) { bestD = d; town = t; }
+    }
+    if (!town) return `Et depot kan kun bygges i en by, du ejer: højst ${formatDistance(reach)} fra et af dine flag i byen.`;
+    if (state.myBuildings.some(b => b.kind === "depot" && townNear(b.lat, b.lon, reach + 5)?.id === town.id)) return `Du har allerede et depot i ${town.name}.`;
+    return null;
+}
+// Hvor kan gruppen fylde op her? "base" = barrak eller våbenfabrik, "depot" = et depot i en by, du ejer.
+function supplySpot(g) {
+    const reach = codexRule("resupply_reach_m", 25);
+    let depot = false;
+    for (const b of state.myBuildings) {
+        if (gapToBuildingM(b, g.lat, g.lon) > reach) continue;
+        if (b.kind === "barracks" || b.kind === "weapons_factory") return "base";
+        if (b.kind === "depot" && depotActive(b)) depot = true;
+    }
+    return depot ? "depot" : null;
+}
+function depotLineHtml(bld) {
+    if (bld.kind !== "depot") return "";
+    const t = townNear(bld.lat, bld.lon, codexRule("depot_flag_m", 250) + 5);
+    return depotActive(bld)
+        ? `<div class="item-sub" style="color:#76FF03">📦 I drift: soldater højst ${formatDistance(codexRule("resupply_reach_m", 25))} fra depotet kan fylde op fra dit lager${t ? ` (${escapeHtml(t.name)})` : ""}.</div>`
+        : `<div class="item-sub" style="color:#FF8A80">⛔ Ude af drift: du ejer ikke længere ${t ? escapeHtml(t.name) : "byen"}. Tag byen tilbage, så virker depotet igen.</div>`;
+}
+
+function drawDepotCompound(P, lv, team) {
+    P.box(4, 4, 13, 9, { ht: 5, pal: CP_PAL.olive, doors: 2 });
+    P.tent(19, 4.5, 7, 4.5);
+    P.crates(5, 16, 4, 2);
+    P.crates(17, 16, 2, 2);
+    P.truck(15, 23.5);
+    P.flag(3, 28.5, team);
+}
+COMPOUND_DRAW.depot = [drawDepotCompound, 30];
+
+// " · 🧰 1 · 🚤 2" til listerne.
+function fieldGearTag(g) {
+    const e = engineerCount(g), b = boatCount(g);
+    return `${e > 0 ? ` · 🧰 ${e}` : ""}${b > 0 ? ` · 🚤 ${b}` : ""}`;
+}
+// Linjer i gruppens popup om ingeniørudstyr og både.
+function fieldGearLineHtml(g) {
+    const e = engineerCount(g), b = boatCount(g);
+    let html = "";
+    if (e) {
+        const use = usableEngineers(g);
+        html += `<p class="muted-hint">🧰 ${e} sæt ingeniørudstyr${use < 1 ? `: <strong style="color:#FFB74D">der skal ${engineerCrew()} soldater til at bruge det</strong>` : ": vagtstyrken kan bygge sandsække og broer og fjerne fjendens"}.</p>`;
+    }
+    if (b) {
+        const cap = b * boatCapacity();
+        const why = (g.count || 0) > cap ? `der er kun plads til ${cap} soldater`
+            : (truckCount(g) || tankCount(g) || g.howitzers) ? "lastbiler, kampvogne og haubitser kan ikke komme med i bådene" : "";
+        html += `<p class="muted-hint">🚤 ${b} ${b === 1 ? "båd" : "både"} (plads til ${cap} soldater): ${why
+            ? `<strong style="color:#FFB74D">kan ikke sejle</strong>, fordi ${why}`
+            : `gruppen kan sejle over vand med ${fmtKmh(codexRule("boat_speed_mps", 4.167))}`}.</p>`;
+    }
+    return html;
+}
+
+function codexFieldCardsHtml() {
+    if (!fieldEnabled()) return "";
+    return `
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Ingeniørudstyr</h3><span class="badge">${buyWhere("engineers")}</span></div>
+                    <div class="codex-weapon-img"><img src="assets/ingenioer.png" class="pixel-img" alt="Ingeniør" /></div>
+                    <p class="muted-hint">Skovle, sandsække og pontoner, som en gruppe har med. En vagtstyrke med ingeniørudstyr kan bygge <strong>sandsække</strong>, der dækker dem, der står der, og en <strong>bro</strong> over vand, som alle kan gå og køre over. Den kan også fjerne fjendens broer og sandsække, når den står ved dem.</p>
+                    ${codexStats([
+                        ["Pris", codexPrice(codexRule("engineer_price_steps", 600), codexRule("engineer_price_steel", 100))],
+                        ["Mandskab", `${fmtNum(engineerCrew())} soldater pr. sæt (de skyder stadig med gevær)`],
+                        ["Sandsække", `${fmtNum(codexRule("sandbag_steel", 30))} stål · klar efter ${formatSeconds(codexRule("sandbag_build_s", 120))}`],
+                        ["Sandsække dækker", `${fmtPct(codexRule("sandbag_cover", 0.5))} af geværtræfferne og ${fmtPct(codexRule("sandbag_cover_shell", 0.25))} af granattræfferne går forbi for vagtstyrker højst ${formatDistance(codexRule("sandbag_radius_m", 25))} væk`],
+                        ["Bro", `op til ${formatDistance(codexRule("bridge_max_m", 150))} · ${fmtNum(codexRule("bridge_steel_per_m", 2))} stål og ${fmtNum(codexRule("bridge_build_s_per_m", 3))} sekunder pr. meter`],
+                        ["Fjerne fjendens", `ingeniørerne skal stå højst ${formatDistance(codexRule("fieldwork_reach_m", 40))} fra sandsækkene eller en af broens ender`]
+                    ])}
+                    <p class="muted-hint">Sandsække dækker den, der står der, også en fjende, der har taget stillingen. Er vagtstyrken også gravet ned, gælder den bedste af de to dækninger. En bro kan bruges af alle, også fjenden.</p>
+                </div>
+                <div class="codex-card">
+                    <div class="codex-card-head"><h3>Stormbåd</h3><span class="badge">${buyWhere("boats")}</span></div>
+                    <div class="codex-weapon-img"><img src="${boatImageUrl()}" class="pixel-img" alt="Stormbåd" /></div>
+                    <p class="muted-hint">En let båd, som soldaterne bærer med over land. Har gruppen både nok til alle, går ruten lige over søer, fjorde og hav i stedet for uden om, og soldaterne sejler hurtigere, end de går. Lastbiler, kampvogne og haubitser kan ikke komme med i bådene: de skal over en bro.</p>
+                    ${codexStats([
+                        ["Pris", codexPrice(codexRule("boat_price_steps", 300), codexRule("boat_price_steel", 60))],
+                        ["Plads til", `${fmtNum(boatCapacity())} soldater pr. båd`],
+                        ["Fart på vandet", fmtKmh(codexRule("boat_speed_mps", 4.167))],
+                        ["Fart til fods", fmtKmh(GAME_CONFIG.SOLDIER_SPEED_MPS)]
+                    ])}
+                    <p class="muted-hint">Både og ingeniørudstyr sættes på en gruppe ligesom kampvogne: når den sendes fra barrakken, eller med knappen 🛡️ ved en barrak, våbenfabrik eller et depot.</p>
+                </div>`;
+}
+
+// ---------------------------------------------------------------- ingeniørernes broer og sandsække (0066)
+// state.fieldworks: { id, owner_id, kind: "sandbags" | "bridge", lat, lon, lat2, lon2, length_m, ready_at }
+let fieldworksAt = 0;
+async function loadFieldworks(force = false) {
+    if (!state.user || !fieldEnabled()) return;
+    if (!force && Date.now() - fieldworksAt < 10000) return;
+    fieldworksAt = Date.now();
+    const { data, error } = await sb.from("fieldworks").select("*");
+    if (error || !data) return;
+    state.fieldworks = data;
+    renderFieldworks();
+}
+function fieldworkReady(w) {
+    return Date.parse(w.ready_at) <= serverNow();
+}
+function renderFieldworks() {
+    if (!mapReady) return;
+    const feats = [];
+    let pending = false;
+    for (const w of state.fieldworks || []) {
+        const ready = fieldworkReady(w) ? 1 : 0;
+        if (!ready) pending = true;
+        if (w.kind === "bridge") {
+            feats.push({ type: "Feature", properties: { kind: "bridge", ready, id: w.id },
+                         geometry: { type: "LineString", coordinates: [[w.lon, w.lat], [w.lon2, w.lat2]] } });
+        } else {
+            feats.push(groundCircleFeature(w.lat, w.lon, codexRule("sandbag_radius_m", 25), { kind: "area", ready, id: w.id }));
+            // En lav halvbue af sandsække midt i stillingen.
+            const cosLat = Math.max(Math.cos(w.lat * RAD_PER_DEG), MIN_COS);
+            const arc = [];
+            for (let i = 0; i <= 10; i++) {
+                const a = Math.PI * (0.15 + 0.7 * i / 10);
+                arc.push([w.lon + Math.cos(a) * 7 / (111320 * cosLat), w.lat + Math.sin(a) * 7 / 111320]);
+            }
+            feats.push({ type: "Feature", properties: { kind: "wall", ready, id: w.id }, geometry: { type: "LineString", coordinates: arc } });
+        }
+    }
+    map.getSource("src-fieldworks")?.setData({ type: "FeatureCollection", features: feats });
+    // Noget er under bygning: tegn om, når det er færdigt.
+    if (pending) setTimeout(renderFieldworks, 5000);
+}
+// Er punktet på en af ingeniørernes færdige broer? Så kan man gå og køre der, selv om der er vand under.
+function nearFieldBridge(lat, lon, maxDistM = 6) {
+    const list = state.fieldworks;
+    if (!list || !list.length) return false;
+    const mPerLon = 111320 * Math.max(Math.cos(lat * RAD_PER_DEG), MIN_COS);
+    for (let i = 0; i < list.length; i++) {
+        const w = list[i];
+        if (w.kind !== "bridge" || !fieldworkReady(w)) continue;
+        const ax = (w.lon - lon) * mPerLon, ay = (w.lat - lat) * 111320;
+        const bx = (w.lon2 - lon) * mPerLon, by = (w.lat2 - lat) * 111320;
+        if (pointToSegDistSq2D(0, 0, ax, ay, bx, by) <= maxDistM * maxDistM) return true;
+    }
+    return false;
+}
+// Afstand fra et punkt til en bro (nærmeste sted på broen) eller til sandsækkenes midte.
+function fieldworkDistM(w, lat, lon) {
+    if (w.kind !== "bridge") return Geo.distanceM(lat, lon, w.lat, w.lon);
+    const mPerLon = 111320 * Math.max(Math.cos(lat * RAD_PER_DEG), MIN_COS);
+    return Math.sqrt(pointToSegDistSq2D(0, 0, (w.lon - lon) * mPerLon, (w.lat - lat) * 111320, (w.lon2 - lon) * mPerLon, (w.lat2 - lat) * 111320));
+}
+// Afstand til det sted, ingeniører skal stå for at fjerne anlægget (en af broens ender / sandsækkene).
+function fieldworkReachM(w, lat, lon) {
+    const d = Geo.distanceM(lat, lon, w.lat, w.lon);
+    return w.kind === "bridge" ? Math.min(d, Geo.distanceM(lat, lon, w.lat2, w.lon2)) : d;
+}
+function sandbagsHere(g) {
+    const r = codexRule("sandbag_radius_m", 25);
+    return (state.fieldworks || []).find(w => w.kind === "sandbags" && Geo.distanceM(g.lat, g.lon, w.lat, w.lon) <= r) || null;
+}
+function sandbagLineHtml(g) {
+    const w = fieldEnabled() ? sandbagsHere(g) : null;
+    if (!w) return "";
+    return fieldworkReady(w)
+        ? `<p class="muted-hint">🧱 <strong>Bag sandsække:</strong> ${fmtPct(codexRule("sandbag_cover", 0.5))} af geværtræfferne og ${fmtPct(codexRule("sandbag_cover_shell", 0.25))} af granattræfferne går forbi.</p>`
+        : `<p class="muted-hint">🧱 Sandsækkene er færdige om ${formatSeconds(Math.max(1, Math.round((Date.parse(w.ready_at) - serverNow()) / 1000)))}.</p>`;
+}
+// Knapper i vagtstyrkens popup, når den har ingeniørudstyr og soldater nok til at bruge det.
+function fieldButtonsHtml(g) {
+    if (!fieldEnabled() || usableEngineers(g) < 1) return "";
+    const reach = codexRule("fieldwork_reach_m", 40);
+    let html = "";
+    if (!sandbagsHere(g)) html += `<button class="btn btn-gold" onclick="buildSandbags(${g.id})">🧱 Byg sandsække (${fmtNum(codexRule("sandbag_steel", 30))} stål)</button>`;
+    html += `<button class="btn btn-gold" onclick="startBridgeAim(${g.id})">🌉 Byg bro</button>`;
+    for (const w of state.fieldworks || []) {
+        if (fieldworkReachM(w, g.lat, g.lon) > reach) continue;
+        const mine = w.owner_id === state.user?.id;
+        html += `<button class="btn btn-danger" onclick="removeFieldwork(${w.id}, ${g.id})">${w.kind === "bridge" ? (mine ? "🗑️ Riv broen ned" : "💥 Spræng broen") : (mine ? "🗑️ Fjern sandsækkene" : "💥 Fjern fjendens sandsække")}</button>`;
+    }
+    return html;
+}
+window.buildSandbags = async function(id) {
+    const { data, error } = await sb.rpc("build_fieldwork", { p_garrison: id, p_kind: "sandbags" });
+    if (error) {
+        showToast("Kunne ikke bygge sandsække: " + error.message);
+        return;
+    }
+    showToast(`🧱 Ingeniørerne bygger sandsække (${data?.steel ?? 0} stål). Klar om ${formatSeconds(codexRule("sandbag_build_s", 120))}.`);
+    await syncAllFromSupabase();
+    await loadFieldworks(true);
+    renderGroupModal();
+};
+window.startBridgeAim = function(id) {
+    const g = state.garrisons.find(x => String(x.id) === String(id));
+    if (!g) return;
+    closeModal();
+    state.bridgeAim = { garrisonId: g.id };
+    showToast(`🌉 Klik på den anden bred. Broen går fra vagtstyrken til det sted, du klikker (højst ${formatDistance(codexRule("bridge_max_m", 150))}).`);
+};
+function openBridgeConfirm(lat, lon) {
+    const aim = state.bridgeAim;
+    state.bridgeAim = null;
+    const g = state.garrisons.find(x => String(x.id) === String(aim?.garrisonId));
+    if (!g) return;
+    const len = Geo.distanceM(g.lat, g.lon, lat, lon);
+    const max = codexRule("bridge_max_m", 150);
+    const steel = Math.round(len * codexRule("bridge_steel_per_m", 2));
+    const secs = Math.round(len * codexRule("bridge_build_s_per_m", 3));
+    const tooLong = len > max, tooShort = len < 5;
+    const inWater = terrainAt(lat, lon).id === "water";
+    state.groupModal = null;
+    document.getElementById("modal-title").textContent = "🌉 Byg bro";
+    document.getElementById("modal-body").innerHTML = `
+        <p><strong>Længde:</strong> ${formatDistance(Math.round(len))} (højst ${formatDistance(max)})</p>
+        <p><strong>Pris:</strong> ${fmtNum(steel)} stål (du har ${fmtNum(state.steel)})</p>
+        <p><strong>Byggetid:</strong> ${formatSeconds(secs)}</p>
+        ${tooLong ? `<p style="color:#FF8A80">Broen er for lang. Stil vagtstyrken tættere på vandet, eller vælg et smallere sted.</p>` : ""}
+        ${tooShort ? `<p style="color:#FF8A80">Broen er for kort.</p>` : ""}
+        ${inWater && !tooLong ? `<p style="color:#FFB74D">Stedet ligger ude i vandet. Broen skal ende på land for at kunne bruges.</p>` : ""}
+        <p class="muted-hint">Broen går i lige linje fra vagtstyrken til det valgte sted. Når den er færdig, kan alle gå og køre over den, også fjenden. Fjendens ingeniører kan sprænge den, hvis de når hen til en af enderne.</p>`;
+    document.getElementById("modal-actions").innerHTML = `
+        <button class="btn" onclick="closeModal()">Annullér</button>
+        <button class="btn" onclick="startBridgeAim(${g.id})">Vælg et andet sted</button>
+        <button class="btn btn-gold" id="btn-bridge-go" ${tooLong || tooShort || steel > state.steel ? "disabled" : ""}>✅ Byg broen</button>`;
+    document.getElementById("btn-bridge-go").onclick = async () => {
+        const { error } = await sb.rpc("build_fieldwork", { p_garrison: g.id, p_kind: "bridge", p_lat: lat, p_lon: lon });
+        if (error) {
+            showToast("Kunne ikke bygge broen: " + error.message);
+            return;
+        }
+        closeModal();
+        showToast(`🌉 Ingeniørerne bygger broen. Klar om ${formatSeconds(secs)}.`);
+        await syncAllFromSupabase();
+        await loadFieldworks(true);
+    };
+    document.getElementById("modal-overlay").classList.remove("hidden");
+}
+window.removeFieldwork = async function(id, garrisonId = null) {
+    const { data, error } = await sb.rpc("remove_fieldwork", { p_id: id, p_garrison: garrisonId });
+    if (error) {
+        showToast("Kunne ikke fjerne det: " + error.message);
+        return;
+    }
+    closeModal();
+    showToast(data?.kind === "bridge" ? "💥 Broen er væk." : "Sandsækkene er fjernet.");
+    await loadFieldworks(true);
+};
+// Klik på en bro eller en sandsækstilling: vis hvad det er, og lad ejeren fjerne det.
+function openFieldworkNear(lat, lon) {
+    if (!fieldEnabled() || !mapReady) return false;
+    const mPerPx = 156543.03392 * Math.cos(lat * RAD_PER_DEG) / Math.pow(2, map.getZoom() + 1);
+    const tol = Math.max(5, 9 * mPerPx);
+    let best = null, bestD = tol;
+    for (const w of state.fieldworks || []) {
+        const d = w.kind === "bridge" ? fieldworkDistM(w, lat, lon) : Math.max(0, Geo.distanceM(lat, lon, w.lat, w.lon) - 6);
+        if (d <= bestD) { bestD = d; best = w; }
+    }
+    if (!best) return false;
+    const w = best;
+    const mine = w.owner_id === state.user?.id;
+    const whose = mine ? "Din" : isAlly(w.owner_id) ? `${escapeHtml(allyName(w.owner_id))}s` : "En anden spillers";
+    const left = Math.round((Date.parse(w.ready_at) - serverNow()) / 1000);
+    const reach = codexRule("fieldwork_reach_m", 40);
+    const eng = state.garrisons.find(g => usableEngineers(g) >= 1 && fieldworkReachM(w, g.lat, g.lon) <= reach);
+    state.groupModal = null;
+    document.getElementById("modal-title").textContent = w.kind === "bridge" ? `🌉 Bro (${formatDistance(Math.round(w.length_m))})` : "🧱 Sandsække";
+    document.getElementById("modal-body").innerHTML = `
+        <p>${whose} ${w.kind === "bridge" ? "bro" : "sandsækstilling"}. ${left > 0 ? `<strong>Under bygning:</strong> klar om ${formatSeconds(left)}.` : "Klar til brug."}</p>
+        <p class="muted-hint">${w.kind === "bridge"
+            ? "Alle kan gå og køre over broen, også fjenden. Ruter over vandet her går selv over broen."
+            : `Vagtstyrker højst ${formatDistance(codexRule("sandbag_radius_m", 25))} fra sandsækkene er dækket: ${fmtPct(codexRule("sandbag_cover", 0.5))} af geværtræfferne og ${fmtPct(codexRule("sandbag_cover_shell", 0.25))} af granattræfferne går forbi. Det gælder den, der står der.`}</p>
+        ${!mine && !eng ? `<p class="muted-hint">For at fjerne ${w.kind === "bridge" ? "broen" : "sandsækkene"} skal du have en vagtstyrke med ingeniørudstyr højst ${formatDistance(reach)} fra ${w.kind === "bridge" ? "en af broens ender" : "dem"}.</p>` : ""}`;
+    document.getElementById("modal-actions").innerHTML = `
+        <button class="btn" onclick="closeModal()">Luk</button>
+        ${mine ? `<button class="btn btn-danger" onclick="removeFieldwork(${w.id})">🗑️ ${w.kind === "bridge" ? "Riv broen ned" : "Fjern sandsækkene"}</button>`
+            : eng ? `<button class="btn btn-danger" onclick="removeFieldwork(${w.id}, ${eng.id})">💥 ${w.kind === "bridge" ? "Spræng broen" : "Fjern sandsækkene"}</button>` : ""}`;
+    document.getElementById("modal-overlay").classList.remove("hidden");
+    return true;
+}
+setInterval(() => { if (state.user) loadFieldworks(); }, 20000);
+
+// ---------------------------------------------------------------- tegning af stormbåden
+const boatCanvasCache = new Map();
+function boatCanvas(style = "own", flipX = false) {
+    const key = `${style}|${flipX ? 1 : 0}`;
+    if (boatCanvasCache.has(key)) return boatCanvasCache.get(key);
+    const pal = soldierPalette(style);
+    const outline = "#252934";
+    const c = document.createElement("canvas");
+    c.width = 58;
+    c.height = 30;
+    const ctx = c.getContext("2d");
+    if (flipX) {
+        ctx.translate(c.width, 0);
+        ctx.scale(-1, 1);
+    }
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = outline;
+    // kølvand
+    ctx.fillStyle = "rgba(255,255,255,0.55)";
+    ctx.beginPath(); ctx.ellipse(27, 26.5, 24, 2.2, 0, 0, Math.PI * 2); ctx.fill();
+    // soldaternes hjelme over rælingen
+    for (let i = 0; i < 4; i++) {
+        const x = 17 + i * 7.5;
+        ctx.fillStyle = pal.u;
+        ctx.beginPath(); ctx.rect(x - 2.3, 11.5, 4.6, 5); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = pal.h;
+        ctx.beginPath(); ctx.arc(x, 9.6, 3, Math.PI, 0); ctx.lineTo(x + 3, 10.6); ctx.lineTo(x - 3, 10.6); ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+    // skrog (stævnen mod højre)
+    ctx.fillStyle = "#4a4d45";
+    ctx.beginPath(); ctx.moveTo(4, 15.5); ctx.lineTo(49, 15.5); ctx.lineTo(56, 13); ctx.lineTo(51, 24.5); ctx.lineTo(8, 24.5); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#2f312c";
+    ctx.fillRect(8, 21.2, 43.5, 2.2);
+    // påhængsmotor
+    ctx.fillStyle = "#1f2126";
+    ctx.beginPath(); ctx.rect(1.5, 12, 4, 8.5); ctx.fill(); ctx.stroke();
+    boatCanvasCache.set(key, c);
+    return c;
+}
+let boatUrlCache = null;
+function boatImageUrl() {
+    if (!boatUrlCache) boatUrlCache = boatCanvas("own").toDataURL();
+    return boatUrlCache;
 }
 
 // Visningsknap med tre trin: soldater + flag → kun flag → kun soldater → forfra.
