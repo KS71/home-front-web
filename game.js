@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 159;
+const APP_VERSION = 160;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -5241,7 +5241,7 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
     const trucks = truckCount(group);
     const howitzers = group.howitzers || 0;
     // Kampvognenes mandskab sidder inde i kampvognene (0059); kun resten tegnes til fods.
-    const footCount = Math.max(0, group.count - usableTanks(group) * gearCrew().tank);
+    const footCount = Math.max(0, group.count - ridingCrew(group));
     const isMoving = !!marchObj && (marchObj.arrivesAtMillis > marchObj.startedAtMillis + 500) && now < marchObj.arrivesAtMillis;
     const footN = group.count - (style === "npc" ? 0 : ridingCrew(group));
     const isDriving = trucks > 0 && (marchObj ? (marchObj.driving !== false && truckCanDrive(footN, trucks)) : truckCanDrive(footN, trucks));
@@ -5538,7 +5538,7 @@ async function renderTroopsOnMap() {
         const hasMortar = mortarBadgeState(group, style);
         // "only": alle soldater er mandskab i kampvognene, så kun kampvognen vises.
         const hasTank = tankCount(group) > 0
-            ? (group.count - usableTanks(group) * gearCrew().tank <= 0 ? "only" : true) : false;
+            ? (ridingCrew(group) >= group.count ? "only" : true) : false;
         await ensureTroopBadge(group.count, style, pct, status, truck, facingLeft, hasHowitzer, medic, hasMortar, hasTank);
         troopFeatures.push({
             type: "Feature",
@@ -7137,7 +7137,7 @@ window.openSendSoldiersModal = function(from, maxAvail, target = null) {
     const riding = () => {
         if (gearPickW) {
             const v = gearPickW.values();
-            return Math.min(v.tanks, Math.floor(count() / gearCrew().tank)) * gearCrew().tank;
+            return Math.min(count(), v.tanks * gearCrew().tank);
         }
         return allGo() ? ridingCrew(garrison) : 0;
     };
@@ -12172,13 +12172,15 @@ function usableAt(g) {
     return Math.min(atCount(g), Math.floor(Math.max((g.count || 0) - usableTanks(g) * c.tank, 0) / c.at));
 }
 // Soldater, der sidder i gruppens kampvogne. De fylder ikke i lastbilerne (0061).
+// v160: alle sidder i kampvognene, så længe der er plads (tank_crew pr. kampvogn), også når der er
+// for få til at bemande dem fuldt ud. En kampvogn uden fuldt mandskab kan køre, men ikke skyde.
 function ridingCrew(g) {
-    return g ? usableTanks(g) * gearCrew().tank : 0;
+    return g ? Math.min(g.count || 0, tankCount(g) * gearCrew().tank) : 0;
 }
 // Det samme for en ordre, før den er sendt: kampvogne fra lageret, eller vagtstyrkens, hvis hele vagten går.
 function orderRiding(order) {
     if (!gearEnabled() || !order) return 0;
-    if (order.gear) return Math.min(order.gear.tanks || 0, Math.floor(order.count / gearCrew().tank)) * gearCrew().tank;
+    if (order.gear) return Math.min(order.count, (order.gear.tanks || 0) * gearCrew().tank);
     if (order.from?.type === "garrison") {
         const g = state.garrisons.find(x => String(x.id) === String(order.from.id));
         if (g && order.count >= g.count) return ridingCrew(g);
@@ -12224,7 +12226,7 @@ function gearLineHtml(kind, g) {
             </div>`;
         }).join("");
         const share = Math.min(codexRule("tank_hit_share", 0.6), t.length * codexRule("tank_shield", 8) / Math.max(g.count, 1));
-        html += `<p class="muted-hint">🛡️ ${t.length} ${t.length === 1 ? "kampvogn" : "kampvogne"}${use < t.length ? ` (kun mandskab til ${use}: ${c.tank} soldater pr. kampvogn)` : ""}. ${fmtPct(share)} af geværtræfferne preller af på panseret. Granater og panserværn kan ødelægge dem.</p><div class="truck-list">${cards}</div>`;
+        html += `<p class="muted-hint">🛡️ ${t.length} ${t.length === 1 ? "kampvogn" : "kampvogne"}${use < t.length ? `. <strong style="color:#FFB74D">Kun ${g.count} ${g.count === 1 ? "mand" : "mand"} til ${t.length * c.tank} pladser:</strong> ${use === 0 ? (t.length === 1 ? "kampvognen" : "kampvognene") : `${t.length - use} af kampvognene`} kan køre, men ikke skyde, før der er ${c.tank} soldater i hver (send soldater hertil)` : ""}. ${fmtPct(share)} af geværtræfferne preller af på panseret. Granater og panserværn kan ødelægge dem.</p><div class="truck-list">${cards}</div>`;
         if (gunEnabled()) {
             const sh = g.tankShells || 0;
             html += `<p class="muted-hint">💥 Kanon: <strong${sh > 0 ? "" : ' style="color:#FF5252"'}>${sh} ${sh === 1 ? "granat" : "granater"}</strong>. ${sh > 0
