@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 160;
+const APP_VERSION = 161;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -251,7 +251,7 @@ const state = {
     serverOffsetMs: 0,     // serverens ur minus browserens ur (til patruljernes gang)
     inCombat: new Set(),   // patruljer, dine soldater er i kamp med lige nu
     seenBySoldiers: new Set(), // nøgler på fjender, dine soldater allerede har meldt om
-    bookmarks: [],         // { id, lat, lon, purpose: "build" | "target", note } — sat med telefonen på stedet
+    bookmarks: [],         // { id, lat, lon, purpose: "build" | "target" | "enemy", note } — sat med telefonen på stedet
     scoutAlerts: [],       // { id, lat, lon, kind, scouts } — grove advarsler om fjendtlige spejdere
     isTester: false,       // Testkonto: må bygge uden byggepladsbogmærke (sættes af admin)
     isAdmin: false,        // Admin: ser Admin-knappen med spillerlisten
@@ -2780,7 +2780,7 @@ function installGameLayers() {
         type: "fill",
         source: "src-bookmarks",
         paint: {
-            "fill-color": ["match", ["get", "purpose"], "build", "#FFD54F", "#FF5252"],
+            "fill-color": ["match", ["get", "purpose"], "build", "#FFD54F", "enemy", "#FF9100", "#FF5252"],
             "fill-opacity": 0.10
         }
     });
@@ -2789,7 +2789,7 @@ function installGameLayers() {
         type: "line",
         source: "src-bookmarks",
         paint: {
-            "line-color": ["match", ["get", "purpose"], "build", "#FFD54F", "#FF5252"],
+            "line-color": ["match", ["get", "purpose"], "build", "#FFD54F", "enemy", "#FF9100", "#FF5252"],
             "line-width": 2,
             "line-dasharray": [1.5, 1]
         }
@@ -6511,7 +6511,7 @@ function renderPointBox(lat, lon, box, badge) {
     for (const bm of bookmarksAt(lat, lon)) {
         html += `
             <div class="bookmark-chip bookmark-${bm.purpose}">
-                <span>📌 Inde i dit bogmærke: <strong>${bm.purpose === "build" ? "byggeplads" : "mål"}</strong>${bm.note ? ` · ${escapeHtml(bm.note)}` : ""}</span>
+                <span>📌 Inde i dit bogmærke: <strong>${bookmarkKindName(bm.purpose).toLowerCase()}</strong>${bm.note ? ` · ${escapeHtml(bm.note)}` : ""}</span>
                 <button class="btn btn-small btn-muted" onclick="deleteBookmark(${bm.id})">Fjern</button>
             </div>
         `;
@@ -6665,6 +6665,15 @@ function escapeHtml(text) {
 // ============================================================================
 // Bogmærker (sat med telefonen) & Spejder-advarsler
 // ============================================================================
+// Navn og tegn for de tre slags bogmærker. "Fjende set" (0065) gemmer telefonen, når den ser en fjende;
+// noten fortæller, hvad det var og hvornår. Selve fjenden huskes ikke (fog of war).
+function bookmarkKindName(purpose) {
+    return purpose === "build" ? "Byggeplads" : purpose === "enemy" ? "Fjende set" : "Mål";
+}
+function bookmarkKindIcon(purpose) {
+    return purpose === "build" ? "🔨" : purpose === "enemy" ? "👁️" : "🎯";
+}
+
 function renderBookmarksSidebar() {
     const list = document.getElementById("bookmarks-list");
     const badge = document.getElementById("bookmarks-summary-badge");
@@ -6672,7 +6681,7 @@ function renderBookmarksSidebar() {
     badge.textContent = `${state.bookmarks.length} gemt`;
 
     if (state.bookmarks.length === 0) {
-        list.innerHTML = `<p class="muted-hint">Ingen bogmærker endnu. Tag telefonen med ud, tryk på kortet og gem stedet som <strong>byggeplads</strong> (så kan du bygge i en ${GAME_CONFIG.BUILD_BOOKMARK_M}×${GAME_CONFIG.BUILD_BOOKMARK_M} m firkant der herfra) eller som <strong>mål</strong> for dine soldater.</p>`;
+        list.innerHTML = `<p class="muted-hint">Ingen bogmærker endnu. Tag telefonen med ud, tryk på kortet og gem stedet som <strong>byggeplads</strong> (så kan du bygge i en ${GAME_CONFIG.BUILD_BOOKMARK_M}×${GAME_CONFIG.BUILD_BOOKMARK_M} m firkant der herfra) eller som <strong>mål</strong> for dine soldater. Ser telefonen en fjende, kan den gemmes som <strong>fjende set</strong>.</p>`;
         return;
     }
 
@@ -6685,10 +6694,10 @@ function renderBookmarksSidebar() {
         return `
             <div class="item-row">
                 <div class="item-row-top">
-                    <div class="bookmark-icon bookmark-${b.purpose}">${isBuild ? "🔨" : "🎯"}</div>
+                    <div class="bookmark-icon bookmark-${b.purpose}">${bookmarkKindIcon(b.purpose)}</div>
                     <div class="item-info">
-                        <div class="item-title">${isBuild ? "Byggeplads" : "Mål"}${b.note ? ` · ${escapeHtml(b.note)}` : ""}</div>
-                        <div class="item-sub">${where} · gemt ${new Date(b.created_at).toLocaleDateString("da-DK")}${built ? " · bebygget" : ""}</div>
+                        <div class="item-title">${bookmarkKindName(b.purpose)}${b.note ? ` · ${escapeHtml(b.note)}` : ""}</div>
+                        <div class="item-sub">${where} · gemt ${b.purpose === "enemy" ? new Date(b.created_at).toLocaleString("da-DK", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : new Date(b.created_at).toLocaleDateString("da-DK")}${built ? " · bebygget" : ""}</div>
                     </div>
                 </div>
                 <div class="item-actions">
