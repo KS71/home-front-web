@@ -13,6 +13,35 @@ body, html {
     overflow: hidden;
 }
 
+/* Rullebjælker overalt (vinduer, sidepanel, lister): smalle og mørke i stedet for browserens
+   brede hvide. Man kan stadig rulle med hjulet, trække i bjælken og bruge piletasterne (v164). */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: #37474F transparent;
+}
+
+*::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+    background: #37474F;
+    border-radius: 4px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+    background: #546E7A;
+}
+
+*::-webkit-scrollbar-button {
+    display: none;
+}
+
 .pixel-img {
     image-rendering: pixelated;
     image-rendering: crisp-edges;
