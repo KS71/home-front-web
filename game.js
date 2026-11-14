@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 165;
+const APP_VERSION = 166;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -3244,15 +3244,15 @@ const computerImgPromise = new Promise((resolve) => {
 
 // style: "own" (dine), "enemy" (andre spillere) eller "npc" (computerstyret patrulje).
 // status for egne: "guard" (grøn), "patrol" (blå), "march" (orange), "combat" (rød hvis i/har været i kamp).
-function troopBadgeId(count, style = "own", pct = 100, status = "guard", truck = false, facingLeft = false, hasHowitzer = false, medic = false, mortar = false, tank = false) {
+function troopBadgeId(count, style = "own", pct = 100, status = "guard", truck = false, facingLeft = false, hasHowitzer = false, medic = false, mortar = false, tank = false, gear = null) {
     const bucket = pct >= 100 ? "100" : pct < 40 ? `red-${Math.ceil(pct / 10)}` : `orange-${Math.ceil(pct / 10)}`;
     const truckSuffix = truck ? (hasHowitzer ? (facingLeft ? "-truck-h-left" : "-truck-h") : (facingLeft ? "-truck-left" : "-truck")) : (hasHowitzer ? "-gun" : "");
     const tankSuffix = tank ? `${tank === "only" ? "-tanko" : "-tank"}${!truck && facingLeft ? "-left" : ""}` : "";
-    return `img-${style}-${status}-${count}-${bucket}${truckSuffix}${medic ? "-med" : ""}${mortar ? "-mor-" + mortar : ""}${tankSuffix}`;
+    return `img-${style}-${status}-${count}-${bucket}${truckSuffix}${medic ? "-med" : ""}${mortar ? "-mor-" + mortar : ""}${tankSuffix}${badgeGearKey(gear)}`;
 }
 
-async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard", truck = false, facingLeft = false, hasHowitzer = false, medic = false, mortar = false, tank = false) {
-    const imgId = troopBadgeId(count, style, pct, status, truck, facingLeft, hasHowitzer, medic, mortar, tank);
+async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard", truck = false, facingLeft = false, hasHowitzer = false, medic = false, mortar = false, tank = false, gear = null) {
+    const imgId = troopBadgeId(count, style, pct, status, truck, facingLeft, hasHowitzer, medic, mortar, tank, gear);
     if (!mapReady || registeredTroopBadges.has(imgId)) return;
     registeredTroopBadges.add(imgId);
     await soldierImgPromise;
@@ -3286,7 +3286,8 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
     const canvas = document.createElement("canvas");
     const crossW = medic ? 16 : 0; // plads til det røde kors foran tallet
     const mortarW = mortar ? 16 : 0; // plads til morter-tegnet efter tallet
-    const badgeW = Math.max(34, text.length * 10 + 16 + crossW + mortarW);
+    const gearW = badgeGearWidth(gear, 14, 8); // plads til panserværn og drone sidst i skiltet
+    const badgeW = Math.max(34, text.length * 10 + 16 + crossW + mortarW + gearW);
     const badgeH = 22;
     const barH = 5;
     canvas.width = Math.max(sw, badgeW) + 8 + (sideW ? 2 * (sideW + 4) : 0);
@@ -3326,9 +3327,10 @@ async function ensureTroopBadge(count, style = "own", pct = 100, status = "guard
     ctx.font = "bold 13px monospace";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(text, canvas.width / 2 + crossW / 2 - mortarW / 2, 2 + badgeH / 2);
+    ctx.fillText(text, canvas.width / 2 + crossW / 2 - mortarW / 2 - gearW / 2, 2 + badgeH / 2);
     if (medic) drawBadgeRedCross(ctx, bx + 4, 2 + (badgeH - 14) / 2, 14);
-    if (mortar) drawBadgeMortar(ctx, bx + badgeW - 18, 2 + (badgeH - 14) / 2, 14, mortar);
+    if (mortar) drawBadgeMortar(ctx, bx + badgeW - 18 - gearW, 2 + (badgeH - 14) / 2, 14, mortar);
+    if (gearW) drawBadgeGear(ctx, bx + badgeW - 5 - gearW, 2 + (badgeH - 14) / 2, 14, 8, gear);
 
     // Energibjælke under tallet: grøn → gul → rød.
     const step = Math.ceil(pct / 10) / 10;
@@ -4851,6 +4853,68 @@ function drawBadgeMortar(ctx, x, y, size, state = "unk") {
     ctx.restore();
 }
 
+// Panserværn og drone i skiltet over en gruppe (v166): et lille raketstyr med antallet og et drone-tegn.
+// Kampvogne, lastbiler og haubitser ses allerede som figurer; de her bæres af soldaterne og sås ellers ikke.
+function badgeGear(group) {
+    const at = atCount(group), drone = droneCount(group) > 0;
+    return at > 0 || drone ? { at, drone } : null;
+}
+function badgeGearKey(gear) {
+    return gear ? `-at${gear.at}${gear.drone ? "-dr" : ""}` : "";
+}
+function badgeGearWidth(gear, size, charW) {
+    if (!gear) return 0;
+    return (gear.at > 0 ? 3 + size + String(gear.at).length * charW : 0) + (gear.drone ? 3 + size : 0);
+}
+function drawBadgeGear(ctx, x, y, size, charW, gear) {
+    const s = size / 14;
+    if (gear.at > 0) {
+        x += 3;
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(s, s);
+        ctx.strokeStyle = "#FFB74D";
+        ctx.fillStyle = "#FFB74D";
+        ctx.lineCap = "butt";
+        // røret
+        ctx.lineWidth = 2.6;
+        ctx.beginPath(); ctx.moveTo(1, 11.5); ctx.lineTo(8.5, 5.5); ctx.stroke();
+        // håndtaget
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(4.5, 9.5); ctx.lineTo(6.5, 12.5); ctx.stroke();
+        // sprænghovedet
+        ctx.fillStyle = "#FF7043";
+        ctx.beginPath(); ctx.moveTo(6.6, 4); ctx.lineTo(13, 1.5); ctx.lineTo(10, 7.6); ctx.closePath(); ctx.fill();
+        ctx.restore();
+        x += size;
+        ctx.save();
+        ctx.fillStyle = "#FFFFFF";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.fillText(String(gear.at), x, y + size / 2 + 0.5);
+        ctx.restore();
+        x += String(gear.at).length * charW;
+    }
+    if (gear.drone) {
+        x += 3;
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(s, s);
+        ctx.strokeStyle = "#81D4FA";
+        ctx.fillStyle = "#81D4FA";
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(3.5, 3.5); ctx.lineTo(10.5, 10.5);
+        ctx.moveTo(10.5, 3.5); ctx.lineTo(3.5, 10.5);
+        ctx.stroke();
+        for (const [cx, cy] of [[3.2, 3.2], [10.8, 3.2], [3.2, 10.8], [10.8, 10.8]]) {
+            ctx.beginPath(); ctx.arc(cx, cy, 2.1, 0, Math.PI * 2); ctx.stroke();
+        }
+        ctx.fillRect(5.3, 5.3, 3.4, 3.4);
+        ctx.restore();
+    }
+}
+
 // Lille rødt kors i et hvidt felt, tegnet på et mærke (gruppens tal) ved x, y.
 function drawBadgeRedCross(ctx, x, y, size) {
     ctx.fillStyle = "#FFFFFF";
@@ -5138,20 +5202,21 @@ async function ensureStreetUnitSprites(style = "own") {
     addShadowedSprite(`st-boat-${solKey}-l`, boatCanvas(style, true), 1.45, false);
 }
 
-function streetBadgeId(count, strokeColor, pct, tag = "", medic = false, mortar = false) {
+function streetBadgeId(count, strokeColor, pct, tag = "", medic = false, mortar = false, gear = null) {
     const bucket = pct >= 100 ? "100" : pct < 40 ? `r${Math.ceil(pct / 10)}` : `o${Math.ceil(pct / 10)}`;
-    return `st-lbl-${strokeColor.slice(1)}-${count}-${bucket}${tag ? "-" + tag : ""}${medic ? "-med" : ""}${mortar ? "-mor-" + mortar : ""}`;
+    return `st-lbl-${strokeColor.slice(1)}-${count}-${bucket}${tag ? "-" + tag : ""}${medic ? "-med" : ""}${mortar ? "-mor-" + mortar : ""}${badgeGearKey(gear)}`;
 }
 
-function ensureStreetBadge(count, strokeColor, pct, tag = "", medic = false, mortar = false) {
-    const id = streetBadgeId(count, strokeColor, pct, tag, medic, mortar);
+function ensureStreetBadge(count, strokeColor, pct, tag = "", medic = false, mortar = false, gear = null) {
+    const id = streetBadgeId(count, strokeColor, pct, tag, medic, mortar, gear);
     if (!mapReady || registeredStreetBadges.has(id)) return id;
     registeredStreetBadges.add(id);
 
     const label = tag ? `${count} · ${tag}` : String(count);
     const crossW = medic ? 13 : 0; // plads til det røde kors foran tallet
     const mortarW = mortar ? 13 : 0; // plads til morter-tegnet efter tallet
-    const w = Math.max(24, label.length * 7 + 12 + crossW + mortarW);
+    const gearW = badgeGearWidth(gear, 12, 6.5); // plads til panserværn og drone sidst i skiltet
+    const w = Math.ceil(Math.max(24, label.length * 7 + 12 + crossW + mortarW + gearW));
     const pillH = 16;
     const barH = 4;
     const canvas = document.createElement("canvas");
@@ -5171,9 +5236,10 @@ function ensureStreetBadge(count, strokeColor, pct, tag = "", medic = false, mor
     ctx.font = "bold 10.5px monospace";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(label, 2 + w / 2 + crossW / 2 - mortarW / 2, 1.5 + pillH / 2 + 0.5);
+    ctx.fillText(label, 2 + w / 2 + crossW / 2 - mortarW / 2 - gearW / 2, 1.5 + pillH / 2 + 0.5);
     if (medic) drawBadgeRedCross(ctx, 5, 3, 12);
-    if (mortar) drawBadgeMortar(ctx, 2 + w - 15, 3, 12, mortar);
+    if (mortar) drawBadgeMortar(ctx, 2 + w - 15 - gearW, 3, 12, mortar);
+    if (gearW) drawBadgeGear(ctx, 2 + w - 4 - gearW, 3, 12, 6.5, gear);
 
     const step = Math.max(0.08, Math.ceil(pct / 10) / 10);
     const by = pillH + 2.5;
@@ -5569,7 +5635,7 @@ function buildStreetSquadFeatures(groupKey, group, lat, lon, style, status, marc
     const stroke = troopStatusStrokeColor(style, status);
     const pct = energyPct(group);
     const tag = [trucks > 0 ? `${trucks}L` : (howitzers > 0 ? `${howitzers}H` : ""), tankCount(group) > 0 ? `${tankCount(group)}K` : ""].filter(Boolean).join("+");
-    const badgeImg = ensureStreetBadge(group.count, stroke, pct, tag, medic, mortarBadgeState(group, style));
+    const badgeImg = ensureStreetBadge(group.count, stroke, pct, tag, medic, mortarBadgeState(group, style), badgeGear(group));
     const labelLat = lat + (shiftMeters ? (nearestRoadDirection(lat, lon).uy * shiftMeters) * invLat : 0);
     const labelLon = lon + (shiftMeters ? (nearestRoadDirection(lat, lon).ux * shiftMeters) * invLon : 0);
 
@@ -5672,10 +5738,11 @@ async function renderTroopsOnMap() {
         // "only": alle soldater er mandskab i kampvognene, så kun kampvognen vises.
         const hasTank = tankCount(group) > 0
             ? (ridingCrew(group) >= group.count ? "only" : true) : false;
-        await ensureTroopBadge(group.count, style, pct, status, truck, facingLeft, hasHowitzer, medic, hasMortar, hasTank);
+        const gear = badgeGear(group);
+        await ensureTroopBadge(group.count, style, pct, status, truck, facingLeft, hasHowitzer, medic, hasMortar, hasTank, gear);
         troopFeatures.push({
             type: "Feature",
-            properties: { img: troopBadgeId(group.count, style, pct, status, truck, facingLeft, hasHowitzer, medic, hasMortar, hasTank), off: [shiftX, 0] },
+            properties: { img: troopBadgeId(group.count, style, pct, status, truck, facingLeft, hasHowitzer, medic, hasMortar, hasTank, gear), off: [shiftX, 0] },
             geometry: { type: "Point", coordinates: [lon, lat] }
         });
 
