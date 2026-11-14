@@ -3,7 +3,7 @@
 // ============================================================================
 
 // Hjemmesidens versionsnummer. Hæves sammen med ?v=… i index.html, hver gang web/ ændres.
-const APP_VERSION = 158;
+const APP_VERSION = 159;
 
 // Fra zoom 16 skifter kortet fra store overbliks-ikoner til små gadesoldater og køretøjer i formation
 const STREET_TACTICAL_ZOOM = 16;
@@ -10081,6 +10081,19 @@ const RULE_INFO = {
     dig_in_s:                   ["fire", "Grav ned: en vagtstyrke er gravet ned, når den har stået så længe (0 = aldrig)", "s"],
     dig_in_cover:               ["fire", "Grav ned: andel af geværtræfferne, der går forbi (0,4 = 40 %)", "0–1"],
     dig_in_cover_shell:         ["fire", "Grav ned: andel af granattræfferne, der går forbi (0,15 = 15 %)", "0–1"],
+    city_npc_help_h:            ["city", "Nabohjælp: timer mellem to forstærkninger til samme by (0 = aldrig)", "timer"],
+    city_npc_help_share:        ["city", "Nabohjælp: forstærkningens størrelse som andel af nabobyens garnison", "0–1"],
+    city_npc_help_range_m:      ["city", "Nabohjælp: kommer fra nærmeste computerby inden for", "m"],
+    city_npc_offensive_h:       ["city", "Angreb: timer mellem to angreb fra samme computerby (0 = aldrig)", "timer"],
+    city_npc_offensive_share:   ["city", "Angreb: styrkens størrelse som andel af byens garnison", "0–1"],
+    city_npc_offensive_range_m: ["city", "Angreb: spillerbyer så tæt på kan angribes", "m"],
+    city_npc_offensive_ratio:   ["city", "Angreb: kun hvis styrken er så mange gange forsvaret i byen", "gange"],
+    city_npc_guard_help_m:      ["city", "En vagt hjælper et truet flag så tæt på sit eget (0 = aldrig)", "m"],
+    city_npc_near_factor:       ["city", "Sværhedsgrad: garnisonens størrelse lige ved en spillers bygninger (0,6 = 60 %)", "gange"],
+    city_npc_far_factor:        ["city", "Sværhedsgrad: garnisonens størrelse langt fra spillerne (1,4 = 140 %)", "gange"],
+    city_npc_scale_km:          ["city", "Sværhedsgrad: afstanden, hvor garnisonen har nået fuld størrelse", "km"],
+    city_npc_raid_tank_per:     ["city", "Angrebsstyrker: 1 kampvogn pr. så mange soldater (0 = ingen)", "soldater"],
+    city_npc_raid_at_per:       ["city", "Angrebsstyrker: 1 panserværnsvåben pr. så mange soldater (0 = ingen)", "soldater"],
     city_npc_counter_h:         ["city", "Modangreb: timer, før computeren prøver at tage en tabt by tilbage (0 = aldrig)", "timer"],
     city_npc_counter_share:     ["city", "Modangreb: styrkens størrelse som andel af byens garnison (0,5 = halvdelen)", "0–1"],
     city_npc_counter_range_m:   ["city", "Modangreb: kommer fra nærmeste computerby inden for", "m"],
@@ -10889,6 +10902,16 @@ function codexEnemiesHtml() {
                         ["Vagten angriber", `fjender højst ${formatDistance(codexRule("city_npc_guard_attack_m", 150))} fra sit flag`],
                         ["Patruljen angriber", `fjender højst ${formatDistance(codexRule("city_npc_attack_m", 600))} fra bymidten, når garnisonen inden for ${formatDistance(codexRule("city_npc_support_m", 400))} er mindst ${fmtNum(codexRule("city_npc_attack_ratio", 1))} gange så mange`],
                         ["Forstærkning", `${fmtNum(codexRule("city_npc_regen_per_h", 6))} soldater i timen pr. styrke`],
+                        ...(GAME_CONFIG.RULES?.city_npc_help_h != null ? [
+                            ["Nabohjælp", codexRule("city_npc_help_h", 3) > 0
+                                ? `angriber du en by, sender nærmeste computerby (højst ${formatDistance(codexRule("city_npc_help_range_m", 8000))} væk) ${fmtPct(codexRule("city_npc_help_share", 0.4))} af sin garnison, højst hver ${fmtNum(codexRule("city_npc_help_h", 3))}. time. Du får besked med ankomsttiden`
+                                : "slået fra"],
+                            ["Angreb på dine byer", codexRule("city_npc_offensive_h", 12) > 0
+                                ? `hver computerby angriber ca. hver ${fmtNum(codexRule("city_npc_offensive_h", 12))}. time din svagest forsvarede by inden for ${formatDistance(codexRule("city_npc_offensive_range_m", 10000))}, hvis styrken er mindst ${fmtNum(codexRule("city_npc_offensive_ratio", 1.5))} gange dit forsvar`
+                                : "slået fra"],
+                            ["Vagterne hjælper hinanden", `en vagt rykker hen til et truet flag højst ${formatDistance(codexRule("city_npc_guard_help_m", 400))} fra sit eget, hvis garnisonen dér er stærk nok`],
+                            ["Sværhedsgrad", `garnisoner er ${fmtPct(codexRule("city_npc_near_factor", 0.6))} af fuld størrelse lige ved dine bygninger og ${fmtPct(codexRule("city_npc_far_factor", 1.4))} fra ${fmtNum(codexRule("city_npc_scale_km", 20))} km og ud`]
+                        ] : []),
                         ["Modangreb", codexRule("city_npc_counter_h", 24) > 0
                             ? `${fmtNum(codexRule("city_npc_counter_h", 24))} timer efter du har taget en by, sender nærmeste computerby (højst ${formatDistance(codexRule("city_npc_counter_range_m", 15000))} væk) ${fmtPct(codexRule("city_npc_counter_share", 0.5))} af en garnison for at tage den tilbage – og igen, hvis styrken slås. Styrken samles ${formatDistance(codexRule("city_npc_counter_stage_m", 1200))} fra bymidten, før den går ind`
                             : "slået fra"]
